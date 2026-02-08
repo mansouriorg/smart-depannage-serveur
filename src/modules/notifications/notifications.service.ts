@@ -1,26 +1,36 @@
-import { Injectable } from '@nestjs/common';
-import { CreateNotificationDto } from './dto/create-notification.dto';
-import { UpdateNotificationDto } from './dto/update-notification.dto';
+import { Injectable, Logger } from '@nestjs/common';
 
 @Injectable()
 export class NotificationsService {
-  create(createNotificationDto: CreateNotificationDto) {
-    return 'This action adds a new notification';
+  private readonly logger = new Logger(NotificationsService.name);
+
+  // 1. Send SMS (Simulation)
+  async sendSms(phoneNumber: string, message: string) {
+    // In production, you would use Twilio here:
+    // await this.twilioClient.messages.create({ to: phoneNumber, body: message ... })
+    
+    this.logger.log(`📱 [SMS SIMULATION] To: ${phoneNumber} | Message: "${message}"`);
+    return true;
   }
 
-  findAll() {
-    return `This action returns all notifications`;
+  // 2. Send Email (Simulation)
+  async sendEmail(email: string, subject: string, content: string) {
+    // In production, you would use SendGrid/Nodemailer here
+    
+    this.logger.log(`📧 [EMAIL SIMULATION] To: ${email} | Subject: "${subject}"`);
+    this.logger.log(`   Body: "${content}"`);
+    return true;
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} notification`;
+  // 3. Notify Artisan of New Job
+  async notifyArtisan(artisanPhone: string, jobDescription: string) {
+    const msg = `Nouvelle mission disponible: ${jobDescription}. Connectez-vous pour accepter.`;
+    return this.sendSms(artisanPhone, msg);
   }
 
-  update(id: number, updateNotificationDto: UpdateNotificationDto) {
-    return `This action updates a #${id} notification`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} notification`;
+  // 4. Notify Client of Acceptance
+  async notifyClient(clientPhone: string, artisanName: string) {
+    const msg = `Bonne nouvelle! ${artisanName} a accepté votre demande et est en route.`;
+    return this.sendSms(clientPhone, msg);
   }
 }

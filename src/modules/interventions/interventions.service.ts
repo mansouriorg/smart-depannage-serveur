@@ -2,56 +2,80 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
+import { InterventionsGateway } from './interventions.gateway'; 
+import { NotificationsService } from '../notifications/notifications.service'; // 1. Import Notifications
 
 @Injectable()
 export class InterventionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private gateway: InterventionsGateway,
+    private notifications: NotificationsService, // 2. Inject Notifications Service
+  ) {}
 
-  // 1. Create a new Request (Linked to the logged-in User)
+  // 1. Create Request & Notify Admin/Artisans
   async create(userId: number, createInterventionDto: CreateInterventionDto) {
-    return this.prisma.intervention.create({
+    // A. Save to Database
+    const newIntervention = await this.prisma.intervention.create({
       data: {
         ...createInterventionDto,
-        // ⚠️ Prisma Magic: We use 'connect' to link this request to an existing User
         client: {
           connect: { id: userId },
         },
-        // Status defaults to PENDING automatically based on your Schema
+        status: 'PENDING',
+      },
+      include: {
+        client: { select: { id: true, name: true, phone: true } },
       },
     });
+
+    // B. 🔔 Real-Time Notification (WebSockets)
+    // Updates the Admin Dashboard instantly without refresh
+    this.gateway.server.emit('newIntervention', newIntervention);
+
+    // C. 📱 SMS Notification
+    // Notify the Admin that a new job has arrived
+    // (In a real app, you might loop through nearby artisans here)
+    await this.notifications.sendSms(
+      '+21600000000', // Admin Phone (or fetch from ENV)
+      `Alerte: Nouvelle demande de ${newIntervention.serviceType} à ${newIntervention.address}`
+    );
+
+    return newIntervention;
   }
 
-  // 2. Find All (For Admins - shows everything)
+  // 2. Find All (Admins)
   async findAll() {
     return this.prisma.intervention.findMany({
       include: {
-        client: {
-          select: { id: true, name: true, email: true }, // Hide sensitive password!
-        },
+        client: { select: { id: true, name: true, email: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  // 3. Find My Requests (For Clients - only shows their own)
+  // 3. Find My Requests (Clients)
   async findByUser(userId: number) {
     return this.prisma.intervention.findMany({
       where: { clientId: userId },
+      include: {
+        artisan: { select: { name: true, phone: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  // 4. Find Available Jobs (For Artisans - shows only PENDING jobs)
+  // 4. Find Available Jobs (Artisans)
   async findAllPending() {
     return this.prisma.intervention.findMany({
       where: { status: 'PENDING' },
       include: {
-        client: { select: { name: true, address: true } }, // Show client info
+        client: { select: { name: true, address: true } },
       },
     });
   }
 
-  // 5. Get Single Request Details
+  // 5. Find Single Request
   async findOne(id: number) {
     const intervention = await this.prisma.intervention.findUnique({
       where: { id },
@@ -68,11 +92,40 @@ export class InterventionsService {
     return intervention;
   }
 
-  // 6. Update (e.g., Artisan accepts job, or mark as Completed)
+  // 6. Update Status (Accept Job / Finish Job)
   async update(id: number, updateInterventionDto: UpdateInterventionDto) {
-    return this.prisma.intervention.update({
+    // Perform the update
+    const updatedIntervention = await this.prisma.intervention.update({
       where: { id },
       data: updateInterventionDto,
+      include: {
+        client: { select: { id: true, name: true, phone: true } },
+        artisan: { select: { id: true, name: true, phone: true } },
+      },
     });
+
+    // A. 🔔 Real-Time Notification
+    // Notify the specific client watching this job
+    this.gateway.server.emit(`interventionStatus-${id}`, updatedIntervention);
+
+    // B. 📱 SMS Notification logic
+    // If the status changed to ACCEPTED, tell the client their plumber is coming
+    if (updateInterventionDto.status === 'ACCEPTED' && updatedIntervention.client.phone) {
+      const artisanName = updatedIntervention.artisan?.name || 'Un artisan';
+      await this.notifications.sendSms(
+        updatedIntervention.client.phone,
+        `Bonne nouvelle! ${artisanName} a accepté votre demande et est en route.`
+      );
+    }
+
+    // If the status changed to COMPLETED, thank the client
+    if (updateInterventionDto.status === 'COMPLETED' && updatedIntervention.client.phone) {
+      await this.notifications.sendSms(
+        updatedIntervention.client.phone,
+        `Votre intervention est terminée. Merci d'avoir utilisé Smart Dépannage!`
+      );
+    }
+
+    return updatedIntervention;
   }
 }
