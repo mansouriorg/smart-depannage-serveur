@@ -1,26 +1,49 @@
-import { Injectable } from '@nestjs/common';
-import { CreateAuthDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { UsersService } from '../users/users.service';
+import { JwtService } from '@nestjs/jwt';
+import * as argon2 from 'argon2';
 
 @Injectable()
 export class AuthService {
-  create(createAuthDto: CreateAuthDto) {
-    return 'This action adds a new auth';
+  constructor(
+    private usersService: UsersService,
+    private jwtService: JwtService,
+  ) {}
+
+  // 1. Validate User (Check Email & Password)
+  async validateUser(email: string, pass: string): Promise<any> {
+    const user = await this.usersService.findOneByEmail(email);
+    
+    // If user not found, return null
+    if (!user) {
+      return null;
+    }
+
+    // Verify the password using Argon2
+    const isPasswordValid = await argon2.verify(user.password, pass);
+    
+    if (isPasswordValid) {
+      // ⚠️ Important: Strip the password before returning the user object
+      const { password, ...result } = user;
+      return result;
+    }
+
+    return null;
   }
 
-  findAll() {
-    return `This action returns all auth`;
+  // 2. Login (Generate JWT Token)
+  async login(user: any) {
+    // The payload is the data inside the token. 
+    // We put the user's ID (sub) and Email.
+    const payload = { email: user.email, sub: user.id, role: user.role };
+    
+    return {
+      access_token: this.jwtService.sign(payload),
+    };
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} auth`;
-  }
-
-  update(id: number, updateAuthDto: UpdateAuthDto) {
-    return `This action updates a #${id} auth`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} auth`;
+  // 3. Register (Proxy to UsersService)
+  async register(userDto: any) {
+    return this.usersService.create(userDto);
   }
 }
