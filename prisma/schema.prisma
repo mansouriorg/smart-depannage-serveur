@@ -1,0 +1,72 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Enums for your specific business logic
+enum Role {
+  CLIENT
+  ARTISAN
+  ADMIN
+}
+
+enum ServiceType {
+  PLOMBIER
+  MENUISIER
+  SERRURIER
+  ELECTRICIEN
+  AUTRE
+}
+
+enum Status {
+  PENDING
+  ACCEPTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// Models
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  name      String?
+  phone     String?
+  role      Role     @default(CLIENT)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  clientInterventions  Intervention[] @relation("ClientInterventions")
+  artisanInterventions Intervention[] @relation("ArtisanInterventions")
+}
+
+model Intervention {
+  id          Int         @id @default(autoincrement())
+  description String
+  address     String
+  serviceType ServiceType
+  status      Status      @default(PENDING)
+  
+  // Relations
+  clientId    Int
+  client      User        @relation("ClientInterventions", fields: [clientId], references: [id])
+  
+  artisanId   Int?
+  artisan     User?       @relation("ArtisanInterventions", fields: [artisanId], references: [id])
+  
+  photos      String[]    // Array of URLs for the damage photos
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
