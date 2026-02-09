@@ -20,6 +20,7 @@ export class AuthService {
     }
 
     // Verify the password using Argon2
+    // Note: Make sure 'pass' is the plain text and 'user.password' is the hash
     const isPasswordValid = await argon2.verify(user.password, pass);
     
     if (isPasswordValid) {
@@ -31,14 +32,22 @@ export class AuthService {
     return null;
   }
 
-  // 2. Login (Generate JWT Token)
+  // 2. Login (Generate JWT Token & Return User Info)
   async login(user: any) {
     // The payload is the data inside the token. 
-    // We put the user's ID (sub) and Email.
     const payload = { email: user.email, sub: user.id, role: user.role };
     
     return {
-      access_token: this.jwtService.sign(payload),
+      // ✅ Renamed to 'accessToken' to match your Next.js frontend
+      accessToken: this.jwtService.sign(payload),
+      
+      // ✅ ADDED: User details so frontend can check 'res.data.user.role'
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     };
   }
 
