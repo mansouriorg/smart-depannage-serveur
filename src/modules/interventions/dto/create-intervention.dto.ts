@@ -1,25 +1,31 @@
 import { IsEnum, IsNotEmpty, IsString, IsOptional } from 'class-validator';
-import { ServiceType } from '@prisma/client'; // Import the Enum directly from Prisma
+
+// ❌ OLD: import { ServiceType } from '@prisma/client'; 
+
+// ✅ NEW: Import from your custom generated location
+// Adjust the '../' number based on your folder structure. 
+// If your file is deep in src/modules/interventions/dto/, you likely need 4 levels up.
+import { ServiceType } from '../../../../generated/prisma/client'; 
 
 export class CreateInterventionDto {
-  // 1. Service Type: Must be one of your defined types (PLOMBIER, SERRURIER, etc.)
+  // 1. Service Type
   @IsEnum(ServiceType, {
     message: 'Service type must be PLOMBIER, MENUISIER, SERRURIER, ELECTRICIEN, or AUTRE',
   })
   serviceType: ServiceType;
 
-  // 2. Description: What is the problem? (e.g., "Leaky faucet")
+  // 2. Description
   @IsString()
   @IsNotEmpty()
   description: string;
 
-  // 3. Address: Where should the artisan go?
+  // 3. Address
   @IsString()
   @IsNotEmpty()
   address: string;
 
-  // 4. Photos: Optional array of URLs (we will handle file uploads later)
+  // 4. Photos
   @IsOptional()
-  @IsString({ each: true }) // Validates that each item in the array is a string
+  @IsString({ each: true })
   photos?: string[];
 }

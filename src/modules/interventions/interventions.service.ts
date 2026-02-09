@@ -3,14 +3,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
 import { InterventionsGateway } from './interventions.gateway'; 
-import { NotificationsService } from '../notifications/notifications.service'; // 1. Import Notifications
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class InterventionsService {
   constructor(
     private prisma: PrismaService,
     private gateway: InterventionsGateway,
-    private notifications: NotificationsService, // 2. Inject Notifications Service
+    private notifications: NotificationsService,
   ) {}
 
   // 1. Create Request & Notify Admin/Artisans
@@ -70,7 +70,8 @@ export class InterventionsService {
     return this.prisma.intervention.findMany({
       where: { status: 'PENDING' },
       include: {
-        client: { select: { name: true, address: true } },
+        // FIXED: Removed 'address: true' because address belongs to the intervention, not the user.
+        client: { select: { name: true } },
       },
     });
   }
