@@ -7,7 +7,6 @@ import { NotificationsService } from '../notifications/notifications.service';
 import * as argon2 from 'argon2';
 
 // ⚠️ Import 'Role' from your custom generated path
-// Adjust the path if necessary (e.g. '../../../generated/prisma/client')
 import { Role } from '../../../generated/prisma/client';
 
 @Injectable()
@@ -42,7 +41,6 @@ export class InterventionsService {
         const dummyPassword = await argon2.hash('123456'); // Default password
         user = await this.prisma.user.create({
           data: {
-            // Generate a unique dummy email
             email: `guest_${Date.now()}@smart-depannage.com`,
             phone: contactPhone,
             name: contactName || 'Client Invité',
@@ -55,14 +53,11 @@ export class InterventionsService {
       finalClientId = user.id;
     }
 
-    // B. CLEAN DATA: Remove 'contactName'/'contactPhone' from DTO 
-    // because they don't exist on the Intervention table
     const { contactName, contactPhone, ...interventionData } = createInterventionDto;
 
-    // C. SAVE TO DATABASE
     const newIntervention = await this.prisma.intervention.create({
       data: {
-        ...interventionData, // description, address, serviceType
+        ...interventionData,
         client: {
           connect: { id: finalClientId },
         },
@@ -73,7 +68,7 @@ export class InterventionsService {
       },
     });
 
-    // D. 🔔 Real-Time Notification (WebSockets)
+    // D. 🔔 Real-Time Notification
     this.gateway.server.emit('newIntervention', newIntervention);
 
     // E. 📱 SMS Notification to Admin
@@ -92,6 +87,7 @@ export class InterventionsService {
     return this.prisma.intervention.findMany({
       include: {
         client: { select: { id: true, name: true, email: true, phone: true } },
+        artisan: { select: { id: true, name: true, phone: true } }, // Included artisan info
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -117,7 +113,7 @@ export class InterventionsService {
     return this.prisma.intervention.findMany({
       where: { status: 'PENDING' },
       include: {
-        client: { select: { name: true } }, // Removed address (it's on the intervention)
+        client: { select: { name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -143,34 +139,63 @@ export class InterventionsService {
   }
 
   // ==========================================================
-  // 6. UPDATE STATUS (Accept / Complete)
+  // 6. UPDATE (Assign Artisan / Change Status)
   // ==========================================================
   async update(id: number, updateInterventionDto: UpdateInterventionDto) {
+    // 1. Separate artisanId from the rest of the data
+    const { artisanId, ...rest } = updateInterventionDto;
+    
+    // 2. Prepare the object for Prisma
+    const dataToUpdate: any = { ...rest };
+
+    // 🛠️ LOGIC: If we are assigning an Artisan
+    if (artisanId) {
+      // Connect the relation to the User table
+      dataToUpdate.artisan = { connect: { id: artisanId } };
+      
+      // Auto-set status to ACCEPTED if not specified
+      if (!dataToUpdate.status) {
+        dataToUpdate.status = 'ACCEPTED';
+      }
+    }
+
+    // 3. Save to Database
     const updatedIntervention = await this.prisma.intervention.update({
       where: { id },
-      data: updateInterventionDto,
+      data: dataToUpdate,
       include: {
         client: { select: { id: true, name: true, phone: true } },
         artisan: { select: { id: true, name: true, phone: true } },
       },
     });
 
-    // A. 🔔 Real-Time Notification to Client
+    // 4. 🔔 Real-Time Notification
     this.gateway.server.emit(`interventionStatus-${id}`, updatedIntervention);
 
-    // B. 📱 SMS Notification logic
-    if (updateInterventionDto.status === 'ACCEPTED' && updatedIntervention.client.phone) {
+    // 5. 📱 SMS Notification Logic
+    
+    // Case A: Client Notification (Accepted)
+    if (updatedIntervention.status === 'ACCEPTED' && updatedIntervention.client.phone) {
       const artisanName = updatedIntervention.artisan?.name || 'Un artisan';
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
-        `Bonne nouvelle! ${artisanName} a accepté votre demande et est en route.`
+        `Smart Dépannage: Votre demande a été acceptée ! ${artisanName} prend en charge votre dossier.`
       );
     }
 
-    if (updateInterventionDto.status === 'COMPLETED' && updatedIntervention.client.phone) {
+    // Case B: Client Notification (Completed)
+    if (updatedIntervention.status === 'COMPLETED' && updatedIntervention.client.phone) {
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
-        `Votre intervention est terminée. Merci d'avoir utilisé Smart Dépannage!`
+        `Intervention terminée. Merci de votre confiance !`
+      );
+    }
+
+    // Case C: Artisan Notification (New Assignment)
+    if (artisanId && updatedIntervention.artisan?.phone) {
+      await this.notifications.sendSms(
+        updatedIntervention.artisan.phone,
+        `Nouveau Chantier: ${updatedIntervention.serviceType} à ${updatedIntervention.address}. Client: ${updatedIntervention.client.name}`
       );
     }
 
