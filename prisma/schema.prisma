@@ -71,3 +71,23 @@ model Intervention {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 }
+
+model ArtisanApplication {
+  id          Int      @id @default(autoincrement())
+  name        String
+  email       String   @unique
+  phone       String
+  specialty   String   // e.g. "Plombier", "Menuisier"
+  experience  Int      // Years of experience
+  description String?  // Optional "About me"
+  
+  status      ApplicationStatus @default(PENDING)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}

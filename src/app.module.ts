@@ -12,6 +12,7 @@ import { UsersModule } from './modules/users/users.module';
 import { FilesModule } from './modules/files/files.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { InterventionsModule } from './modules/interventions/interventions.module';
+import { ArtisanApplicationsModule } from './modules/artisan-applications/artisan-applications.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { InterventionsModule } from './modules/interventions/interventions.modul
     FilesModule,
     NotificationsModule,
     InterventionsModule,
+    ArtisanApplicationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
