@@ -2,10 +2,8 @@ import { Injectable, ConflictException, NotFoundException } from '@nestjs/common
 import { PrismaService } from '../../prisma/prisma.service';
 import * as argon2 from 'argon2';
 
-// ⚠️ IMPORTANT: Use your custom generated path if you are using the "No Rust" engine
-// If you reverted to the standard engine, change this back to '@prisma/client'
+// ⚠️ IMPORTANT: Use your custom generated path
 import { Prisma, User } from '../../../generated/prisma/client'; 
-// import { UpdateUserDto } from './dto/update-user.dto'; // Uncomment if you have a DTO
 
 @Injectable()
 export class UsersService {
@@ -34,19 +32,23 @@ export class UsersService {
   }
 
   // ==========================================================
-  // 2. FIND ALL (Used by Controller)
+  // 2. FIND ALL (Updated to support Filtering)
   // ==========================================================
-  async findAll(): Promise<User[]> {
+  // ✅ NOW ACCEPTS PARAMETERS (e.g. { where: { role: 'ARTISAN' } })
+  async findAll(params?: { where?: Prisma.UserWhereInput }): Promise<User[]> {
+    const { where } = params || {};
+    
     return this.prisma.user.findMany({
-      orderBy: { id: 'desc' }, // Show newest users first
-      // You might want to exclude passwords here in a real app
+      where, 
+      orderBy: { id: 'desc' }, 
+      // Security: We generally shouldn't return passwords, 
+      // but for internal admin use, we often keep the object as is.
     });
   }
 
   // ==========================================================
   // 3. FIND ONE (Used by Controller & Auth)
   // ==========================================================
-  // This matches the controller's expectation: findOne(+id)
   async findOne(id: number): Promise<User | null> {
     const user = await this.prisma.user.findUnique({
       where: { id },
