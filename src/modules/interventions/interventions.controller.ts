@@ -15,43 +15,48 @@ import { UpdateInterventionDto } from './dto/update-intervention.dto';
 import { AuthGuard } from '@nestjs/passport';
 
 @Controller('interventions')
-// ❌ REMOVED: @UseGuards(AuthGuard('jwt')) from here. 
-// The Controller is now open so Guests can access the POST route.
 export class InterventionsController {
   constructor(private readonly interventionsService: InterventionsService) {}
 
   // ==========================================================
-  // 1. PUBLIC ROUTE: Create Request
+  // 1. PUBLIC ROUTE: Create Request (GUESTS)
   // ==========================================================
-  // We do NOT add @UseGuards here so guests can use it.
+  // This route is open. Used by the Landing Page form.
   @Post()
   create(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
-    // If the user is logged in (and you have a passive guard), req.user exists.
-    // If it's a guest, req.user is undefined.
-    // The Service now handles 'null' by creating a Guest User automatically.
-    const userId = req.user ? req.user.userId : null;
-    
-    return this.interventionsService.create(userId, createInterventionDto);
+    // req.user is usually undefined here because there is no Guard
+    return this.interventionsService.create(null, createInterventionDto);
   }
 
   // ==========================================================
-  // 2. PROTECTED ROUTES: Only for Logged-in Users
+  // 2. SECURE ROUTE: Create Request (LOGGED IN USERS)
+  // ==========================================================
+  // ✅ NEW: Used by Admin Dashboard & Client App
+  // Because of @UseGuards, req.user is GUARANTEED to exist.
+  @Post('secure')
+  @UseGuards(AuthGuard('jwt'))
+  createSecure(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
+    return this.interventionsService.create(req.user.userId, createInterventionDto);
+  }
+
+  // ==========================================================
+  // 3. PROTECTED ROUTES: Reading & Updating
   // ==========================================================
 
   // GET /interventions (List requests)
   @Get()
   @UseGuards(AuthGuard('jwt')) // 🔒 PROTECTED
   findAll(@Request() req) {
-    // Logic: Admins see everything, Clients see only their own
+    // Logic: Admins see everything
     if (req.user.role === 'ADMIN') {
       return this.interventionsService.findAll();
     }
-    // If it's an Artisan, show "Pending" jobs
+    // Artisans see "Pending" jobs to pick up
     if (req.user.role === 'ARTISAN') {
       return this.interventionsService.findAllPending();
     }
     
-    // Clients see their own history
+    // Clients see only their own history
     return this.interventionsService.findByUser(req.user.userId);
   }
 
@@ -70,7 +75,7 @@ export class InterventionsController {
     @Param('id') id: string, 
     @Body() updateInterventionDto: UpdateInterventionDto
   ) {
-    // Security: Only Admin or Artisan should be able to update status
+    // Security: Clients cannot update interventions directly (only cancel maybe, but we block for now)
     if (req.user.role === 'CLIENT') {
        throw new ForbiddenException('Clients cannot update interventions directly');
     }
