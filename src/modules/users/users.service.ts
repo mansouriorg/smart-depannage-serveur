@@ -2,7 +2,7 @@ import { Injectable, ConflictException, NotFoundException } from '@nestjs/common
 import { PrismaService } from '../../prisma/prisma.service';
 import * as argon2 from 'argon2';
 
-// ⚠️ IMPORTANT: Use your custom generated path
+// ⚠️ IMPORTANT: Assurez-vous que le chemin vers votre client Prisma est correct
 import { Prisma, User } from '../../../generated/prisma/client'; 
 
 @Injectable()
@@ -95,6 +95,23 @@ export class UsersService {
       where: { id },
       data: {
         isActive: false, 
+      },
+    });
+  }
+
+  // ==========================================================
+  // 6. UPDATE LOCATION (GPS) 📍 ✅ NOUVEAU
+  // ==========================================================
+  // Cette fonction est appelée par l'application mobile de l'artisan
+  async updateLocation(id: number, latitude: number, longitude: number): Promise<User> {
+    // On vérifie d'abord que l'utilisateur existe
+    await this.findOne(id);
+
+    return this.prisma.user.update({
+      where: { id },
+      data: {
+        latitude: latitude,
+        longitude: longitude,
       },
     });
   }

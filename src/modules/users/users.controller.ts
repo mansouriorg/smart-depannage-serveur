@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
+import { 
+  Controller, 
+  Get, 
+  Post, 
+  Body, 
+  Patch, 
+  Param, 
+  Delete, 
+  UseGuards, 
+  Request 
+} from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -20,10 +30,6 @@ export class UsersController {
   @Get('artisans')
   @UseGuards(AuthGuard('jwt'))
   findArtisans() {
-    // Only return users with the role ARTISAN
-    // Note: The service might define a specific way to handle 'isActive', 
-    // but usually, you want to see ALL artisans (even banned ones) in the admin list,
-    // or filter them. For now, this returns all.
     return this.usersService.findAll({ where: { role: Role.ARTISAN } });
   }
 
@@ -36,6 +42,17 @@ export class UsersController {
       ...createUserDto,
       role: Role.ARTISAN, // 🔒 Force the role to ARTISAN
     });
+  }
+
+  // ✅ PATCH /users/location
+  // Used by the Mobile App to update GPS position
+  // ⚠️ MUST be defined BEFORE @Get(':id')
+  @Patch('location')
+  @UseGuards(AuthGuard('jwt'))
+  updateLocation(@Request() req, @Body() body: { latitude: number; longitude: number }) {
+    // req.user.userId comes from the JWT token
+    console.log(`Updating location for user ${req.user.userId}:`, body);
+    return this.usersService.updateLocation(+req.user.userId, body.latitude, body.longitude);
   }
 
   // ==========================================================
@@ -67,9 +84,7 @@ export class UsersController {
   }
 
   // ✅ DELETE /users/:id
-  // This calls the service's remove method.
-  // Since we updated the service, this will now perform a "Soft Delete" (Ban)
-  // by setting isActive = false.
+  // This performs a "Soft Delete" (Ban) by setting isActive = false.
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'))
   remove(@Param('id') id: string) {
