@@ -1,49 +1,62 @@
-import {
-  WebSocketGateway,
-  WebSocketServer,
-  SubscribeMessage,
+import { 
+  WebSocketGateway, 
+  WebSocketServer, 
+  SubscribeMessage, 
+  MessageBody, 
+  OnGatewayInit,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  ConnectedSocket
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
 
-@WebSocketGateway({
-  cors: {
-    origin: '*', // ⚠️ Allow all origins for development (update in production)
-  },
+// ⚠️ CORS is crucial: origin: '*' allows your Frontend (Next.js) and Mobile apps to connect.
+@WebSocketGateway({ 
+  cors: { 
+    origin: '*', 
+  } 
 })
-export class InterventionsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+export class InterventionsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+  
   @WebSocketServer()
   server: Server;
 
-  private logger: Logger = new Logger('InterventionsGateway');
+  // --- LIFECYCLE HOOKS (Optional logging) ---
+  afterInit(server: Server) {
+    console.log('✅ WebSocket Gateway Initialized');
+  }
 
-  // 1. Handle Connection
   handleConnection(client: Socket) {
-    this.logger.log(`Client connected: ${client.id}`);
-    // Ideally, you would verify the JWT token here to know WHO connected
-    // e.g., const token = client.handshake.headers.authorization;
+    console.log(`🔌 Client connected: ${client.id}`);
   }
 
-  // 2. Handle Disconnect
   handleDisconnect(client: Socket) {
-    this.logger.log(`Client disconnected: ${client.id}`);
+    console.log(`❌ Client disconnected: ${client.id}`);
   }
 
-  // 3. Custom Event: Join Room (Optional)
-  // Useful if you only want Artisans to hear about jobs in "Tunis", etc.
-  @SubscribeMessage('joinRoom')
-  handleJoinRoom(client: Socket, room: string) {
-    client.join(room);
-    this.logger.log(`Client ${client.id} joined room ${room}`);
-  }
-
-  // 4. Helper Method: Send Notification
-  // Call this method from your Service whenever a new request is created
-  notifyNewIntervention(intervention: any) {
+  // ==========================================================
+  // 1. BROADCAST NEW TICKET (Called by InterventionsService)
+  // ==========================================================
+  // This function is called by your Service whenever a new ticket is created.
+  // It broadcasts the event to all connected clients (Admin Dashboard).
+  sendNewIntervention(intervention: any) {
     this.server.emit('newIntervention', intervention);
+  }
+
+  // ==========================================================
+  // 2. RECEIVE GPS POSITION (From Artisan App)
+  // ==========================================================
+  // The Artisan's phone sends: socket.emit('sendPosition', { artisanId: 1, lat: ..., lng: ... })
+  @SubscribeMessage('sendPosition')
+  handlePosition(
+    @MessageBody() data: { artisanId: number, lat: number, lng: number },
+    @ConnectedSocket() client: Socket,
+  ) {
+    // Log to backend console for debugging
+    console.log(`📍 Position received from Artisan #${data.artisanId}:`, data.lat, data.lng);
+
+    // 🚀 BROADCAST TO ADMIN
+    // This sends the data to everyone listening to 'tracking-update' (i.e., the Admin Dashboard Map)
+    this.server.emit('tracking-update', data);
   }
 }
