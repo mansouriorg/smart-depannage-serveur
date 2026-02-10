@@ -16,11 +16,26 @@ export class UsersController {
   // ==========================================================
   
   // ✅ GET /users/artisans
-  // Used to populate the dropdown in the Admin Dashboard
+  // Used to populate the dropdown & list in the Admin Dashboard
   @Get('artisans')
   @UseGuards(AuthGuard('jwt'))
   findArtisans() {
+    // Only return users with the role ARTISAN
+    // Note: The service might define a specific way to handle 'isActive', 
+    // but usually, you want to see ALL artisans (even banned ones) in the admin list,
+    // or filter them. For now, this returns all.
     return this.usersService.findAll({ where: { role: Role.ARTISAN } });
+  }
+
+  // ✅ POST /users/artisans
+  // Used by the "Add Technician" modal to create an account manually
+  @Post('artisans')
+  @UseGuards(AuthGuard('jwt'))
+  createArtisan(@Body() createUserDto: CreateUserDto) {
+    return this.usersService.create({
+      ...createUserDto,
+      role: Role.ARTISAN, // 🔒 Force the role to ARTISAN
+    });
   }
 
   // ==========================================================
@@ -39,7 +54,6 @@ export class UsersController {
   }
 
   // ⚠️ This matches /users/1, /users/2, etc.
-  // If you put /users/artisans below this, it will break.
   @Get(':id')
   @UseGuards(AuthGuard('jwt'))
   findOne(@Param('id') id: string) {
@@ -52,6 +66,10 @@ export class UsersController {
     return this.usersService.update(+id, updateUserDto);
   }
 
+  // ✅ DELETE /users/:id
+  // This calls the service's remove method.
+  // Since we updated the service, this will now perform a "Soft Delete" (Ban)
+  // by setting isActive = false.
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'))
   remove(@Param('id') id: string) {

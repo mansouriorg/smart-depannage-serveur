@@ -10,23 +10,27 @@ export class UsersService {
   constructor(private prisma: PrismaService) {}
 
   // ==========================================================
-  // 1. CREATE (Register)
+  // 1. CREATE (Register / Manual Add)
   // ==========================================================
   async create(data: Prisma.UserCreateInput): Promise<User> {
+    // 1. Check if email exists
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email already in use');
+      throw new ConflictException('Cet email est déjà utilisé.');
     }
 
+    // 2. Hash the password before saving
     const hashedPassword = await argon2.hash(data.password);
 
+    // 3. Save to DB
     return this.prisma.user.create({
       data: {
         ...data,
         password: hashedPassword,
+        isActive: true, // ✅ Explicitly set active on creation
       },
     });
   }
@@ -34,15 +38,13 @@ export class UsersService {
   // ==========================================================
   // 2. FIND ALL (Updated to support Filtering)
   // ==========================================================
-  // ✅ NOW ACCEPTS PARAMETERS (e.g. { where: { role: 'ARTISAN' } })
+  // ✅ Allows finding ALL users OR filtering by Role (e.g. Artisans)
   async findAll(params?: { where?: Prisma.UserWhereInput }): Promise<User[]> {
     const { where } = params || {};
     
     return this.prisma.user.findMany({
       where, 
-      orderBy: { id: 'desc' }, 
-      // Security: We generally shouldn't return passwords, 
-      // but for internal admin use, we often keep the object as is.
+      orderBy: { id: 'desc' }, // Show newest users first
     });
   }
 
@@ -54,11 +56,11 @@ export class UsersService {
       where: { id },
     });
     
-    if (!user) throw new NotFoundException(`User #${id} not found`);
+    if (!user) throw new NotFoundException(`Utilisateur #${id} introuvable`);
     return user;
   }
 
-  // Helper for Auth (Keep this!)
+  // Helper for Auth (Login)
   async findOneByEmail(email: string): Promise<User | null> {
     return this.prisma.user.findUnique({
       where: { email },
@@ -69,7 +71,7 @@ export class UsersService {
   // 4. UPDATE (Used by Controller)
   // ==========================================================
   async update(id: number, data: Prisma.UserUpdateInput): Promise<User> {
-    // Optional: Hash password if it's being updated
+    // If password is being updated, hash it again
     if (data.password && typeof data.password === 'string') {
       data.password = await argon2.hash(data.password);
     }
@@ -81,11 +83,19 @@ export class UsersService {
   }
 
   // ==========================================================
-  // 5. REMOVE (Used by Controller)
+  // 5. REMOVE (Soft Delete / Ban)
   // ==========================================================
   async remove(id: number): Promise<User> {
-    return this.prisma.user.delete({
+    // Check if user exists first
+    await this.findOne(id);
+
+    // ✅ UPDATED: We DO NOT delete the row. We just set isActive = false.
+    // This preserves the history of their interventions.
+    return this.prisma.user.update({
       where: { id },
+      data: {
+        isActive: false, 
+      },
     });
   }
 }
