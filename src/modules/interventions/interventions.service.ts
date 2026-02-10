@@ -107,7 +107,7 @@ export class InterventionsService {
   }
 
   // ==========================================================
-  // 4. FIND AVAILABLE JOBS (Artisans)
+  // 4. FIND AVAILABLE JOBS (For Market Place / Job Board)
   // ==========================================================
   async findAllPending() {
     return this.prisma.intervention.findMany({
@@ -200,5 +200,29 @@ export class InterventionsService {
     }
 
     return updatedIntervention;
+  }
+
+  // ==========================================================
+  // 7. FIND MY ASSIGNED MISSIONS (Artisans) 👷‍♂️
+  // ==========================================================
+  // This is the function you needed!
+  async findByArtisan(artisanId: number) {
+    return this.prisma.intervention.findMany({
+      where: { 
+        artisanId: artisanId, // ✅ Only get missions assigned to THIS technician
+      },
+      include: {
+        // We include Client info so the Technician sees who to call/visit on his screen
+        client: { 
+          select: { 
+            id: true, 
+            name: true, 
+            phone: true,
+            // Add 'address' here if it is on the User model, otherwise rely on intervention.address
+          } 
+        },
+      },
+      orderBy: { createdAt: 'desc' }, // Show newest missions first
+    });
   }
 }
