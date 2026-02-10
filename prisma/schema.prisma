@@ -44,6 +44,8 @@ model User {
   password  String
   name      String?
   phone     String?
+  latitude  Float?   // Latitude GPS (ex: 36.8065)
+  longitude Float?   // Longitude GPS (ex: 10.1815)
   role      Role     @default(CLIENT)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
