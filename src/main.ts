@@ -7,8 +7,6 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // 1. Enable Global Validation
-  // This ensures that all data coming into your endpoints (like requests for plumbers)
-  // follows the rules defined in your DTOs.
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true, // Automatically strip properties that strictly don't belong to the DTO
@@ -20,22 +18,28 @@ async function bootstrap() {
   // 2. Set Global Prefix
   // ⚠️ ATTENTION : Vos routes commencent maintenant par /api
   // Exemple Web : http://localhost:3000/api/auth/login
-  // Exemple Mobile : http://192.168.1.15:3000/api/auth/login
   app.setGlobalPrefix('api');
 
   // 3. Enable CORS (Cross-Origin Resource Sharing)
-  // This allows your React/Next.js admin panel or mobile app to communicate with this API.
+  // 🚨 CORRECTION CRITIQUE ICI :
+  // On ne peut pas mettre '*' ET credentials: true en même temps.
+  // Il faut lister explicitement les adresses de votre Frontend (Next.js).
   app.enableCors({
-    origin: '*', // ⚠️ In production, replace '*' with your actual frontend URL
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true,
+    origin: [
+      'http://localhost:3000', // Backend (parfois utile)
+      'http://localhost:3001', // 👈 Votre Admin Panel Next.js (Port par défaut)
+      'http://localhost:3002', // Au cas où le port 3001 est pris
+      'http://127.0.0.1:3000', 
+      'http://127.0.0.1:3001',
+    ],
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true, // ✅ Maintenant autorisé car on a défini des origines précises
   });
 
   // 4. Start the Server
   const port = process.env.PORT || 3000;
 
-  // ✅ MISE À JOUR CRITIQUE ICI :
-  // L'ajout de '0.0.0.0' permet au serveur d'accepter les connexions venant du réseau Wi-Fi (votre téléphone).
+  // L'ajout de '0.0.0.0' permet au serveur d'accepter les connexions venant du réseau Wi-Fi.
   await app.listen(port, '0.0.0.0');
 
   logger.log(`Application is running on: http://localhost:${port}/api`);
