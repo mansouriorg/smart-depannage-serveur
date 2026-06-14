@@ -46,6 +46,14 @@ lerna-debug.log*
 .temp
 .tmp
 
+# ----------------------------------------------------------------------
+# Fichiers Uploadés (Ne pas pousser les images des utilisateurs)
+# ----------------------------------------------------------------------
+/uploads/*
+!/uploads/.gitkeep
+/uploads/proofs/*
+!/uploads/proofs/.gitkeep
+
 # Runtime data
 pids
 *.pid

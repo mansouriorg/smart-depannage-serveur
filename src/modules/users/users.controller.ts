@@ -7,7 +7,8 @@ import {
   Param, 
   Delete, 
   UseGuards, 
-  Request 
+  Request,
+  ForbiddenException // ✅ Added for Admin security check
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -33,15 +34,19 @@ export class UsersController {
     return this.usersService.findAll({ where: { role: Role.ARTISAN } });
   }
 
-  // ✅ POST /users/artisans
-  // Used by the "Add Technician" modal to create an account manually
-  @Post('artisans')
+  // ✅ POST /users/artisans/create
+  // Used by the Next.js "Add Technician" modal to create an account instantly
+  @Post('artisans/create')
   @UseGuards(AuthGuard('jwt'))
-  createArtisan(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create({
-      ...createUserDto,
-      role: Role.ARTISAN, // 🔒 Force the role to ARTISAN
-    });
+  async createArtisan(
+    @Request() req, 
+    @Body() body: { name: string; email: string; phone: string; specialty?: string }
+  ) {
+    // 🔒 Security Check: Only Admins can create technicians directly bypassing the application process
+    if (req.user.role !== 'ADMIN') {
+      throw new ForbiddenException('Seuls les administrateurs peuvent ajouter des techniciens.');
+    }
+    return this.usersService.createArtisanDirectly(body);
   }
 
   // ✅ PATCH /users/location

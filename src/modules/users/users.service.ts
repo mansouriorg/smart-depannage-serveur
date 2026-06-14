@@ -1,9 +1,15 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import { 
+  Injectable, 
+  ConflictException, 
+  NotFoundException, 
+  BadRequestException // ✅ Added for the new direct creation method
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as argon2 from 'argon2';
 
 // ⚠️ IMPORTANT: Assurez-vous que le chemin vers votre client Prisma est correct
-import { Prisma, User } from '../../../generated/prisma/client'; 
+// ✅ Added 'Role' to the import list
+import { Prisma, User, Role } from '../../../generated/prisma/client'; 
 
 @Injectable()
 export class UsersService {
@@ -100,7 +106,7 @@ export class UsersService {
   }
 
   // ==========================================================
-  // 6. UPDATE LOCATION (GPS) 📍 ✅ NOUVEAU
+  // 6. UPDATE LOCATION (GPS) 📍 
   // ==========================================================
   // Cette fonction est appelée par l'application mobile de l'artisan
   async updateLocation(id: number, latitude: number, longitude: number): Promise<User> {
@@ -112,6 +118,39 @@ export class UsersService {
       data: {
         latitude: latitude,
         longitude: longitude,
+      },
+    });
+  }
+
+  // ==========================================================
+  // 7. CREATE ARTISAN DIRECTLY (Admin Dashboard) ✅ NOUVEAU
+  // ==========================================================
+  async createArtisanDirectly(data: { name: string; email: string; phone: string; specialty?: string }): Promise<User> {
+    // 1. Check if email already exists
+    const existingUser = await this.prisma.user.findUnique({ 
+      where: { email: data.email } 
+    });
+    
+    if (existingUser) {
+      throw new BadRequestException('Cet email est déjà utilisé.');
+    }
+
+    // 2. Generate a secure temporary password
+    const hashedPassword = await argon2.hash('Artisan2026!');
+
+    // 3. Create the user
+    return this.prisma.user.create({
+      data: {
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        password: hashedPassword,
+        role: Role.ARTISAN,
+        isActive: true, // ✅ Set them as active immediately
+        
+        // ⚠️ Note: 'specialty' n'est pas dans votre schéma Prisma 'User' actuel.
+        // Si vous l'ajoutez plus tard au modèle User dans schema.prisma, décommentez la ligne ci-dessous :
+        // specialty: data.specialty, 
       },
     });
   }
