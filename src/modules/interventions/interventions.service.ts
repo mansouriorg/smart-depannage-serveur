@@ -205,7 +205,6 @@ export class InterventionsService {
   // ==========================================================
   // 7. FIND MY ASSIGNED MISSIONS (Artisans) 👷‍♂️
   // ==========================================================
-  // This is the function you needed!
   async findByArtisan(artisanId: number) {
     return this.prisma.intervention.findMany({
       where: { 
@@ -218,11 +217,52 @@ export class InterventionsService {
             id: true, 
             name: true, 
             phone: true,
-            // Add 'address' here if it is on the User model, otherwise rely on intervention.address
           } 
         },
       },
       orderBy: { createdAt: 'desc' }, // Show newest missions first
     });
+  }
+
+  // ==========================================================
+  // 8. 📸 SECURE WORK COMPLETION (Tamper-Proof Photo Upload)
+  // ==========================================================
+  async completeWork(
+    id: number, 
+    proofData: { photoUrl: string; latitude: number; longitude: number; timestamp: Date }
+  ) {
+    // 1. Verify intervention exists
+    const intervention = await this.prisma.intervention.findUnique({ where: { id } });
+    if (!intervention) {
+      throw new NotFoundException(`Intervention #${id} introuvable.`);
+    }
+
+    // 2. Update database with "After" photo metadata and update status
+    const updatedIntervention = await this.prisma.intervention.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        afterPhotoUrl: proofData.photoUrl,
+        afterPhotoLat: proofData.latitude,
+        afterPhotoLng: proofData.longitude,
+        afterPhotoAt: proofData.timestamp,
+      },
+      include: {
+        client: { select: { id: true, name: true, phone: true } },
+      },
+    });
+
+    // 3. 🔔 Real-Time Notification to Admin/Client
+    this.gateway.server.emit(`interventionStatus-${id}`, updatedIntervention);
+
+    // 4. 📱 SMS Notification to Client
+    if (updatedIntervention.client?.phone) {
+      await this.notifications.sendSms(
+        updatedIntervention.client.phone,
+        `Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.`
+      );
+    }
+
+    return updatedIntervention;
   }
 }

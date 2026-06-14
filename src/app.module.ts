@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static'; // ✅ IMPORTED STATIC MODULE
+import { join } from 'path'; // ✅ IMPORTED PATH UTILITY
 
 // 1. Core Modules
 import { AppController } from './app.controller';
@@ -22,10 +24,17 @@ import { ArtisanApplicationsModule } from './modules/artisan-applications/artisa
       envFilePath: '.env', // Path to your environment file
     }),
 
-    // B. Database Connection (Global Prisma Client)
+    // 📸 B. Serve Static Files (For Proof of Work Photos)
+    // This allows your frontend apps to load images via http://localhost:3000/uploads/...
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'uploads'), 
+      serveRoot: '/uploads', 
+    }),
+
+    // C. Database Connection (Global Prisma Client)
     PrismaModule,
 
-    // C. Your Application Features
+    // D. Your Application Features
     AuthModule,
     UsersModule,
     FilesModule,

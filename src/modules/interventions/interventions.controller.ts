@@ -7,8 +7,15 @@ import {
   Param, 
   UseGuards, 
   Request, 
-  ForbiddenException 
+  ForbiddenException,
+  UploadedFile, 
+  UseInterceptors, 
+  BadRequestException
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+
 import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
@@ -89,5 +96,48 @@ export class InterventionsController {
        throw new ForbiddenException('Clients cannot update interventions directly');
     }
     return this.interventionsService.update(+id, updateInterventionDto);
+  }
+
+  // ==========================================================
+  // 6. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
+  // ==========================================================
+  @Post(':id/complete-work')
+  @UseGuards(AuthGuard('jwt'))
+  @UseInterceptors(FileInterceptor('photo', {
+    storage: diskStorage({
+      destination: './uploads/proofs', // Ensure this folder exists at the root of your project!
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = extname(file.originalname);
+        cb(null, `proof-${uniqueSuffix}${ext}`);
+      }
+    })
+  }))
+  async completeWork(
+    @Request() req,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('latitude') latitude: string,
+    @Body('longitude') longitude: string,
+    @Body('timestamp') timestamp: string,
+  ) {
+    // Basic Security: Only Artisans should be submitting proof of work
+    if (req.user.role !== 'ARTISAN') {
+      throw new ForbiddenException('Seuls les artisans peuvent soumettre une preuve de travail.');
+    }
+
+    if (!file) {
+      throw new BadRequestException('La photo sécurisée est obligatoire.');
+    }
+
+    // Convert string inputs from FormData back into proper data types
+    const proofData = {
+      photoUrl: `/uploads/proofs/${file.filename}`,
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      timestamp: new Date(timestamp),
+    };
+
+    return this.interventionsService.completeWork(+id, proofData);
   }
 }
