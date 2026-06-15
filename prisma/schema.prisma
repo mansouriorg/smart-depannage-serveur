@@ -77,19 +77,29 @@ model Intervention {
   artisan     User?       @relation("ArtisanInterventions", fields: [artisanId], references: [id])
   
   // Array of URLs for the initial damage photos uploaded by the Client
-  photos      String[]    
+  photos         String[]  
 
-  // 📸 NEW: Tamper-Proof "Before" Photo Data (Uploaded by Artisan)
+  // Tamper-Proof "Before" Photo Data (Uploaded by Artisan)
   beforePhotoUrl String?
   beforePhotoLat Float?
   beforePhotoLng Float?
   beforePhotoAt  DateTime?
 
-  // 📸 NEW: Tamper-Proof "After" Photo Data (Uploaded by Artisan)
+  // Tamper-Proof "After" Photo Data (Uploaded by Artisan)
   afterPhotoUrl  String?
   afterPhotoLat  Float?
   afterPhotoLng  Float?
   afterPhotoAt   DateTime?
+
+  // NEW: Security & Tracking
+  // Stores the hashed token to secure the public tracking link
+  trackingToken  String   @unique 
+
+  // NEW: User Feedback & Complaints (Filled out after status == COMPLETED)
+  rating         Int?     // 1 to 5 stars
+  isOnTime       Boolean? // Did the artisan arrive when expected?
+  hasIssue       Boolean  @default(false) // True if the user complains
+  feedbackNotes  String?  // Text description of the complaint or praise
 
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt

@@ -10,7 +10,8 @@ import {
   ForbiddenException,
   UploadedFile, 
   UseInterceptors, 
-  BadRequestException
+  BadRequestException,
+  Query // ✅ NEW: Required for extracting the ?token= from the URL
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -19,6 +20,8 @@ import { extname } from 'path';
 import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
+import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
+import { ReportIssueDto } from './dto/report-issue.dto'; // ✅ NEW: Import report issue DTO
 import { AuthGuard } from '@nestjs/passport';
 
 @Controller('interventions')
@@ -139,5 +142,52 @@ export class InterventionsController {
     };
 
     return this.interventionsService.completeWork(+id, proofData);
+  }
+
+  // ==========================================================
+  // 7. 🔐 PUBLIC SECURE TRACKING: Read Status
+  // ==========================================================
+  // No @UseGuards here! The token provides the security.
+  @Get('track/:id')
+  async trackIntervention(
+    @Param('id') id: string,
+    @Query('token') token: string
+  ) {
+    if (!token) {
+      throw new BadRequestException("Le token de suivi est obligatoire.");
+    }
+    return this.interventionsService.findByTrackingToken(+id, token);
+  }
+
+  // ==========================================================
+  // 8. ⭐ PUBLIC SECURE TRACKING: Submit Feedback
+  // ==========================================================
+  // No @UseGuards here! The token provides the security.
+  @Patch('track/:id/feedback')
+  async submitFeedback(
+    @Param('id') id: string,
+    @Query('token') token: string,
+    @Body() submitFeedbackDto: SubmitFeedbackDto
+  ) {
+    if (!token) {
+      throw new BadRequestException("Le token de suivi est obligatoire.");
+    }
+    return this.interventionsService.submitFeedback(+id, token, submitFeedbackDto);
+  }
+
+  // ==========================================================
+  // 9. 🚨 PUBLIC SECURE TRACKING: Report an active issue
+  // ==========================================================
+  // ✅ NEW: Added the endpoint to handle active issue reporting
+  @Post('track/:id/issue')
+  async reportActiveIssue(
+    @Param('id') id: string,
+    @Query('token') token: string,
+    @Body() reportIssueDto: ReportIssueDto
+  ) {
+    if (!token) {
+      throw new BadRequestException("Le token de suivi est obligatoire.");
+    }
+    return this.interventionsService.reportActiveIssue(+id, token, reportIssueDto.issueDescription);
   }
 }

@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsString, IsOptional } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsString, IsOptional, IsArray } from 'class-validator';
 
 // ✅ Import from your custom generated location
 // Adjust the number of '../' if your file is located deeper or shallower
@@ -21,14 +21,16 @@ export class CreateInterventionDto {
   @IsNotEmpty()
   address: string;
 
-  // 4. Photos: Optional array of URLs
+  // 4. Photos: Optional array of URLs uploaded by the client
   @IsOptional()
+  @IsArray()
   @IsString({ each: true })
   photos?: string[];
 
   // ==========================================================
   // 5. GUEST CONTACT INFO (Optional)
-  // These are used if the user is NOT logged in
+  // These are used if the user is NOT logged in, allowing you 
+  // to dynamically create a Client record in your Service layer
   // ==========================================================
   
   @IsOptional()

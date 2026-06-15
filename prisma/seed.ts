@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Role, ServiceType } from '../generated/prisma/client'; // Your custom path
 import * as argon2 from 'argon2';
+import * as crypto from 'crypto'; // ✅ NEW: Required for generating the dummy tracking token
 
 // 3. Setup the Database Adapter (REQUIRED for Prisma 7 No-Rust Engine)
 const connectionString = process.env.DATABASE_URL;
@@ -66,17 +67,24 @@ async function main() {
   console.log(`Created Artisan: ${plumber.email}`);
 
   // 8. Create a Dummy Request (Intervention)
-  // Ensure 'intervention' model exists in your schema.prisma
+  
+  // ✅ NEW: Generate a secure tracking token to satisfy the new schema requirements
+  const dummyRawToken = crypto.randomBytes(32).toString('hex');
+  const dummyHashedToken = crypto.createHash('sha256').update(dummyRawToken).digest('hex');
+
   const intervention = await prisma.intervention.create({
     data: {
       description: "Fuite d'eau dans la cuisine",
       address: '15 Rue de Paris, Tunis',
       serviceType: ServiceType.PLOMBIER,
       status: 'PENDING',
+      trackingToken: dummyHashedToken, // ✅ NEW: Insert the hashed token here
       client: { connect: { id: client.id } },
     },
   });
+  
   console.log(`Created Intervention: #${intervention.id}`);
+  console.log(`Test Tracking Link: http://localhost:3000/demande/status?id=${intervention.id}&token=${dummyRawToken}`);
 }
 
 main()

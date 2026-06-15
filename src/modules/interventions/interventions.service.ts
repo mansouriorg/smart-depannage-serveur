@@ -2,9 +2,11 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
+import { SubmitFeedbackDto } from './dto/submit-feedback.dto'; // ✅ NEW: Import feedback DTO
 import { InterventionsGateway } from './interventions.gateway'; 
 import { NotificationsService } from '../notifications/notifications.service';
 import * as argon2 from 'argon2';
+import * as crypto from 'crypto'; // ✅ NEW: Native Node crypto for secure tokens
 
 // ⚠️ Import 'Role' from your custom generated path
 import { Role } from '../../../generated/prisma/client';
@@ -55,12 +57,18 @@ export class InterventionsService {
 
     const { contactName, contactPhone, ...interventionData } = createInterventionDto;
 
+    // B. 🔒 NEW: Generate Tracking Token
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const trackingTokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    // C. Create Intervention
     const newIntervention = await this.prisma.intervention.create({
       data: {
         ...interventionData,
         client: {
           connect: { id: finalClientId },
         },
+        trackingToken: trackingTokenHash, // Store only the hash
         status: 'PENDING',
       },
       include: {
@@ -77,7 +85,8 @@ export class InterventionsService {
       `Alerte: Nouvelle demande (${newIntervention.serviceType}) à ${newIntervention.address}`
     );
 
-    return newIntervention;
+    // F. ✅ NEW: Return the raw token ONLY ONCE so the controller can set the cookie
+    return { ...newIntervention, rawTrackingToken: rawToken };
   }
 
   // ==========================================================
@@ -262,6 +271,101 @@ export class InterventionsService {
         `Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.`
       );
     }
+
+    return updatedIntervention;
+  }
+
+  // ==========================================================
+  // 9. 🔐 SECURE PUBLIC TRACKING (Next.js Link)
+  // ==========================================================
+  async findByTrackingToken(id: number, rawToken: string) {
+    // Re-hash the raw token provided by the cookie
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+    
+    const intervention = await this.prisma.intervention.findFirst({
+      where: { 
+        id, 
+        trackingToken: hashedToken 
+      },
+      include: {
+        artisan: {
+          select: { name: true, phone: true } // Expose safe data only
+        }
+      }
+    });
+
+    if (!intervention) {
+      throw new NotFoundException("Demande introuvable ou token invalide");
+    }
+
+    return intervention;
+  }
+
+  // ==========================================================
+  // 10. ⭐ SUBMIT FEEDBACK (Client)
+  // ==========================================================
+  async submitFeedback(id: number, rawToken: string, dto: SubmitFeedbackDto) {
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    // Verify token matches AND the job is actually finished
+    const intervention = await this.prisma.intervention.findFirst({
+      where: { id, trackingToken: hashedToken, status: 'COMPLETED' }
+    });
+
+    if (!intervention) {
+      throw new NotFoundException("Action impossible ou demande introuvable");
+    }
+
+    return this.prisma.intervention.update({
+      where: { id },
+      data: {
+        rating: dto.rating,
+        isOnTime: dto.isOnTime,
+        hasIssue: dto.hasIssue ?? false,
+        feedbackNotes: dto.feedbackNotes,
+      }
+    });
+  }
+
+  // ==========================================================
+  // 11. 🚨 REPORT ISSUE DURING INTERVENTION
+  // ==========================================================
+  async reportActiveIssue(id: number, rawToken: string, issueDescription: string) {
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    // Ensure the intervention belongs to this token AND is currently active
+    const intervention = await this.prisma.intervention.findFirst({
+      where: { 
+        id, 
+        trackingToken: hashedToken, 
+        status: { in: ['ACCEPTED', 'IN_PROGRESS'] } // Only allow during these states
+      }
+    });
+
+    if (!intervention) {
+      throw new NotFoundException("Action impossible ou demande introuvable");
+    }
+
+    // Append the new issue to any existing feedback notes with a timestamp
+    const timestamp = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    const newNote = `[Signalement à ${timestamp}] : ${issueDescription}`;
+    const updatedNotes = intervention.feedbackNotes 
+      ? `${intervention.feedbackNotes}\n${newNote}` 
+      : newNote;
+
+    const updatedIntervention = await this.prisma.intervention.update({
+      where: { id },
+      data: {
+        hasIssue: true, // Flag the issue for the Admin dashboard
+        feedbackNotes: updatedNotes,
+      }
+    });
+
+    // 🔔 Real-Time Notification to Admin
+    this.gateway.server.emit('interventionIssue', {
+      interventionId: id,
+      issue: issueDescription
+    });
 
     return updatedIntervention;
   }
