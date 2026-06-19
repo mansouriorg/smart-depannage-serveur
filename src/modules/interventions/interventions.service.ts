@@ -2,11 +2,11 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
-import { SubmitFeedbackDto } from './dto/submit-feedback.dto'; // ✅ NEW: Import feedback DTO
+import { SubmitFeedbackDto } from './dto/submit-feedback.dto'; 
 import { InterventionsGateway } from './interventions.gateway'; 
 import { NotificationsService } from '../notifications/notifications.service';
 import * as argon2 from 'argon2';
-import * as crypto from 'crypto'; // ✅ NEW: Native Node crypto for secure tokens
+import * as crypto from 'crypto'; 
 
 // ⚠️ Import 'Role' from your custom generated path
 import { Role } from '../../../generated/prisma/client';
@@ -368,5 +368,49 @@ export class InterventionsService {
     });
 
     return updatedIntervention;
+  }
+
+  // ==========================================================
+  // 12. 📊 STATISTIQUES DU DASHBOARD (Admin)
+  // ==========================================================
+  async getDashboardStats() {
+    // 1. Calculs optimisés (ne retourne qu'un chiffre, très rapide)
+    const total = await this.prisma.intervention.count();
+    
+    const pending = await this.prisma.intervention.count({ 
+      where: { status: 'PENDING' } 
+    });
+    
+    const active = await this.prisma.intervention.count({ 
+      where: { status: { in: ['ACCEPTED', 'IN_PROGRESS'] } } 
+    });
+    
+    const completed = await this.prisma.intervention.count({ 
+      where: { status: 'COMPLETED' } 
+    });
+
+    const resolutionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    // 2. Récupérer uniquement les 4 interventions les plus récentes
+    const recentActivity = await this.prisma.intervention.findMany({
+      take: 4,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        client: { select: { name: true, phone: true } },
+        artisan: { select: { name: true, phone: true } },
+      }
+    });
+
+    // 3. Retourner l'objet formaté
+    return {
+      kpis: {
+        total,
+        pending,
+        active,
+        completed,
+        resolutionRate
+      },
+      recentActivity
+    };
   }
 }

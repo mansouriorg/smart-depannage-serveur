@@ -11,7 +11,7 @@ import {
   UploadedFile, 
   UseInterceptors, 
   BadRequestException,
-  Query // ✅ NEW: Required for extracting the ?token= from the URL
+  Query 
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -21,7 +21,7 @@ import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
 import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
-import { ReportIssueDto } from './dto/report-issue.dto'; // ✅ NEW: Import report issue DTO
+import { ReportIssueDto } from './dto/report-issue.dto'; 
 import { AuthGuard } from '@nestjs/passport';
 
 @Controller('interventions')
@@ -77,6 +77,19 @@ export class InterventionsController {
     return this.interventionsService.findByUser(req.user.userId);
   }
 
+  // ==========================================================
+  // 5. 📊 NEW ROUTE: Dashboard Stats (ADMIN)
+  // ==========================================================
+  // ⚠️ MUST be placed BEFORE @Get(':id') to avoid routing conflicts
+  @Get('dashboard/stats')
+  @UseGuards(AuthGuard('jwt'))
+  getDashboardStats(@Request() req) {
+    if (req.user.role !== 'ADMIN') {
+      throw new ForbiddenException('Seuls les administrateurs ont accès aux statistiques.');
+    }
+    return this.interventionsService.getDashboardStats();
+  }
+
   // GET /interventions/:id (Get details)
   @Get(':id')
   @UseGuards(AuthGuard('jwt'))
@@ -85,7 +98,7 @@ export class InterventionsController {
   }
 
   // ==========================================================
-  // 5. UPDATE ROUTE: (Assign Artisan / Change Status)
+  // 6. UPDATE ROUTE: (Assign Artisan / Change Status)
   // ==========================================================
   @Patch(':id')
   @UseGuards(AuthGuard('jwt'))
@@ -102,7 +115,7 @@ export class InterventionsController {
   }
 
   // ==========================================================
-  // 6. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
+  // 7. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
   // ==========================================================
   @Post(':id/complete-work')
   @UseGuards(AuthGuard('jwt'))
@@ -145,7 +158,7 @@ export class InterventionsController {
   }
 
   // ==========================================================
-  // 7. 🔐 PUBLIC SECURE TRACKING: Read Status
+  // 8. 🔐 PUBLIC SECURE TRACKING: Read Status
   // ==========================================================
   // No @UseGuards here! The token provides the security.
   @Get('track/:id')
@@ -160,7 +173,7 @@ export class InterventionsController {
   }
 
   // ==========================================================
-  // 8. ⭐ PUBLIC SECURE TRACKING: Submit Feedback
+  // 9. ⭐ PUBLIC SECURE TRACKING: Submit Feedback
   // ==========================================================
   // No @UseGuards here! The token provides the security.
   @Patch('track/:id/feedback')
@@ -176,9 +189,8 @@ export class InterventionsController {
   }
 
   // ==========================================================
-  // 9. 🚨 PUBLIC SECURE TRACKING: Report an active issue
+  // 10. 🚨 PUBLIC SECURE TRACKING: Report an active issue
   // ==========================================================
-  // ✅ NEW: Added the endpoint to handle active issue reporting
   @Post('track/:id/issue')
   async reportActiveIssue(
     @Param('id') id: string,
