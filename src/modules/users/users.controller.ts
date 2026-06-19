@@ -26,6 +26,32 @@ export class UsersController {
   // 1. SPECIFIC ROUTES (Must come BEFORE :id)
   // ==========================================================
   
+  // ✅ GET /users/profile
+  // Used to load the logged-in user's settings (Admin Dashboard)
+  @Get('profile')
+  @UseGuards(AuthGuard('jwt'))
+  getProfile(@Request() req) {
+    return this.usersService.getProfile(req.user.userId);
+  }
+
+  // ✅ PATCH /users/profile
+  // Used to save the logged-in user's settings (Admin Dashboard)
+  @Patch('profile')
+  @UseGuards(AuthGuard('jwt'))
+  updateProfile(
+    @Request() req, 
+    @Body() updateData: { 
+      name?: string; 
+      email?: string; 
+      phone?: string; 
+      address?: string; 
+      taxId?: string; 
+      website?: string 
+    }
+  ) {
+    return this.usersService.updateProfile(req.user.userId, updateData);
+  }
+
   // ✅ GET /users/artisans
   // Used to populate the dropdown & list in the Admin Dashboard
   @Get('artisans')

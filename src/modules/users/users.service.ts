@@ -2,13 +2,12 @@ import {
   Injectable, 
   ConflictException, 
   NotFoundException, 
-  BadRequestException // ✅ Added for the new direct creation method
+  BadRequestException 
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as argon2 from 'argon2';
 
 // ⚠️ IMPORTANT: Assurez-vous que le chemin vers votre client Prisma est correct
-// ✅ Added 'Role' to the import list
 import { Prisma, User, Role } from '../../../generated/prisma/client'; 
 
 @Injectable()
@@ -123,7 +122,7 @@ export class UsersService {
   }
 
   // ==========================================================
-  // 7. CREATE ARTISAN DIRECTLY (Admin Dashboard) ✅ NOUVEAU
+  // 7. CREATE ARTISAN DIRECTLY (Admin Dashboard)
   // ==========================================================
   async createArtisanDirectly(data: { name: string; email: string; phone: string; specialty?: string }): Promise<User> {
     // 1. Check if email already exists
@@ -146,12 +145,56 @@ export class UsersService {
         phone: data.phone,
         password: hashedPassword,
         role: Role.ARTISAN,
-        isActive: true, // ✅ Set them as active immediately
-        
-        // ⚠️ Note: 'specialty' n'est pas dans votre schéma Prisma 'User' actuel.
-        // Si vous l'ajoutez plus tard au modèle User dans schema.prisma, décommentez la ligne ci-dessous :
-        // specialty: data.specialty, 
+        isActive: true, 
       },
+    });
+  }
+
+  // ==========================================================
+  // 8. 👤 GET PROFILE (Admin / User Settings)
+  // ==========================================================
+  async getProfile(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { 
+        id: true, 
+        name: true, 
+        email: true, 
+        phone: true, 
+        role: true,
+        address: true, // ✅ Nouveaux champs inclus
+        taxId: true,
+        website: true
+      } 
+    });
+    
+    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    return user;
+  }
+
+  // ==========================================================
+  // 9. ✏️ UPDATE PROFILE (Admin / User Settings)
+  // ==========================================================
+  async updateProfile(userId: number, updateData: { 
+    name?: string; 
+    email?: string; 
+    phone?: string; 
+    address?: string; 
+    taxId?: string; 
+    website?: string 
+  }) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      select: { 
+        id: true, 
+        name: true, 
+        email: true, 
+        phone: true,
+        address: true,
+        taxId: true,
+        website: true
+      } 
     });
   }
 }

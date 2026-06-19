@@ -50,6 +50,12 @@ model User {
   password  String
   name      String?
   phone     String?
+  
+  // ✅ NOUVEAUX CHAMPS (Ajoutés pour la gestion du profil/entreprise)
+  address   String?  // Adresse du siège ou domicile
+  taxId     String?  // Matricule Fiscale
+  website   String?  // Site Web
+
   latitude  Float?   // Latitude GPS (ex: 36.8065)
   longitude Float?   // Longitude GPS (ex: 10.1815)
   role      Role     @default(CLIENT)
