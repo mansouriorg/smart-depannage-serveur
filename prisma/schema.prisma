@@ -13,12 +13,18 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+// ==========================================================
+// Enums
+// ==========================================================
 
-// Enums for your specific business logic
 enum Role {
   CLIENT
   ARTISAN
   ADMIN
+  SUPER_ADMIN
+  SUPPORT
+  DISPATCHER
+  ACCOUNTANT
 }
 
 enum ServiceType {
@@ -43,29 +49,80 @@ enum ApplicationStatus {
   REJECTED
 }
 
+enum AuthTokenType {
+  REFRESH
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+}
+
+// ==========================================================
 // Models
+// ==========================================================
+
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
+  id        Int     @id @default(autoincrement())
+  email     String  @unique
   password  String
   name      String?
   phone     String?
-  
-  // ✅ NOUVEAUX CHAMPS (Ajoutés pour la gestion du profil/entreprise)
-  address   String?  // Adresse du siège ou domicile
-  taxId     String?  // Matricule Fiscale
-  website   String?  // Site Web
 
-  latitude  Float?   // Latitude GPS (ex: 36.8065)
-  longitude Float?   // Longitude GPS (ex: 10.1815)
-  role      Role     @default(CLIENT)
+  // Profile / company information
+  address   String?
+  taxId     String?
+  website   String?
+
+  // GPS location, useful especially for artisans
+  latitude  Float?
+  longitude Float?
+
+  // Role and account status
+  role      Role    @default(CLIENT)
+  isActive  Boolean @default(true)
+
+  // Soft delete / account deactivation
+  deletedAt DateTime?
+
+  // Verification fields
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+
+  // Security tracking
+  passwordChangedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  isActive  Boolean  @default(true)
-  
+
   // Relations
   clientInterventions  Intervention[] @relation("ClientInterventions")
   artisanInterventions Intervention[] @relation("ArtisanInterventions")
+
+  authTokens AuthToken[]
+
+  @@index([role])
+  @@index([isActive])
+  @@index([deletedAt])
+  @@index([phone])
+}
+
+model AuthToken {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type      AuthTokenType
+  tokenHash String        @unique
+
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, type])
+  @@index([type])
+  @@index([expiresAt])
 }
 
 model Intervention {
@@ -74,53 +131,64 @@ model Intervention {
   address     String
   serviceType ServiceType
   status      Status      @default(PENDING)
-  
-  // Relations
-  clientId    Int
-  client      User        @relation("ClientInterventions", fields: [clientId], references: [id])
-  
-  artisanId   Int?
-  artisan     User?       @relation("ArtisanInterventions", fields: [artisanId], references: [id])
-  
-  // Array of URLs for the initial damage photos uploaded by the Client
-  photos         String[]  
 
-  // Tamper-Proof "Before" Photo Data (Uploaded by Artisan)
+  // Client relation
+  clientId Int
+  client   User @relation("ClientInterventions", fields: [clientId], references: [id])
+
+  // Artisan relation
+  artisanId Int?
+  artisan   User? @relation("ArtisanInterventions", fields: [artisanId], references: [id])
+
+  // Initial damage photos uploaded by the client
+  photos String[]
+
+  // Tamper-proof before photo data uploaded by artisan
   beforePhotoUrl String?
   beforePhotoLat Float?
   beforePhotoLng Float?
   beforePhotoAt  DateTime?
 
-  // Tamper-Proof "After" Photo Data (Uploaded by Artisan)
-  afterPhotoUrl  String?
-  afterPhotoLat  Float?
-  afterPhotoLng  Float?
-  afterPhotoAt   DateTime?
+  // Tamper-proof after photo data uploaded by artisan
+  afterPhotoUrl String?
+  afterPhotoLat Float?
+  afterPhotoLng Float?
+  afterPhotoAt  DateTime?
 
-  // NEW: Security & Tracking
-  // Stores the hashed token to secure the public tracking link
-  trackingToken  String   @unique 
+  // Public tracking security
+  // Store only the hashed token, never the raw token
+  trackingToken String @unique
 
-  // NEW: User Feedback & Complaints (Filled out after status == COMPLETED)
-  rating         Int?     // 1 to 5 stars
-  isOnTime       Boolean? // Did the artisan arrive when expected?
-  hasIssue       Boolean  @default(false) // True if the user complains
-  feedbackNotes  String?  // Text description of the complaint or praise
+  // User feedback and complaint fields
+  rating        Int?
+  isOnTime      Boolean?
+  hasIssue      Boolean @default(false)
+  feedbackNotes String?
 
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([artisanId])
+  @@index([status])
+  @@index([serviceType])
+  @@index([createdAt])
 }
 
 model ArtisanApplication {
-  id          Int               @id @default(autoincrement())
+  id          Int    @id @default(autoincrement())
   name        String
-  email       String            @unique
+  email       String @unique
   phone       String
-  specialty   String            // e.g. "Plombier", "Menuisier"
-  experience  Int               // Years of experience
-  description String?           // Optional "About me"
-  
-  status      ApplicationStatus @default(PENDING)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  specialty   String
+  experience  Int
+  description String?
+
+  status ApplicationStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
 }

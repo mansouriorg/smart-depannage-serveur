@@ -1,24 +1,59 @@
-import { 
-  Injectable, 
-  ConflictException, 
-  NotFoundException, 
-  BadRequestException 
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as argon2 from 'argon2';
+import * as crypto from 'crypto';
 
-// ⚠️ IMPORTANT: Assurez-vous que le chemin vers votre client Prisma est correct
-import { Prisma, User, Role } from '../../../generated/prisma/client'; 
+import {
+  Prisma,
+  User,
+  Role,
+  AuthTokenType,
+} from '../../../generated/prisma/client';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================================
-  // 1. CREATE (Register / Manual Add)
+  // SAFE SELECT — never return password to frontend
   // ==========================================================
+
+  private readonly safeUserSelect = {
+    id: true,
+    email: true,
+    name: true,
+    phone: true,
+    role: true,
+
+    address: true,
+    taxId: true,
+    website: true,
+
+    latitude: true,
+    longitude: true,
+
+    isActive: true,
+    deletedAt: true,
+
+    emailVerifiedAt: true,
+    phoneVerifiedAt: true,
+    passwordChangedAt: true,
+
+    createdAt: true,
+    updatedAt: true,
+  };
+
+  // ==========================================================
+  // 1. CREATE USER
+  // Used by register / admin creation
+  // ==========================================================
+
   async create(data: Prisma.UserCreateInput): Promise<User> {
-    // 1. Check if email exists
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -27,45 +62,98 @@ export class UsersService {
       throw new ConflictException('Cet email est déjà utilisé.');
     }
 
-    // 2. Hash the password before saving
+    if (!data.password || typeof data.password !== 'string') {
+      throw new BadRequestException('Le mot de passe est obligatoire.');
+    }
+
     const hashedPassword = await argon2.hash(data.password);
 
-    // 3. Save to DB
     return this.prisma.user.create({
       data: {
         ...data,
         password: hashedPassword,
-        isActive: true, // ✅ Explicitly set active on creation
+        isActive: true,
       },
     });
   }
 
   // ==========================================================
-  // 2. FIND ALL (Updated to support Filtering)
+  // 2. CREATE USER BY ADMIN
+  // Returns safe user without password
   // ==========================================================
-  // ✅ Allows finding ALL users OR filtering by Role (e.g. Artisans)
-  async findAll(params?: { where?: Prisma.UserWhereInput }): Promise<User[]> {
-    const { where } = params || {};
-    
-    return this.prisma.user.findMany({
-      where, 
-      orderBy: { id: 'desc' }, // Show newest users first
+
+  async createByAdmin(data: Prisma.UserCreateInput) {
+    const user = await this.create(data);
+
+    return this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: this.safeUserSelect,
     });
   }
 
   // ==========================================================
-  // 3. FIND ONE (Used by Controller & Auth)
+  // 3. FIND ALL USERS
+  // Supports filters + pagination
   // ==========================================================
-  async findOne(id: number): Promise<User | null> {
+
+  async findAll(params?: {
+    where?: Prisma.UserWhereInput;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params?.page || 1;
+    const limit = params?.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = params?.where || {};
+
+    const [data, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        select: this.safeUserSelect,
+        orderBy: { id: 'desc' },
+        skip,
+        take: limit,
+      }),
+
+      this.prisma.user.count({
+        where,
+      }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // ==========================================================
+  // 4. FIND ONE FULL USER
+  // Used internally by AuthService because it needs password hash
+  // ==========================================================
+
+  async findOne(id: number): Promise<User> {
     const user = await this.prisma.user.findUnique({
       where: { id },
     });
-    
-    if (!user) throw new NotFoundException(`Utilisateur #${id} introuvable`);
+
+    if (!user) {
+      throw new NotFoundException(`Utilisateur #${id} introuvable.`);
+    }
+
     return user;
   }
 
-  // Helper for Auth (Login)
+  // ==========================================================
+  // 5. FIND ONE BY EMAIL
+  // Used by login / forgot password
+  // ==========================================================
+
   async findOneByEmail(email: string): Promise<User | null> {
     return this.prisma.user.findUnique({
       where: { email },
@@ -73,71 +161,236 @@ export class UsersService {
   }
 
   // ==========================================================
-  // 4. UPDATE (Used by Controller)
+  // 6. FIND ACTIVE USER BY ID
+  // Used by JwtStrategy
   // ==========================================================
-  async update(id: number, data: Prisma.UserUpdateInput): Promise<User> {
-    // If password is being updated, hash it again
-    if (data.password && typeof data.password === 'string') {
-      data.password = await argon2.hash(data.password);
+
+  async findActiveById(id: number) {
+    return this.prisma.user.findFirst({
+      where: {
+        id,
+        isActive: true,
+        deletedAt: null,
+      },
+      select: this.safeUserSelect,
+    });
+  }
+
+  // ==========================================================
+  // 7. GET SAFE PROFILE
+  // Used by /users/me and admin user detail
+  // ==========================================================
+
+  async getProfile(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: this.safeUserSelect,
+    });
+
+    if (!user || user.deletedAt) {
+      throw new NotFoundException('Utilisateur introuvable.');
+    }
+
+    return user;
+  }
+
+  // ==========================================================
+  // 8. UPDATE PROFILE
+  // Used by user settings / profile page
+  // ==========================================================
+
+  async updateProfile(
+    userId: number,
+    updateData: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      address?: string;
+      taxId?: string;
+      website?: string;
+    },
+  ) {
+    const currentUser = await this.findOne(userId);
+
+    if (currentUser.deletedAt) {
+      throw new NotFoundException('Utilisateur introuvable.');
+    }
+
+    if (updateData.email && updateData.email !== currentUser.email) {
+      const existingEmail = await this.prisma.user.findUnique({
+        where: { email: updateData.email },
+      });
+
+      if (existingEmail) {
+        throw new ConflictException('Cet email est déjà utilisé.');
+      }
+    }
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...updateData,
+
+        // If email changed, force email verification again
+        emailVerifiedAt:
+          updateData.email && updateData.email !== currentUser.email
+            ? null
+            : currentUser.emailVerifiedAt,
+
+        // If phone changed, force phone verification again
+        phoneVerifiedAt:
+          updateData.phone && updateData.phone !== currentUser.phone
+            ? null
+            : currentUser.phoneVerifiedAt,
+      },
+      select: this.safeUserSelect,
+    });
+  }
+
+  // ==========================================================
+  // 9. ADMIN UPDATE USER
+  // Used by admin dashboard
+  // ==========================================================
+
+  async updateByAdmin(
+    id: number,
+    data: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      role?: Role;
+      isActive?: boolean;
+      address?: string;
+      taxId?: string;
+      website?: string;
+    },
+  ) {
+    await this.findOne(id);
+
+    if (data.email) {
+      const existingEmail = await this.prisma.user.findFirst({
+        where: {
+          email: data.email,
+          NOT: { id },
+        },
+      });
+
+      if (existingEmail) {
+        throw new ConflictException('Cet email est déjà utilisé.');
+      }
     }
 
     return this.prisma.user.update({
       where: { id },
       data,
+      select: this.safeUserSelect,
     });
   }
 
   // ==========================================================
-  // 5. REMOVE (Soft Delete / Ban)
+  // 10. UPDATE PASSWORD
+  // Used if needed outside AuthService
   // ==========================================================
-  async remove(id: number): Promise<User> {
-    // Check if user exists first
+
+  async updatePassword(id: number, newPassword: string): Promise<User> {
     await this.findOne(id);
 
-    // ✅ UPDATED: We DO NOT delete the row. We just set isActive = false.
-    // This preserves the history of their interventions.
+    const hashedPassword = await argon2.hash(newPassword);
+
     return this.prisma.user.update({
       where: { id },
       data: {
-        isActive: false, 
+        password: hashedPassword,
+        passwordChangedAt: new Date(),
       },
     });
   }
 
   // ==========================================================
-  // 6. UPDATE LOCATION (GPS) 📍 
+  // 11. UPDATE LOCATION GPS
+  // Used by artisan mobile app
   // ==========================================================
-  // Cette fonction est appelée par l'application mobile de l'artisan
-  async updateLocation(id: number, latitude: number, longitude: number): Promise<User> {
-    // On vérifie d'abord que l'utilisateur existe
+
+  async updateLocation(id: number, latitude: number, longitude: number) {
     await this.findOne(id);
 
     return this.prisma.user.update({
       where: { id },
       data: {
-        latitude: latitude,
-        longitude: longitude,
+        latitude,
+        longitude,
       },
+      select: this.safeUserSelect,
     });
   }
 
   // ==========================================================
-  // 7. CREATE ARTISAN DIRECTLY (Admin Dashboard)
+  // 12. DEACTIVATE ACCOUNT
+  // Soft delete + revoke refresh tokens
   // ==========================================================
-  async createArtisanDirectly(data: { name: string; email: string; phone: string; specialty?: string }): Promise<User> {
-    // 1. Check if email already exists
-    const existingUser = await this.prisma.user.findUnique({ 
-      where: { email: data.email } 
+
+  async deactivateAccount(id: number) {
+    await this.findOne(id);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id },
+        data: {
+          isActive: false,
+          deletedAt: new Date(),
+        },
+      }),
+
+      this.prisma.authToken.updateMany({
+        where: {
+          userId: id,
+          type: AuthTokenType.REFRESH,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      }),
+    ]);
+
+    return {
+      message: 'Compte désactivé avec succès.',
+    };
+  }
+
+  // ==========================================================
+  // 13. REMOVE USER
+  // Alias for deactivateAccount
+  // ==========================================================
+
+  async remove(id: number) {
+    return this.deactivateAccount(id);
+  }
+
+  // ==========================================================
+  // 14. CREATE ARTISAN DIRECTLY
+  // Used by admin dashboard
+  // Important: no fixed public password like "Artisan2026!"
+  // AuthService should sendPasswordSetupEmail(user.id) after creation
+  // ==========================================================
+
+  async createArtisanDirectly(data: {
+    name: string;
+    email: string;
+    phone: string;
+    specialty?: string;
+  }): Promise<User> {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: data.email },
     });
-    
+
     if (existingUser) {
       throw new BadRequestException('Cet email est déjà utilisé.');
     }
 
-    // 2. Generate a secure temporary password
-    const hashedPassword = await argon2.hash('Artisan2026!');
+    const temporaryPassword = this.generateTemporaryPassword();
+    const hashedPassword = await argon2.hash(temporaryPassword);
 
-    // 3. Create the user
     return this.prisma.user.create({
       data: {
         name: data.name,
@@ -145,56 +398,81 @@ export class UsersService {
         phone: data.phone,
         password: hashedPassword,
         role: Role.ARTISAN,
-        isActive: true, 
+        isActive: true,
       },
     });
   }
 
   // ==========================================================
-  // 8. 👤 GET PROFILE (Admin / User Settings)
+  // 15. CREATE STAFF USER
+  // Used later for SUPPORT / DISPATCHER / ACCOUNTANT / ADMIN
+  // AuthService should sendPasswordSetupEmail(user.id) after creation
   // ==========================================================
-  async getProfile(userId: number) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { 
-        id: true, 
-        name: true, 
-        email: true, 
-        phone: true, 
-        role: true,
-        address: true, // ✅ Nouveaux champs inclus
-        taxId: true,
-        website: true
-      } 
+
+  async createStaffUser(data: {
+    name: string;
+    email: string;
+    phone?: string;
+    role: Role;
+  }): Promise<User> {
+    const allowedStaffRoles: Role[] = [
+      Role.ADMIN,
+      Role.SUPER_ADMIN,
+      Role.SUPPORT,
+      Role.DISPATCHER,
+      Role.ACCOUNTANT,
+    ];
+
+    if (!allowedStaffRoles.includes(data.role)) {
+      throw new BadRequestException('Rôle staff invalide.');
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: data.email },
     });
-    
-    if (!user) throw new NotFoundException('Utilisateur introuvable');
-    return user;
+
+    if (existingUser) {
+      throw new BadRequestException('Cet email est déjà utilisé.');
+    }
+
+    const temporaryPassword = this.generateTemporaryPassword();
+    const hashedPassword = await argon2.hash(temporaryPassword);
+
+    return this.prisma.user.create({
+      data: {
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        password: hashedPassword,
+        role: data.role,
+        isActive: true,
+      },
+    });
   }
 
   // ==========================================================
-  // 9. ✏️ UPDATE PROFILE (Admin / User Settings)
+  // 16. REACTIVATE USER
+  // Used by admin dashboard
   // ==========================================================
-  async updateProfile(userId: number, updateData: { 
-    name?: string; 
-    email?: string; 
-    phone?: string; 
-    address?: string; 
-    taxId?: string; 
-    website?: string 
-  }) {
+
+  async reactivateUser(id: number) {
+    await this.findOne(id);
+
     return this.prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-      select: { 
-        id: true, 
-        name: true, 
-        email: true, 
-        phone: true,
-        address: true,
-        taxId: true,
-        website: true
-      } 
+      where: { id },
+      data: {
+        isActive: true,
+        deletedAt: null,
+      },
+      select: this.safeUserSelect,
     });
+  }
+
+  // ==========================================================
+  // 17. PRIVATE HELPER
+  // ==========================================================
+
+  private generateTemporaryPassword(): string {
+    return `Temp-${crypto.randomBytes(16).toString('hex')}A1`;
   }
 }

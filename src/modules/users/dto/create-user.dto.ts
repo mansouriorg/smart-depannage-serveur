@@ -1,24 +1,48 @@
-import { IsEmail, IsEnum, IsNotEmpty, IsString, MinLength } from 'class-validator';
-// ⚠️ IMPORTANT: Import Role from your custom generated folder
-// Adjust the number of '../' depending on where this file is located
+import {
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  MinLength,
+  Matches,
+} from 'class-validator';
 import { Role } from '../../../../generated/prisma/client';
 
 export class CreateUserDto {
-  @IsEmail({}, { message: 'Please provide a valid email' })
+  @IsEmail()
   email: string;
 
   @IsString()
-  @MinLength(6, { message: 'Password must be at least 6 characters long' })
+  @MinLength(8)
+  @Matches(/[A-Z]/, {
+    message: 'Le mot de passe doit contenir au moins une majuscule.',
+  })
+  @Matches(/[0-9]/, {
+    message: 'Le mot de passe doit contenir au moins un chiffre.',
+  })
   password: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  name: string;
+  name?: string;
 
-  @IsEnum(Role, { message: 'Role must be CLIENT, ARTISAN, or ADMIN' })
-  role: Role;
-
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  phone: string;
+  phone?: string;
+
+  @IsOptional()
+  @IsEnum(Role)
+  role?: Role;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  taxId?: string;
+
+  @IsOptional()
+  @IsString()
+  website?: string;
 }

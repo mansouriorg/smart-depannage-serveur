@@ -1,41 +1,86 @@
 import { Module } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { UsersModule } from '../users/users.module';
 import { PassportModule } from '@nestjs/passport';
-import { JwtModule } from '@nestjs/jwt';
+import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
-// ✅ 1. Import the Strategy we just created
-import { JwtStrategy } from './jwt.strategy'; 
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+
+import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { PrismaModule } from '../../prisma/prisma.module';
+
+// If your JwtStrategy file is here:
+// src/modules/auth/jwt.strategy.ts
+import { JwtStrategy } from './jwt.strategy';
+
+// If your JwtStrategy file is here instead:
+// src/modules/auth/strategies/jwt.strategy.ts
+// replace the import above with:
+// import { JwtStrategy } from './strategies/jwt.strategy';
+
+// ✅ Fix for TS2322: expiresIn typing problem
+type JwtExpiresIn =
+  | number
+  | `${number}ms`
+  | `${number}s`
+  | `${number}m`
+  | `${number}h`
+  | `${number}d`
+  | `${number}w`
+  | `${number}y`;
 
 @Module({
   imports: [
-    UsersModule,
-    
-    // 2. Setup Passport with default strategy
-    PassportModule.register({ defaultStrategy: 'jwt' }),
+    ConfigModule,
 
-    // 3. Setup JWT (JSON Web Tokens)
+    PrismaModule,
+
+    UsersModule,
+
+    NotificationsModule,
+
+    PassportModule.register({
+      defaultStrategy: 'jwt',
+      session: false,
+    }),
+
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => ({
-        // ⚠️ FIX: use getOrThrow so app fails fast if secret is missing
-        secret: configService.getOrThrow<string>('JWT_SECRET'),
-        signOptions: { 
-          expiresIn: '7d', // Token expires in 7 days
-        },
-      }),
+      useFactory: async (
+        configService: ConfigService,
+      ): Promise<JwtModuleOptions> => {
+        const secret =
+          configService.get<string>('JWT_ACCESS_SECRET') ||
+          configService.get<string>('JWT_SECRET') ||
+          'dev_access_secret_change_me';
+
+        const expiresIn =
+          (configService.get<string>('JWT_ACCESS_EXPIRES_IN') ||
+            '15m') as JwtExpiresIn;
+
+        return {
+          secret,
+          signOptions: {
+            expiresIn,
+          },
+        };
+      },
     }),
   ],
+
   controllers: [AuthController],
+
   providers: [
-    AuthService, 
-    // ✅ 4. Add JwtStrategy here!
-    // This tells NestJS to initialize the strategy so Passport can use it.
-    JwtStrategy, 
+    AuthService,
+    JwtStrategy,
   ],
-  exports: [AuthService, JwtModule],
+
+  exports: [
+    AuthService,
+    JwtModule,
+    PassportModule,
+  ],
 })
 export class AuthModule {}

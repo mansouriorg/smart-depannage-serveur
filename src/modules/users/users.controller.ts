@@ -1,124 +1,319 @@
-import { 
-  Controller, 
-  Get, 
-  Post, 
-  Body, 
-  Patch, 
-  Param, 
-  Delete, 
-  UseGuards, 
-  Request,
-  ForbiddenException // ✅ Added for Admin security check
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
-import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { AuthGuard } from '@nestjs/passport';
 
-// ⚠️ Import 'Role' from your custom generated path
-import { Role } from '../../../generated/prisma/client'; 
+import { UsersService } from './users.service';
+
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
+
+import { Role } from '../../../generated/prisma/client';
+
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   // ==========================================================
-  // 1. SPECIFIC ROUTES (Must come BEFORE :id)
+  // 1. CURRENT USER PROFILE
+  // These routes are for the logged-in user.
   // ==========================================================
-  
-  // ✅ GET /users/profile
-  // Used to load the logged-in user's settings (Admin Dashboard)
+
+  // GET /users/me
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  getMe(@CurrentUser('id') userId: number) {
+    return this.usersService.getProfile(userId);
+  }
+
+  // PATCH /users/me
+  @UseGuards(JwtAuthGuard)
+  @Patch('me')
+  updateMe(
+    @CurrentUser('id') userId: number,
+    @Body() updateData: UpdateProfileDto,
+  ) {
+    return this.usersService.updateProfile(userId, updateData);
+  }
+
+  // DELETE /users/me
+  // Soft delete / deactivate current account
+  @UseGuards(JwtAuthGuard)
+  @Delete('me')
+  deleteMe(@CurrentUser('id') userId: number) {
+    return this.usersService.deactivateAccount(userId);
+  }
+
+  // ==========================================================
+  // 2. BACKWARD COMPATIBILITY ROUTES
+  // Keep these because your current Admin Dashboard may use:
+  // GET /users/profile and PATCH /users/profile
+  // ==========================================================
+
+  // GET /users/profile
+  @UseGuards(JwtAuthGuard)
   @Get('profile')
-  @UseGuards(AuthGuard('jwt'))
-  getProfile(@Request() req) {
-    return this.usersService.getProfile(req.user.userId);
+  getProfile(@CurrentUser('id') userId: number) {
+    return this.usersService.getProfile(userId);
   }
 
-  // ✅ PATCH /users/profile
-  // Used to save the logged-in user's settings (Admin Dashboard)
+  // PATCH /users/profile
+  @UseGuards(JwtAuthGuard)
   @Patch('profile')
-  @UseGuards(AuthGuard('jwt'))
   updateProfile(
-    @Request() req, 
-    @Body() updateData: { 
-      name?: string; 
-      email?: string; 
-      phone?: string; 
-      address?: string; 
-      taxId?: string; 
-      website?: string 
-    }
+    @CurrentUser('id') userId: number,
+    @Body() updateData: UpdateProfileDto,
   ) {
-    return this.usersService.updateProfile(req.user.userId, updateData);
+    return this.usersService.updateProfile(userId, updateData);
   }
 
-  // ✅ GET /users/artisans
-  // Used to populate the dropdown & list in the Admin Dashboard
+  // ==========================================================
+  // 3. ARTISAN ROUTES
+  // These routes must come BEFORE /users/:id
+  // ==========================================================
+
+  // GET /users/artisans
+  // Used by Admin Dashboard to populate artisan dropdown/list
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+  )
   @Get('artisans')
-  @UseGuards(AuthGuard('jwt'))
-  findArtisans() {
-    return this.usersService.findAll({ where: { role: Role.ARTISAN } });
+  findArtisans(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+  ) {
+    const where: any = {
+      role: Role.ARTISAN,
+      deletedAt: null,
+    };
+
+    if (search) {
+      where.OR = [
+        { email: { contains: search, mode: 'insensitive' } },
+        { name: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    return this.usersService.findAll({
+      where,
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 50,
+    });
   }
 
-  // ✅ POST /users/artisans/create
-  // Used by the Next.js "Add Technician" modal to create an account instantly
+  // POST /users/artisans/create
+  // Used by the Admin Dashboard "Add Technician" modal
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post('artisans/create')
-  @UseGuards(AuthGuard('jwt'))
   async createArtisan(
-    @Request() req, 
-    @Body() body: { name: string; email: string; phone: string; specialty?: string }
+    @Body()
+    body: {
+      name: string;
+      email: string;
+      phone: string;
+      specialty?: string;
+    },
   ) {
-    // 🔒 Security Check: Only Admins can create technicians directly bypassing the application process
-    if (req.user.role !== 'ADMIN') {
-      throw new ForbiddenException('Seuls les administrateurs peuvent ajouter des techniciens.');
-    }
     return this.usersService.createArtisanDirectly(body);
   }
 
-  // ✅ PATCH /users/location
-  // Used by the Mobile App to update GPS position
-  // ⚠️ MUST be defined BEFORE @Get(':id')
-  @Patch('location')
-  @UseGuards(AuthGuard('jwt'))
-  updateLocation(@Request() req, @Body() body: { latitude: number; longitude: number }) {
-    // req.user.userId comes from the JWT token
-    console.log(`Updating location for user ${req.user.userId}:`, body);
-    return this.usersService.updateLocation(+req.user.userId, body.latitude, body.longitude);
+  // ==========================================================
+  // 4. STAFF ROUTES
+  // For SUPPORT / DISPATCHER / ACCOUNTANT / ADMIN users
+  // ==========================================================
+
+  // POST /users/staff/create
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  @Post('staff/create')
+  async createStaffUser(
+    @Body()
+    body: {
+      name: string;
+      email: string;
+      phone?: string;
+      role: Role;
+    },
+  ) {
+    return this.usersService.createStaffUser(body);
   }
 
   // ==========================================================
-  // 2. STANDARD CRUD ROUTES
+  // 5. LOCATION ROUTE
+  // Used by the artisan mobile app to update GPS position
+  // Must come BEFORE /users/:id
   // ==========================================================
 
+  // PATCH /users/location
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @Patch('location')
+  updateLocation(
+    @CurrentUser('id') userId: number,
+    @Body()
+    body: {
+      latitude: number;
+      longitude: number;
+    },
+  ) {
+    return this.usersService.updateLocation(
+      userId,
+      body.latitude,
+      body.longitude,
+    );
+  }
+
+  // ==========================================================
+  // 6. ADMIN USER MANAGEMENT
+  // ==========================================================
+
+  // POST /users
+  // Admin creates a user manually
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post()
   create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+    return this.usersService.createByAdmin(createUserDto);
   }
 
+  // GET /users?page=1&limit=20&role=CLIENT&search=test
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+  )
   @Get()
-  @UseGuards(AuthGuard('jwt'))
-  findAll() {
-    return this.usersService.findAll();
+  findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('role') role?: Role,
+    @Query('search') search?: string,
+    @Query('includeDeleted') includeDeleted?: string,
+  ) {
+    const where: any = {};
+
+    if (includeDeleted !== 'true') {
+      where.deletedAt = null;
+    }
+
+    if (role) {
+      where.role = role;
+    }
+
+    if (search) {
+      where.OR = [
+        { email: { contains: search, mode: 'insensitive' } },
+        { name: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    return this.usersService.findAll({
+      where,
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 20,
+    });
   }
 
-  // ⚠️ This matches /users/1, /users/2, etc.
+  // GET /users/:id
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+  )
   @Get(':id')
-  @UseGuards(AuthGuard('jwt'))
-  findOne(@Param('id') id: string) {
-    return this.usersService.findOne(+id);
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.usersService.getProfile(id);
   }
 
+  // PATCH /users/:id
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch(':id')
-  @UseGuards(AuthGuard('jwt'))
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
-    return this.usersService.update(+id, updateUserDto);
+  update(
+    @CurrentUser('id') currentUserId: number,
+    @CurrentUser('role') currentUserRole: Role,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateUserDto: UpdateUserAdminDto,
+  ) {
+    // Security: ADMIN cannot edit SUPER_ADMIN.
+    // Only SUPER_ADMIN can manage SUPER_ADMIN accounts.
+    if (
+      updateUserDto.role === Role.SUPER_ADMIN &&
+      currentUserRole !== Role.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        'Seul un SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN.',
+      );
+    }
+
+    // Security: normal ADMIN should not edit themselves into SUPER_ADMIN.
+    if (
+      id === currentUserId &&
+      updateUserDto.role === Role.SUPER_ADMIN &&
+      currentUserRole !== Role.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        'Vous ne pouvez pas vous attribuer ce rôle.',
+      );
+    }
+
+    return this.usersService.updateByAdmin(id, updateUserDto);
   }
 
-  // ✅ DELETE /users/:id
-  // This performs a "Soft Delete" (Ban) by setting isActive = false.
+  // DELETE /users/:id
+  // Soft delete / deactivate user
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Delete(':id')
-  @UseGuards(AuthGuard('jwt'))
-  remove(@Param('id') id: string) {
-    return this.usersService.remove(+id);
+  remove(
+    @CurrentUser('id') currentUserId: number,
+    @CurrentUser('role') currentUserRole: Role,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    // Security: users should not deactivate themselves from admin route
+    if (currentUserId === id) {
+      throw new ForbiddenException(
+        'Vous ne pouvez pas désactiver votre propre compte depuis cette route.',
+      );
+    }
+
+    return this.usersService.remove(id);
+  }
+
+  // PATCH /users/:id/reactivate
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Patch(':id/reactivate')
+  reactivateUser(@Param('id', ParseIntPipe) id: number) {
+    return this.usersService.reactivateUser(id);
   }
 }
