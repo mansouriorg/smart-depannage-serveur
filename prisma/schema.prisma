@@ -37,10 +37,20 @@ enum ServiceType {
 
 enum Status {
   PENDING
+  ADMIN_REVIEW
+  QUOTE_SENT
+  QUOTE_ACCEPTED
+  ASSIGNED
   ACCEPTED
+  ON_THE_WAY
+  ARRIVED
   IN_PROGRESS
   COMPLETED
+  PAYMENT_PENDING
+  PAID
+  INVOICE_READY
   CANCELLED
+  DISPUTED
 }
 
 enum ApplicationStatus {
@@ -56,6 +66,83 @@ enum AuthTokenType {
   PHONE_VERIFICATION
 }
 
+enum UrgencyLevel {
+  NORMAL
+  URGENT
+  EMERGENCY
+}
+
+enum InterventionEventType {
+  REQUEST_CREATED
+  ADMIN_REVIEWING
+  QUOTE_SENT
+  QUOTE_ACCEPTED
+  QUOTE_REJECTED
+  QUOTE_MODIFICATION_REQUESTED
+  ARTISAN_ASSIGNED
+  ARTISAN_ACCEPTED
+  ARTISAN_ON_THE_WAY
+  ARTISAN_ARRIVED
+  WORK_STARTED
+  WORK_COMPLETED
+  PAYMENT_PENDING
+  PAYMENT_CONFIRMED
+  INVOICE_READY
+  REVIEW_SUBMITTED
+  ISSUE_REPORTED
+  COMPLAINT_OPENED
+  CANCELLED
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  MODIFICATION_REQUESTED
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  ONLINE
+  CASH
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  AWAITING_CONFIRMATION
+  PAID
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  CANCELLED
+}
+
+enum ComplaintStatus {
+  OPEN
+  IN_REVIEW
+  WAITING_CLIENT
+  WAITING_ARTISAN
+  RESOLVED
+  REJECTED
+  REFUNDED
+}
+
+enum MessageAudience {
+  CLIENT_ARTISAN
+  CLIENT_SUPPORT
+  ARTISAN_SUPPORT
+  INTERNAL_ADMIN
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -68,17 +155,17 @@ model User {
   phone     String?
 
   // Profile / company information
-  address   String?
-  taxId     String?
-  website   String?
+  address String?
+  taxId   String?
+  website String?
 
   // GPS location, useful especially for artisans
   latitude  Float?
   longitude Float?
 
   // Role and account status
-  role      Role    @default(CLIENT)
-  isActive  Boolean @default(true)
+  role     Role    @default(CLIENT)
+  isActive Boolean @default(true)
 
   // Soft delete / account deactivation
   deletedAt DateTime?
@@ -98,6 +185,15 @@ model User {
   artisanInterventions Intervention[] @relation("ArtisanInterventions")
 
   authTokens AuthToken[]
+
+  clientAddresses        ClientAddress[]
+  notificationPreference NotificationPreference?
+
+  sentMessages Message[] @relation("SentMessages")
+  complaints   Complaint[]
+
+  reviewsGiven    Review[] @relation("ReviewsGiven")
+  reviewsReceived Review[] @relation("ReviewsReceived")
 
   @@index([role])
   @@index([isActive])
@@ -125,12 +221,133 @@ model AuthToken {
   @@index([expiresAt])
 }
 
-model Intervention {
+// ==========================================================
+// Client Account Features
+// ==========================================================
+
+model ClientAddress {
+  id       Int  @id @default(autoincrement())
+  clientId Int
+  client   User @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  label      String?
+  address    String
+  city       String?
+  postalCode String?
+  latitude   Float?
+  longitude  Float?
+
+  buildingInfo       String?
+  floor              String?
+  apartmentCode      String?
+  accessInstructions String?
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  interventions Intervention[]
+
+  @@index([clientId])
+}
+
+model NotificationPreference {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emailEnabled Boolean @default(true)
+  smsEnabled   Boolean @default(true)
+  pushEnabled  Boolean @default(true)
+
+  interventionUpdates Boolean @default(true)
+  quoteUpdates        Boolean @default(true)
+  paymentUpdates      Boolean @default(true)
+  invoiceUpdates      Boolean @default(true)
+  complaintUpdates    Boolean @default(true)
+  marketingUpdates    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================================
+// Service Catalog
+// ==========================================================
+
+model ServiceCategory {
   id          Int         @id @default(autoincrement())
+  serviceType ServiceType @unique
+  name        String
+  description String?
+  isActive    Boolean     @default(true)
+
+  subServices SubService[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SubService {
+  id         Int             @id @default(autoincrement())
+  categoryId Int
+  category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  name              String
+  description       String?
+  estimatedDuration Int?
+  basePrice         Float?
+  emergencyPrice    Float?
+  requiresPhotos    Boolean @default(false)
+  isActive          Boolean @default(true)
+
+  interventions Intervention[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+}
+
+// ==========================================================
+// Interventions
+// ==========================================================
+
+model Intervention {
+  id          Int          @id @default(autoincrement())
   description String
   address     String
   serviceType ServiceType
-  status      Status      @default(PENDING)
+  status      Status       @default(PENDING)
+  urgency     UrgencyLevel @default(NORMAL)
+
+  // Sub-service
+  subServiceId Int?
+  subService   SubService? @relation(fields: [subServiceId], references: [id])
+
+  // Optional saved address used by client
+  savedAddressId Int?
+  savedAddress   ClientAddress? @relation(fields: [savedAddressId], references: [id])
+
+  // GPS position of the intervention address
+  latitude  Float?
+  longitude Float?
+
+  // Preferred appointment window
+  preferredDate      DateTime?
+  preferredStartTime String?
+  preferredEndTime   String?
+
+  // Contact information for this specific request
+  contactName  String?
+  contactPhone String?
+
+  // Access details
+  accessInstructions String?
+  buildingInfo       String?
+  floor              String?
+  apartmentCode      String?
 
   // Client relation
   clientId Int
@@ -140,7 +357,7 @@ model Intervention {
   artisanId Int?
   artisan   User? @relation("ArtisanInterventions", fields: [artisanId], references: [id])
 
-  // Initial damage photos uploaded by the client
+  // Initial damage photos uploaded by client
   photos String[]
 
   // Tamper-proof before photo data uploaded by artisan
@@ -159,11 +376,20 @@ model Intervention {
   // Store only the hashed token, never the raw token
   trackingToken String @unique
 
-  // User feedback and complaint fields
+  // User feedback and issue fields
   rating        Int?
   isOnTime      Boolean?
   hasIssue      Boolean @default(false)
   feedbackNotes String?
+
+  // Relations
+  events     InterventionEvent[]
+  quotes     Quote[]
+  payments   Payment[]
+  invoice    Invoice?
+  complaints Complaint[]
+  messages   Message[]
+  review     Review?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -172,8 +398,202 @@ model Intervention {
   @@index([artisanId])
   @@index([status])
   @@index([serviceType])
+  @@index([urgency])
   @@index([createdAt])
 }
+
+model InterventionEvent {
+  id             Int          @id @default(autoincrement())
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  type        InterventionEventType
+  title       String
+  message     String?
+  createdById Int?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([interventionId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ==========================================================
+// Quotes
+// ==========================================================
+
+model Quote {
+  id             Int          @id @default(autoincrement())
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  createdById Int?
+  title       String
+  description String?
+
+  amountHT  Float
+  taxRate   Float @default(20)
+  taxAmount Float
+  amountTTC Float
+
+  status     QuoteStatus @default(DRAFT)
+  clientNote String?
+  pdfUrl     String?
+  expiresAt  DateTime?
+
+  items QuoteItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([interventionId])
+  @@index([status])
+}
+
+model QuoteItem {
+  id      Int   @id @default(autoincrement())
+  quoteId Int
+  quote   Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  label       String
+  description String?
+  quantity    Float  @default(1)
+  unitPrice   Float
+  total       Float
+}
+
+// ==========================================================
+// Payments - no Stripe / manual for now
+// ==========================================================
+
+model Payment {
+  id             Int          @id @default(autoincrement())
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  quoteId Int?
+  method  PaymentMethod
+  status  PaymentStatus @default(PENDING)
+
+  amount   Float
+  currency String @default("EUR")
+
+  reference  String?
+  clientNote String?
+  adminNote  String?
+
+  requestedAt DateTime @default(now())
+  confirmedAt DateTime?
+  failedAt    DateTime?
+  refundedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([interventionId])
+  @@index([method])
+  @@index([status])
+}
+
+model Invoice {
+  id             Int          @id @default(autoincrement())
+  interventionId Int          @unique
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  invoiceNumber String        @unique
+  status        InvoiceStatus @default(DRAFT)
+
+  amountHT  Float
+  taxRate   Float @default(20)
+  taxAmount Float
+  amountTTC Float
+
+  pdfUrl String?
+  notes  String?
+
+  issuedAt  DateTime?
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// ==========================================================
+// Support / Messages / Reviews
+// ==========================================================
+
+model Complaint {
+  id             Int          @id @default(autoincrement())
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  userId Int?
+  user   User? @relation(fields: [userId], references: [id])
+
+  title       String
+  description String
+  status      ComplaintStatus @default(OPEN)
+
+  refundRequested Boolean @default(false)
+  adminNotes      String?
+  attachments     String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([interventionId])
+  @@index([userId])
+  @@index([status])
+}
+
+model Message {
+  id             Int          @id @default(autoincrement())
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  senderId Int
+  sender   User @relation("SentMessages", fields: [senderId], references: [id])
+
+  audience    MessageAudience
+  content     String
+  attachments String[]
+  isRead      Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([interventionId])
+  @@index([senderId])
+  @@index([audience])
+}
+
+model Review {
+  id             Int          @id @default(autoincrement())
+  interventionId Int          @unique
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  clientId Int
+  client   User @relation("ReviewsGiven", fields: [clientId], references: [id])
+
+  artisanId Int?
+  artisan   User? @relation("ReviewsReceived", fields: [artisanId], references: [id])
+
+  rating         Int
+  isOnTime       Boolean?
+  comment        String?
+  wouldRecommend Boolean?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([artisanId])
+}
+
+// ==========================================================
+// Artisan Applications
+// ==========================================================
 
 model ArtisanApplication {
   id          Int    @id @default(autoincrement())
