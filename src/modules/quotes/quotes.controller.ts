@@ -4,16 +4,20 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
+
 import { QuotesService } from './quotes.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
+
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
 import { Role } from '../../../generated/prisma/client';
 
 @Controller('quotes')
@@ -21,7 +25,22 @@ import { Role } from '../../../generated/prisma/client';
 export class QuotesController {
   constructor(private readonly service: QuotesService) {}
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
+  // ==========================================================
+  // 1. ADMIN / ARTISAN - CREATE QUOTE
+  // ==========================================================
+
+  /**
+   * Create and immediately send quote for an intervention.
+   *
+   * POST /quotes/interventions/:interventionId
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
   @Post('interventions/:interventionId')
   createForIntervention(
     @CurrentUser('id') userId: number,
@@ -31,7 +50,42 @@ export class QuotesController {
     return this.service.createForIntervention(interventionId, userId, dto);
   }
 
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  /**
+   * Create a draft quote for an intervention.
+   *
+   * POST /quotes/interventions/:interventionId/draft
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
+  @Post('interventions/:interventionId/draft')
+  createDraftForIntervention(
+    @CurrentUser('id') userId: number,
+    @Param('interventionId', ParseIntPipe) interventionId: number,
+    @Body() dto: CreateQuoteDto,
+  ) {
+    return this.service.createDraftForIntervention(
+      interventionId,
+      userId,
+      dto,
+    );
+  }
+
+  // ==========================================================
+  // 2. CLIENT / ADMIN - QUOTES BY INTERVENTION
+  // ==========================================================
+
+  /**
+   * Client can view quotes for their intervention.
+   * Admins can also use this route if your service allows it later.
+   *
+   * GET /quotes/interventions/:interventionId
+   */
+  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   @Get('interventions/:interventionId')
   findForClient(
     @CurrentUser('id') userId: number,
@@ -40,7 +94,121 @@ export class QuotesController {
     return this.service.findForClient(userId, interventionId);
   }
 
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  // ==========================================================
+  // 3. ADMIN / ARTISAN - QUOTE MANAGEMENT
+  // ==========================================================
+
+  /**
+   * Update quote content, items, prices, tax, PDF URL, expiration date.
+   *
+   * PATCH /quotes/:quoteId
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
+  @Patch(':quoteId')
+  updateQuote(
+    @CurrentUser('id') userId: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+    @Body() dto: Partial<CreateQuoteDto>,
+  ) {
+    return this.service.updateQuote(quoteId, userId, dto);
+  }
+
+  /**
+   * Send an existing draft quote.
+   *
+   * POST /quotes/:quoteId/send
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
+  @Post(':quoteId/send')
+  sendQuote(
+    @CurrentUser('id') userId: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+  ) {
+    return this.service.sendQuote(quoteId, userId);
+  }
+
+  /**
+   * Cancel quote.
+   *
+   * POST /quotes/:quoteId/cancel
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
+  @Post(':quoteId/cancel')
+  cancelQuote(
+    @CurrentUser('id') userId: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+    @Body() dto: ClientQuoteActionDto,
+  ) {
+    return this.service.cancelQuote(quoteId, userId, dto);
+  }
+
+  /**
+   * Mark quote as expired.
+   *
+   * POST /quotes/:quoteId/expire
+   */
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @Post(':quoteId/expire')
+  expireQuote(
+    @CurrentUser('id') userId: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+  ) {
+    return this.service.expireQuote(quoteId, userId);
+  }
+
+  /**
+   * Attach or update quote PDF URL.
+   *
+   * PATCH /quotes/:quoteId/pdf
+   *
+   * Body:
+   * {
+   *   "pdfUrl": "/uploads/quotes/quote-12.pdf"
+   * }
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ARTISAN,
+  )
+  @Patch(':quoteId/pdf')
+  setPdfUrl(
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+    @Body('pdfUrl') pdfUrl: string,
+  ) {
+    return this.service.setPdfUrl(quoteId, pdfUrl);
+  }
+
+  // ==========================================================
+  // 4. CLIENT ACTIONS
+  // ==========================================================
+
+  /**
+   * Client accepts quote.
+   *
+   * POST /quotes/:quoteId/accept
+   */
+  @Roles(Role.CLIENT)
   @Post(':quoteId/accept')
   accept(
     @CurrentUser('id') userId: number,
@@ -50,7 +218,12 @@ export class QuotesController {
     return this.service.accept(userId, quoteId, dto);
   }
 
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  /**
+   * Client rejects quote.
+   *
+   * POST /quotes/:quoteId/reject
+   */
+  @Roles(Role.CLIENT)
   @Post(':quoteId/reject')
   reject(
     @CurrentUser('id') userId: number,
@@ -60,7 +233,12 @@ export class QuotesController {
     return this.service.reject(userId, quoteId, dto);
   }
 
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  /**
+   * Client requests quote modification.
+   *
+   * POST /quotes/:quoteId/request-modification
+   */
+  @Roles(Role.CLIENT)
   @Post(':quoteId/request-modification')
   requestModification(
     @CurrentUser('id') userId: number,
@@ -70,12 +248,68 @@ export class QuotesController {
     return this.service.requestModification(userId, quoteId, dto);
   }
 
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  /**
+   * Client asks a question about quote.
+   *
+   * POST /quotes/:quoteId/question
+   */
+  @Roles(Role.CLIENT)
+  @Post(':quoteId/question')
+  askQuestion(
+    @CurrentUser('id') userId: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+    @Body() dto: ClientQuoteActionDto,
+  ) {
+    return this.service.askQuestion(userId, quoteId, dto);
+  }
+
+  /**
+   * Client downloads quote PDF or gets quote data if PDF is not generated.
+   *
+   * GET /quotes/:quoteId/download
+   */
+  @Roles(Role.CLIENT)
   @Get(':quoteId/download')
   download(
     @CurrentUser('id') userId: number,
     @Param('quoteId', ParseIntPipe) quoteId: number,
   ) {
     return this.service.downloadForClient(userId, quoteId);
+  }
+
+  // ==========================================================
+  // 5. ADMIN / SYSTEM
+  // ==========================================================
+
+  /**
+   * List expired sent quotes.
+   * Useful later for a cron job.
+   *
+   * GET /quotes/system/expired
+   *
+   * Important: this route must stay before GET /quotes/:quoteId.
+   */
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @Get('system/expired')
+  findExpiredQuotes() {
+    return this.service.findExpiredQuotes();
+  }
+
+  /**
+   * Admin/artisan quote detail.
+   *
+   * GET /quotes/:quoteId
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+    Role.ARTISAN,
+  )
+  @Get(':quoteId')
+  findOne(@Param('quoteId', ParseIntPipe) quoteId: number) {
+    return this.service.findOne(quoteId);
   }
 }

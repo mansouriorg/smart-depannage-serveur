@@ -304,6 +304,8 @@ model User {
   reviewsGiven    Review[] @relation("ReviewsGiven")
   reviewsReceived Review[] @relation("ReviewsReceived")
 
+  quotesCreated Quote[] @relation("QuotesCreated")
+
   @@index([role])
   @@index([isActive])
   @@index([isGuest])
@@ -630,19 +632,30 @@ model Quote {
   interventionId Int
   intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
 
+  // Admin, support, dispatcher, or artisan who created the quote
   createdById Int?
+  createdBy   User? @relation("QuotesCreated", fields: [createdById], references: [id])
+
   title       String
   description String?
 
+  // Financial totals
   amountHT  Float
   taxRate   Float @default(20)
   taxAmount Float
   amountTTC Float
 
+  // Quote lifecycle
   status     QuoteStatus @default(DRAFT)
   clientNote String?
   pdfUrl     String?
   expiresAt  DateTime?
+
+  sentAt      DateTime?
+  acceptedAt  DateTime?
+  rejectedAt  DateTime?
+  expiredAt   DateTime?
+  cancelledAt DateTime?
 
   items QuoteItem[]
 
@@ -650,7 +663,15 @@ model Quote {
   updatedAt DateTime @updatedAt
 
   @@index([interventionId])
+  @@index([createdById])
   @@index([status])
+  @@index([expiresAt])
+  @@index([sentAt])
+  @@index([acceptedAt])
+  @@index([rejectedAt])
+  @@index([expiredAt])
+  @@index([cancelledAt])
+  @@index([createdAt])
 }
 
 model QuoteItem {
@@ -663,6 +684,8 @@ model QuoteItem {
   quantity    Float  @default(1)
   unitPrice   Float
   total       Float
+
+  @@index([quoteId])
 }
 
 // ==========================================================
