@@ -163,6 +163,7 @@ enum PaymentStatus {
 enum InvoiceStatus {
   DRAFT
   ISSUED
+  SENT
   PAID
   CANCELLED
 }
@@ -773,6 +774,10 @@ model Payment {
   @@index([createdAt])
 }
 
+// ==========================================================
+// Invoices
+// ==========================================================
+
 model Invoice {
   id             Int          @id @default(autoincrement())
   interventionId Int          @unique
@@ -781,20 +786,78 @@ model Invoice {
   invoiceNumber String        @unique
   status        InvoiceStatus @default(DRAFT)
 
+  // Payment status snapshot
+  paymentStatus PaymentStatus @default(PENDING)
+
+  // Company information snapshot
+  companyName    String?
+  companyPhone   String?
+  companyEmail   String?
+  companyAddress String?
+  companyTaxId   String?
+  companyWebsite String?
+
+  // Client information snapshot
+  clientName    String?
+  clientEmail   String?
+  clientPhone   String?
+  clientAddress String?
+
+  // Intervention details snapshot
+  interventionDescription String?
+  interventionAddress     String?
+  serviceType             ServiceType?
+  subServiceName          String?
+
+  // Financial totals
   amountHT  Float
   taxRate   Float @default(20)
   taxAmount Float
   amountTTC Float
 
-  pdfUrl String?
-  notes  String?
+  // PDF / email
+  pdfUrl    String?
+  emailedTo String?
 
-  issuedAt  DateTime?
-  paidAt    DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  notes        String?
+  cancelReason String?
 
+  issuedAt    DateTime?
+  sentAt      DateTime?
+  paidAt      DateTime?
+  cancelledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items    InvoiceItem[]
   payments Payment[]
+
+  @@index([interventionId])
+  @@index([invoiceNumber])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([issuedAt])
+  @@index([sentAt])
+  @@index([paidAt])
+  @@index([cancelledAt])
+  @@index([createdAt])
+}
+
+model InvoiceItem {
+  id        Int     @id @default(autoincrement())
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  label       String
+  description String?
+  quantity    Float  @default(1)
+  unitPrice   Float
+  total       Float
+
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
 }
 
 // ==========================================================
