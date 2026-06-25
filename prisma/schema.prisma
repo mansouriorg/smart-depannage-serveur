@@ -5,14 +5,15 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
   moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
 }
+
 // ==========================================================
 // Enums
 // ==========================================================
@@ -258,6 +259,32 @@ enum NotificationTemplateType {
   PUSH
 }
 
+enum FileAssetPurpose {
+  CLIENT_DAMAGE_PHOTO
+  ARTISAN_BEFORE_PHOTO
+  ARTISAN_AFTER_PHOTO
+  ARTISAN_DOCUMENT
+  IDENTITY_DOCUMENT
+  INSURANCE_CERTIFICATE
+  QUOTE_PDF
+  INVOICE_PDF
+  COMPLAINT_ATTACHMENT
+  OTHER
+}
+
+enum FileAssetVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum StorageProvider {
+  LOCAL
+  AWS_S3
+  CLOUDINARY
+  SUPABASE
+  GOOGLE_CLOUD
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -320,6 +347,8 @@ model User {
   reviewsReceived Review[] @relation("ReviewsReceived")
 
   quotesCreated Quote[] @relation("QuotesCreated")
+
+  uploadedFiles FileAsset[] @relation("UploadedFiles")
 
   @@index([role])
   @@index([isActive])
@@ -858,6 +887,63 @@ model InvoiceItem {
   createdAt DateTime @default(now())
 
   @@index([invoiceId])
+}
+
+// ==========================================================
+// Files / Local Storage
+// ==========================================================
+
+model FileAsset {
+  id Int @id @default(autoincrement())
+
+  uploadedById Int?
+  uploadedBy   User? @relation("UploadedFiles", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  purpose    FileAssetPurpose
+  visibility FileAssetVisibility @default(PRIVATE)
+
+  storageProvider StorageProvider @default(LOCAL)
+
+  // Flexible link to any model:
+  // INTERVENTION, ARTISAN_PROFILE, QUOTE, INVOICE, COMPLAINT, USER, etc.
+  entityType String?
+  entityId   Int?
+
+  originalName String
+  fileName     String
+  relativePath String
+  publicUrl    String?
+
+  mimeType  String
+  extension String?
+  size      Int
+
+  checksum String?
+
+  isImage Boolean @default(false)
+  width   Int?
+  height  Int?
+
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  replacedById Int?
+  replacedBy   FileAsset?  @relation("FileReplacement", fields: [replacedById], references: [id])
+  replacements FileAsset[] @relation("FileReplacement")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([uploadedById])
+  @@index([purpose])
+  @@index([visibility])
+  @@index([storageProvider])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([entityType, entityId])
+  @@index([mimeType])
+  @@index([isDeleted])
+  @@index([createdAt])
 }
 
 // ==========================================================
