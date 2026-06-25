@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -66,15 +67,23 @@ export class AuthService {
     return process.env.FRONTEND_URL || 'http://localhost:3000';
   }
 
-  // ✅ Important fix:
-  // expiresIn must be typed as JwtSignOptions['expiresIn'], not normal string.
+  private isGeneratedGuestEmail(email: string): boolean {
+    return email.endsWith('@guest.smart-depannage.local');
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  private normalizePhone(phone?: string): string | undefined {
+    return phone?.trim() || undefined;
+  }
+
   private getAccessTokenExpiration(): JwtSignOptions['expiresIn'] {
     return (process.env.JWT_ACCESS_EXPIRES_IN ||
       '15m') as JwtSignOptions['expiresIn'];
   }
 
-  // ✅ Important fix:
-  // expiresIn must be typed as JwtSignOptions['expiresIn'], not normal string.
   private getRefreshTokenExpiration(): JwtSignOptions['expiresIn'] {
     return (process.env.JWT_REFRESH_EXPIRES_IN ||
       '7d') as JwtSignOptions['expiresIn'];
@@ -211,9 +220,17 @@ export class AuthService {
   // ==========================================================
 
   async validateUser(email: string, pass: string): Promise<any> {
-    const user = await this.usersService.findOneByEmail(email);
+    const user = await this.usersService.findOneByEmail(
+      this.normalizeEmail(email),
+    );
 
     if (!user) {
+      return null;
+    }
+
+    // Guest profiles have an unusable random password.
+    // They must activate their account first.
+    if (user.isGuest) {
       return null;
     }
 
@@ -232,6 +249,9 @@ export class AuthService {
 
   // ==========================================================
   // 4. REGISTER
+  // Creates a normal client account.
+  // If a guest profile already exists with same email/phone,
+  // it converts that guest profile into a real account.
   // ==========================================================
 
   async register(userDto: {
@@ -240,12 +260,102 @@ export class AuthService {
     name?: string;
     phone?: string;
   }) {
+    const normalizedEmail = this.normalizeEmail(userDto.email);
+    const normalizedPhone = this.normalizePhone(userDto.phone);
+
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: normalizedEmail },
+          normalizedPhone ? { phone: normalizedPhone } : undefined,
+        ].filter(Boolean) as any[],
+      },
+    });
+
+    // Case 1: normal user already exists
+    if (existingUser && !existingUser.isGuest) {
+      if (existingUser.email === normalizedEmail) {
+        throw new ConflictException('Cet email est déjà utilisé.');
+      }
+
+      if (normalizedPhone && existingUser.phone === normalizedPhone) {
+        throw new ConflictException(
+          'Ce numéro de téléphone est déjà utilisé.',
+        );
+      }
+
+      throw new ConflictException('Un compte existe déjà.');
+    }
+
+    // Case 2: guest user exists => activate/convert it
+    if (existingUser && existingUser.isGuest) {
+      const existingEmailOwner = await this.prisma.user.findUnique({
+        where: { email: normalizedEmail },
+      });
+
+      if (
+        existingEmailOwner &&
+        existingEmailOwner.id !== existingUser.id
+      ) {
+        throw new ConflictException('Cet email est déjà utilisé.');
+      }
+
+      const hashedPassword = await argon2.hash(userDto.password);
+
+      const activatedGuest = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.user.update({
+          where: { id: existingUser.id },
+          data: {
+            email: normalizedEmail,
+            name: userDto.name || existingUser.name,
+            phone: normalizedPhone || existingUser.phone,
+            password: hashedPassword,
+            role: Role.CLIENT,
+            isActive: true,
+            isGuest: false,
+            guestActivatedAt: new Date(),
+            passwordChangedAt: new Date(),
+
+            // The user still needs email verification.
+            // OTP activation can verify phone in GuestService.
+            emailVerifiedAt: null,
+          },
+        });
+
+        await tx.authToken.updateMany({
+          where: {
+            userId: existingUser.id,
+            type: {
+              in: [
+                AuthTokenType.GUEST_MAGIC_LINK,
+                AuthTokenType.GUEST_OTP,
+                AuthTokenType.PASSWORD_RESET,
+              ],
+            },
+            usedAt: null,
+            revokedAt: null,
+          },
+          data: {
+            revokedAt: new Date(),
+          },
+        });
+
+        return updated;
+      });
+
+      await this.sendEmailVerification(activatedGuest.id);
+
+      return this.createTokenPair(activatedGuest);
+    }
+
+    // Case 3: totally new user
     const user = await this.usersService.create({
-      email: userDto.email,
+      email: normalizedEmail,
       password: userDto.password,
       name: userDto.name,
-      phone: userDto.phone,
+      phone: normalizedPhone,
       role: Role.CLIENT,
+      isGuest: false,
     });
 
     await this.sendEmailVerification(user.id);
@@ -265,10 +375,18 @@ export class AuthService {
 
     // Case 1: login(email, password)
     if (typeof userOrEmail === 'string') {
-      user = await this.usersService.findOneByEmail(userOrEmail);
+      user = await this.usersService.findOneByEmail(
+        this.normalizeEmail(userOrEmail),
+      );
 
       if (!user) {
         throw new UnauthorizedException('Email ou mot de passe incorrect.');
+      }
+
+      if (user.isGuest) {
+        throw new UnauthorizedException(
+          'Veuillez activer votre compte avant de vous connecter.',
+        );
       }
 
       if (!user.isActive || user.deletedAt) {
@@ -288,6 +406,12 @@ export class AuthService {
     // Case 2: login(user)
     else {
       const fullUser = await this.usersService.findOne(userOrEmail.id);
+
+      if (fullUser.isGuest) {
+        throw new UnauthorizedException(
+          'Veuillez activer votre compte avant de vous connecter.',
+        );
+      }
 
       if (!fullUser.isActive || fullUser.deletedAt) {
         throw new UnauthorizedException('Compte désactivé.');
@@ -349,6 +473,12 @@ export class AuthService {
 
     if (tokenRecord.tokenHash !== this.hashToken(refreshToken)) {
       throw new UnauthorizedException('Token invalide.');
+    }
+
+    if (tokenRecord.user.isGuest) {
+      throw new UnauthorizedException(
+        'Veuillez activer votre compte avant de vous connecter.',
+      );
     }
 
     if (!tokenRecord.user.isActive || tokenRecord.user.deletedAt) {
@@ -427,9 +557,11 @@ export class AuthService {
   // ==========================================================
 
   async forgotPassword(email: string) {
-    const user = await this.usersService.findOneByEmail(email);
+    const normalizedEmail = this.normalizeEmail(email);
 
-    if (!user || !user.isActive || user.deletedAt) {
+    const user = await this.usersService.findOneByEmail(normalizedEmail);
+
+    if (!user || !user.isActive || user.deletedAt || user.isGuest) {
       return {
         message:
           'Si un compte existe avec cet email, un lien de réinitialisation a été envoyé.',
@@ -473,10 +605,19 @@ export class AuthService {
           gt: new Date(),
         },
       },
+      include: {
+        user: true,
+      },
     });
 
     if (!tokenRecord) {
       throw new BadRequestException('Token invalide ou expiré.');
+    }
+
+    if (tokenRecord.user.isGuest) {
+      throw new BadRequestException(
+        'Veuillez activer votre compte invité avant de définir un mot de passe.',
+      );
     }
 
     const hashedPassword = await argon2.hash(newPassword);
@@ -525,6 +666,12 @@ export class AuthService {
     newPassword: string,
   ) {
     const user = await this.usersService.findOne(userId);
+
+    if (user.isGuest) {
+      throw new BadRequestException(
+        'Veuillez activer votre compte avant de modifier le mot de passe.',
+      );
+    }
 
     if (!user.isActive || user.deletedAt) {
       throw new UnauthorizedException('Compte désactivé.');
@@ -575,6 +722,19 @@ export class AuthService {
   async sendEmailVerification(userId: number) {
     const user = await this.usersService.findOne(userId);
 
+    if (user.isGuest) {
+      return {
+        message:
+          'Compte invité non activé. Veuillez activer le compte avant la vérification email.',
+      };
+    }
+
+    if (this.isGeneratedGuestEmail(user.email)) {
+      throw new BadRequestException(
+        'Impossible de vérifier un email invité généré automatiquement.',
+      );
+    }
+
     if (user.emailVerifiedAt) {
       return {
         message: 'Email déjà vérifié.',
@@ -615,10 +775,19 @@ export class AuthService {
           gt: new Date(),
         },
       },
+      include: {
+        user: true,
+      },
     });
 
     if (!tokenRecord) {
       throw new BadRequestException('Token invalide ou expiré.');
+    }
+
+    if (tokenRecord.user.isGuest) {
+      throw new BadRequestException(
+        'Veuillez activer votre compte invité avant la vérification email.',
+      );
     }
 
     await this.prisma.$transaction([
@@ -649,6 +818,12 @@ export class AuthService {
 
   async sendPhoneVerification(userId: number) {
     const user = await this.usersService.findOne(userId);
+
+    if (user.isGuest) {
+      throw new BadRequestException(
+        'Veuillez activer votre compte avant la vérification téléphone.',
+      );
+    }
 
     if (!user.phone) {
       throw new BadRequestException(
@@ -700,6 +875,14 @@ export class AuthService {
   // ==========================================================
 
   async verifyPhone(userId: number, code: string) {
+    const user = await this.usersService.findOne(userId);
+
+    if (user.isGuest) {
+      throw new BadRequestException(
+        'Veuillez activer votre compte avant la vérification téléphone.',
+      );
+    }
+
     const tokenRecord = await this.prisma.authToken.findFirst({
       where: {
         userId,
@@ -746,6 +929,18 @@ export class AuthService {
 
   async sendPasswordSetupEmail(userId: number) {
     const user = await this.usersService.findOne(userId);
+
+    if (user.isGuest) {
+      throw new BadRequestException(
+        'Un compte invité doit être activé avec le flux invité, pas avec la création de mot de passe admin.',
+      );
+    }
+
+    if (this.isGeneratedGuestEmail(user.email)) {
+      throw new BadRequestException(
+        'Impossible d’envoyer un email à une adresse invitée générée automatiquement.',
+      );
+    }
 
     const rawToken = await this.createOneTimeToken(
       user.id,

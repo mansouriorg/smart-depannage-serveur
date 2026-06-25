@@ -1,14 +1,20 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ServeStaticModule } from '@nestjs/serve-static'; // ✅ IMPORTED STATIC MODULE
-import { join } from 'path'; // ✅ IMPORTED PATH UTILITY
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
-// 1. Core Modules
+// ==========================================================
+// 1. CORE MODULES
+// ==========================================================
+
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { PrismaModule } from './prisma/prisma.module'; // ⚠️ Make sure this file exists in src/prisma/
+import { PrismaModule } from './prisma/prisma.module';
 
-// 2. Feature Modules
+// ==========================================================
+// 2. EXISTING FEATURE MODULES
+// ==========================================================
+
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { FilesModule } from './modules/files/files.module';
@@ -16,33 +22,98 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { InterventionsModule } from './modules/interventions/interventions.module';
 import { ArtisanApplicationsModule } from './modules/artisan-applications/artisan-applications.module';
 
+// ==========================================================
+// 3. CLIENT FEATURE MODULES
+// ==========================================================
+
+import { ClientAddressesModule } from './modules/client-addresses/client-addresses.module';
+import { NotificationPreferencesModule } from './modules/notification-preferences/notification-preferences.module';
+import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
+import { InterventionEventsModule } from './modules/intervention-events/intervention-events.module';
+import { ClientInterventionsModule } from './modules/client-interventions/client-interventions.module';
+import { QuotesModule } from './modules/quotes/quotes.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+import { InvoicesModule } from './modules/invoices/invoices.module';
+import { ComplaintsModule } from './modules/complaints/complaints.module';
+import { MessagesModule } from './modules/messages/messages.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
+
+// ==========================================================
+// 4. GUEST CLIENT MODULE
+// ==========================================================
+
+import { GuestModule } from './modules/guest/guest.module';
+
 @Module({
   imports: [
-    // A. Configuration (Loads .env file globally)
+    // ======================================================
+    // A. GLOBAL CONFIGURATION
+    // Loads .env file globally
+    // ======================================================
+
     ConfigModule.forRoot({
-      isGlobal: true, // Makes ConfigService available everywhere
-      envFilePath: '.env', // Path to your environment file
+      isGlobal: true,
+      envFilePath: '.env',
     }),
 
-    // 📸 B. Serve Static Files (For Proof of Work Photos)
-    // This allows your frontend apps to load images via http://localhost:3000/uploads/...
+    // ======================================================
+    // B. STATIC FILE SERVING
+    // Allows frontend to access files using:
+    // http://localhost:3000/uploads/...
+    // ======================================================
+
     ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'uploads'), 
-      serveRoot: '/uploads', 
+      rootPath: join(__dirname, '..', 'uploads'),
+      serveRoot: '/uploads',
     }),
 
-    // C. Database Connection (Global Prisma Client)
+    // ======================================================
+    // C. DATABASE
+    // ======================================================
+
     PrismaModule,
 
-    // D. Your Application Features
+    // ======================================================
+    // D. AUTH / USERS / CORE FEATURES
+    // ======================================================
+
     AuthModule,
     UsersModule,
     FilesModule,
     NotificationsModule,
+
+    // ======================================================
+    // E. EXISTING BUSINESS FEATURES
+    // ======================================================
+
     InterventionsModule,
     ArtisanApplicationsModule,
+
+    // ======================================================
+    // F. CLIENT FEATURES
+    // ======================================================
+
+    ClientAddressesModule,
+    NotificationPreferencesModule,
+    ServiceCatalogModule,
+    InterventionEventsModule,
+    ClientInterventionsModule,
+    QuotesModule,
+    PaymentsModule,
+    InvoicesModule,
+    ComplaintsModule,
+    MessagesModule,
+    ReviewsModule,
+
+    // ======================================================
+    // G. GUEST CLIENT FEATURES
+    // ======================================================
+
+    GuestModule,
   ],
+
   controllers: [AppController],
+
   providers: [AppService],
 })
 export class AppModule {}

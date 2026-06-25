@@ -64,6 +64,8 @@ enum AuthTokenType {
   PASSWORD_RESET
   EMAIL_VERIFICATION
   PHONE_VERIFICATION
+  GUEST_MAGIC_LINK
+  GUEST_OTP
 }
 
 enum UrgencyLevel {
@@ -148,11 +150,12 @@ enum MessageAudience {
 // ==========================================================
 
 model User {
-  id        Int     @id @default(autoincrement())
-  email     String  @unique
-  password  String
-  name      String?
-  phone     String?
+  id       Int    @id @default(autoincrement())
+  email    String @unique
+  password String
+
+  name  String?
+  phone String?
 
   // Profile / company information
   address String?
@@ -166,6 +169,12 @@ model User {
   // Role and account status
   role     Role    @default(CLIENT)
   isActive Boolean @default(true)
+
+  // Guest account support
+  // Guest users are created from public requests without usable password.
+  // They can activate their account later with magic link / OTP.
+  isGuest          Boolean   @default(false)
+  guestActivatedAt DateTime?
 
   // Soft delete / account deactivation
   deletedAt DateTime?
@@ -197,6 +206,7 @@ model User {
 
   @@index([role])
   @@index([isActive])
+  @@index([isGuest])
   @@index([deletedAt])
   @@index([phone])
 }
@@ -342,6 +352,7 @@ model Intervention {
   // Contact information for this specific request
   contactName  String?
   contactPhone String?
+  contactEmail String?
 
   // Access details
   accessInstructions String?
@@ -400,6 +411,8 @@ model Intervention {
   @@index([serviceType])
   @@index([urgency])
   @@index([createdAt])
+  @@index([contactPhone])
+  @@index([contactEmail])
 }
 
 model InterventionEvent {
