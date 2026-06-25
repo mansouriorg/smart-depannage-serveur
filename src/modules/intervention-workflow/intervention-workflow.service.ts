@@ -1,0 +1,1045 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+
+import * as crypto from 'crypto';
+
+import { PrismaService } from '../../prisma/prisma.service';
+
+import { ChangeWorkflowStatusDto } from './dto/change-workflow-status.dto';
+import { CreateTimelineEventDto } from './dto/create-timeline-event.dto';
+
+import {
+  InterventionEventType,
+  Prisma,
+  Role,
+  Status,
+} from '../../../generated/prisma/client';
+
+type AuthenticatedUser = {
+  id: number;
+  role: Role;
+};
+
+@Injectable()
+export class InterventionWorkflowService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  // ==========================================================
+  // 1. HELPERS
+  // ==========================================================
+
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  private isAdminRole(role: Role): boolean {
+    return [
+      Role.ADMIN,
+      Role.SUPER_ADMIN,
+      Role.SUPPORT,
+      Role.DISPATCHER,
+      Role.ACCOUNTANT,
+    ].includes(role);
+  }
+
+  private async getInterventionOrFail(interventionId: number) {
+    const intervention = await this.prisma.intervention.findUnique({
+      where: { id: interventionId },
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        artisan: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        subService: true,
+        quotes: {
+          include: {
+            items: true,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+        },
+        payments: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+        },
+        invoice: true,
+        review: true,
+      },
+    });
+
+    if (!intervention) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+
+    return intervention;
+  }
+
+  private async checkAccess(user: AuthenticatedUser, interventionId: number) {
+    const intervention = await this.getInterventionOrFail(interventionId);
+
+    const isAdmin = this.isAdminRole(user.role);
+    const isClient = intervention.clientId === user.id;
+    const isArtisan = intervention.artisanId === user.id;
+
+    if (!isAdmin && !isClient && !isArtisan) {
+      throw new ForbiddenException('Accès refusé à cette intervention.');
+    }
+
+    return intervention;
+  }
+
+  private async checkAdminAccess(user: AuthenticatedUser) {
+    if (!this.isAdminRole(user.role)) {
+      throw new ForbiddenException('Action réservée à l’administration.');
+    }
+  }
+
+  private eventTitleForStatus(status: Status): string {
+    const titles: Partial<Record<Status, string>> = {
+      [Status.CREATED]: 'Demande créée',
+      [Status.WAITING_ADMIN_REVIEW]: 'En attente de validation admin',
+      [Status.PENDING]: 'Demande en attente',
+      [Status.ADMIN_REVIEW]: 'Analyse admin en cours',
+      [Status.QUOTE_SENT]: 'Devis envoyé',
+      [Status.QUOTE_ACCEPTED]: 'Devis accepté',
+      [Status.ASSIGNED]: 'Artisan assigné',
+      [Status.ARTISAN_ACCEPTED]: 'Mission acceptée par artisan',
+      [Status.ACCEPTED]: 'Mission acceptée',
+      [Status.ARTISAN_ON_THE_WAY]: 'Artisan en route',
+      [Status.ON_THE_WAY]: 'Artisan en route',
+      [Status.ARTISAN_ARRIVED]: 'Artisan arrivé',
+      [Status.ARRIVED]: 'Artisan arrivé',
+      [Status.IN_PROGRESS]: 'Intervention en cours',
+      [Status.WAITING_CLIENT_VALIDATION]: 'En attente de validation client',
+      [Status.COMPLETED]: 'Intervention terminée',
+      [Status.PAYMENT_PENDING]: 'Paiement en attente',
+      [Status.PAID]: 'Paiement confirmé',
+      [Status.INVOICE_SENT]: 'Facture envoyée',
+      [Status.INVOICE_READY]: 'Facture disponible',
+      [Status.CANCELLED]: 'Intervention annulée',
+      [Status.DISPUTED]: 'Litige ouvert',
+    };
+
+    return titles[status] || 'Statut mis à jour';
+  }
+
+  private eventTypeForStatus(status: Status): InterventionEventType {
+    const types: Partial<Record<Status, InterventionEventType>> = {
+      [Status.CREATED]: InterventionEventType.REQUEST_CREATED,
+      [Status.WAITING_ADMIN_REVIEW]: InterventionEventType.ADMIN_REVIEWING,
+      [Status.PENDING]: InterventionEventType.REQUEST_CREATED,
+      [Status.ADMIN_REVIEW]: InterventionEventType.ADMIN_REVIEWING,
+      [Status.QUOTE_SENT]: InterventionEventType.QUOTE_SENT,
+      [Status.QUOTE_ACCEPTED]: InterventionEventType.QUOTE_ACCEPTED,
+      [Status.ASSIGNED]: InterventionEventType.ARTISAN_ASSIGNED,
+      [Status.ARTISAN_ACCEPTED]: InterventionEventType.ARTISAN_ACCEPTED,
+      [Status.ACCEPTED]: InterventionEventType.ARTISAN_ACCEPTED,
+      [Status.ARTISAN_ON_THE_WAY]: InterventionEventType.ARTISAN_ON_THE_WAY,
+      [Status.ON_THE_WAY]: InterventionEventType.ARTISAN_ON_THE_WAY,
+      [Status.ARTISAN_ARRIVED]: InterventionEventType.ARTISAN_ARRIVED,
+      [Status.ARRIVED]: InterventionEventType.ARTISAN_ARRIVED,
+      [Status.IN_PROGRESS]: InterventionEventType.WORK_STARTED,
+      [Status.WAITING_CLIENT_VALIDATION]:
+        InterventionEventType.CLIENT_VALIDATION_PENDING,
+      [Status.COMPLETED]: InterventionEventType.WORK_COMPLETED,
+      [Status.PAYMENT_PENDING]: InterventionEventType.PAYMENT_PENDING,
+      [Status.PAID]: InterventionEventType.CLIENT_PAID,
+      [Status.INVOICE_SENT]: InterventionEventType.INVOICE_SENT,
+      [Status.INVOICE_READY]: InterventionEventType.INVOICE_READY,
+      [Status.CANCELLED]: InterventionEventType.CANCELLED,
+      [Status.DISPUTED]: InterventionEventType.ISSUE_REPORTED,
+    };
+
+    return types[status] || InterventionEventType.STATUS_CHANGED;
+  }
+
+  private statusTimestampData(status: Status): Prisma.InterventionUpdateInput {
+    const now = new Date();
+
+    switch (status) {
+      case Status.CREATED:
+      case Status.PENDING:
+        return {
+          requestCreatedAt: now,
+        };
+
+      case Status.WAITING_ADMIN_REVIEW:
+      case Status.ADMIN_REVIEW:
+        return {
+          adminReviewStartedAt: now,
+        };
+
+      case Status.QUOTE_SENT:
+        return {
+          quoteSentAt: now,
+        };
+
+      case Status.QUOTE_ACCEPTED:
+        return {
+          quoteAcceptedAt: now,
+        };
+
+      case Status.ASSIGNED:
+        return {
+          assignedAt: now,
+        };
+
+      case Status.ARTISAN_ACCEPTED:
+      case Status.ACCEPTED:
+        return {
+          artisanAcceptedAt: now,
+        };
+
+      case Status.ARTISAN_ON_THE_WAY:
+      case Status.ON_THE_WAY:
+        return {
+          artisanOnTheWayAt: now,
+        };
+
+      case Status.ARTISAN_ARRIVED:
+      case Status.ARRIVED:
+        return {
+          artisanArrivedAt: now,
+        };
+
+      case Status.IN_PROGRESS:
+        return {
+          workStartedAt: now,
+        };
+
+      case Status.WAITING_CLIENT_VALIDATION:
+        return {
+          waitingClientValidationAt: now,
+        };
+
+      case Status.COMPLETED:
+        return {
+          workCompletedAt: now,
+          clientValidatedAt: now,
+        };
+
+      case Status.PAYMENT_PENDING:
+        return {
+          paymentPendingAt: now,
+        };
+
+      case Status.PAID:
+        return {
+          paidAt: now,
+        };
+
+      case Status.INVOICE_SENT:
+      case Status.INVOICE_READY:
+        return {
+          invoiceSentAt: now,
+        };
+
+      case Status.CANCELLED:
+        return {
+          cancelledAt: now,
+        };
+
+      default:
+        return {};
+    }
+  }
+
+  private getAllowedNextStatuses(currentStatus: Status): Status[] {
+    const map: Partial<Record<Status, Status[]>> = {
+      [Status.CREATED]: [
+        Status.WAITING_ADMIN_REVIEW,
+        Status.ADMIN_REVIEW,
+        Status.CANCELLED,
+      ],
+
+      [Status.PENDING]: [
+        Status.WAITING_ADMIN_REVIEW,
+        Status.ADMIN_REVIEW,
+        Status.QUOTE_SENT,
+        Status.CANCELLED,
+      ],
+
+      [Status.WAITING_ADMIN_REVIEW]: [
+        Status.QUOTE_SENT,
+        Status.ASSIGNED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ADMIN_REVIEW]: [
+        Status.QUOTE_SENT,
+        Status.ASSIGNED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.QUOTE_SENT]: [
+        Status.QUOTE_ACCEPTED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.QUOTE_ACCEPTED]: [
+        Status.ASSIGNED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ASSIGNED]: [
+        Status.ARTISAN_ACCEPTED,
+        Status.ACCEPTED,
+        Status.CANCELLED,
+      ],
+
+      [Status.ARTISAN_ACCEPTED]: [
+        Status.ARTISAN_ON_THE_WAY,
+        Status.ON_THE_WAY,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ACCEPTED]: [
+        Status.ARTISAN_ON_THE_WAY,
+        Status.ON_THE_WAY,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ARTISAN_ON_THE_WAY]: [
+        Status.ARTISAN_ARRIVED,
+        Status.ARRIVED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ON_THE_WAY]: [
+        Status.ARTISAN_ARRIVED,
+        Status.ARRIVED,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ARTISAN_ARRIVED]: [
+        Status.IN_PROGRESS,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.ARRIVED]: [
+        Status.IN_PROGRESS,
+        Status.CANCELLED,
+        Status.DISPUTED,
+      ],
+
+      [Status.IN_PROGRESS]: [
+        Status.WAITING_CLIENT_VALIDATION,
+        Status.COMPLETED,
+        Status.DISPUTED,
+      ],
+
+      [Status.WAITING_CLIENT_VALIDATION]: [
+        Status.COMPLETED,
+        Status.DISPUTED,
+      ],
+
+      [Status.COMPLETED]: [
+        Status.PAYMENT_PENDING,
+        Status.PAID,
+        Status.DISPUTED,
+      ],
+
+      [Status.PAYMENT_PENDING]: [
+        Status.PAID,
+        Status.DISPUTED,
+      ],
+
+      [Status.PAID]: [
+        Status.INVOICE_SENT,
+        Status.INVOICE_READY,
+        Status.DISPUTED,
+      ],
+
+      [Status.INVOICE_SENT]: [],
+      [Status.INVOICE_READY]: [],
+      [Status.CANCELLED]: [],
+      [Status.DISPUTED]: [
+        Status.WAITING_ADMIN_REVIEW,
+        Status.ADMIN_REVIEW,
+        Status.CANCELLED,
+      ],
+    };
+
+    return map[currentStatus] || [];
+  }
+
+  private assertTransitionAllowed(currentStatus: Status, nextStatus: Status) {
+    if (currentStatus === nextStatus) {
+      return;
+    }
+
+    const allowedStatuses = this.getAllowedNextStatuses(currentStatus);
+
+    if (!allowedStatuses.includes(nextStatus)) {
+      throw new BadRequestException(
+        `Transition non autorisée: ${currentStatus} -> ${nextStatus}.`,
+      );
+    }
+  }
+
+  private async enrichEventsWithActors(events: any[]) {
+    const actorIds = [
+      ...new Set(
+        events
+          .map((event) => event.createdById)
+          .filter((id) => typeof id === 'number'),
+      ),
+    ];
+
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: {
+            id: {
+              in: actorIds,
+            },
+          },
+          select: {
+            id: true,
+            name: true,
+            role: true,
+          },
+        })
+      : [];
+
+    const actorsMap = new Map(actors.map((actor) => [actor.id, actor]));
+
+    return events.map((event) => ({
+      id: event.id,
+      interventionId: event.interventionId,
+      type: event.type,
+      title: event.title,
+      message: event.message,
+      metadata: event.metadata,
+      createdAt: event.createdAt,
+      createdById: event.createdById,
+      createdBy: event.createdById ? actorsMap.get(event.createdById) || null : null,
+    }));
+  }
+
+  private publicSafeEvent(event: any) {
+    return {
+      id: event.id,
+      type: event.type,
+      title: event.title,
+      message: event.message,
+      createdAt: event.createdAt,
+    };
+  }
+
+  // ==========================================================
+  // 2. TIMELINE
+  // Visible to admin / client / artisan
+  // ==========================================================
+
+  async getTimeline(user: AuthenticatedUser, interventionId: number) {
+    const intervention = await this.checkAccess(user, interventionId);
+
+    const events = await this.prisma.interventionEvent.findMany({
+      where: {
+        interventionId,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+
+    const enrichedEvents = await this.enrichEventsWithActors(events);
+
+    return {
+      intervention: {
+        id: intervention.id,
+        status: intervention.status,
+        serviceType: intervention.serviceType,
+        subServiceId: intervention.subServiceId,
+        address: intervention.address,
+        createdAt: intervention.createdAt,
+        updatedAt: intervention.updatedAt,
+      },
+      timeline: enrichedEvents,
+    };
+  }
+
+  // ==========================================================
+  // 3. PUBLIC TRACKING TIMELINE
+  // Visible to public page with secure tracking token
+  // ==========================================================
+
+  async getPublicTimeline(interventionId: number, rawToken: string) {
+    const intervention = await this.prisma.intervention.findUnique({
+      where: {
+        id: interventionId,
+      },
+      select: {
+        id: true,
+        status: true,
+        serviceType: true,
+        subServiceId: true,
+        address: true,
+        trackingToken: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!intervention) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+
+    if (intervention.trackingToken !== this.hashToken(rawToken)) {
+      throw new ForbiddenException('Lien de suivi invalide.');
+    }
+
+    const events = await this.prisma.interventionEvent.findMany({
+      where: {
+        interventionId,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+
+    return {
+      intervention: {
+        id: intervention.id,
+        status: intervention.status,
+        serviceType: intervention.serviceType,
+        subServiceId: intervention.subServiceId,
+        address: intervention.address,
+        createdAt: intervention.createdAt,
+        updatedAt: intervention.updatedAt,
+      },
+      timeline: events.map((event) => this.publicSafeEvent(event)),
+    };
+  }
+
+  // ==========================================================
+  // 4. CREATE TIMELINE EVENT
+  // Reusable by admin/client/artisan/guest modules
+  // ==========================================================
+
+  async createTimelineEvent(data: {
+    interventionId: number;
+    type: InterventionEventType;
+    title: string;
+    message?: string;
+    createdById?: number;
+    metadata?: Prisma.InputJsonValue;
+  }) {
+    await this.getInterventionOrFail(data.interventionId);
+
+    return this.prisma.interventionEvent.create({
+      data: {
+        interventionId: data.interventionId,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        createdById: data.createdById,
+        metadata: data.metadata,
+      },
+    });
+  }
+
+  async createManualTimelineEvent(
+    user: AuthenticatedUser,
+    interventionId: number,
+    dto: CreateTimelineEventDto,
+  ) {
+    await this.checkAdminAccess(user);
+    await this.getInterventionOrFail(interventionId);
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: dto.type,
+      title: dto.title,
+      message: dto.message,
+      createdById: user.id,
+      metadata: dto.metadata as Prisma.InputJsonValue,
+    });
+  }
+
+  // ==========================================================
+  // 5. CHANGE WORKFLOW STATUS
+  // Admin / dispatcher controlled generic status transition
+  // ==========================================================
+
+  async changeStatus(
+    user: AuthenticatedUser,
+    interventionId: number,
+    dto: ChangeWorkflowStatusDto,
+  ) {
+    await this.checkAdminAccess(user);
+
+    const intervention = await this.getInterventionOrFail(interventionId);
+
+    this.assertTransitionAllowed(intervention.status, dto.status);
+
+    const updated = await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: dto.status,
+        lastStatusChangedAt: new Date(),
+        ...this.statusTimestampData(dto.status),
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        artisan: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        subService: true,
+      },
+    });
+
+    await this.createTimelineEvent({
+      interventionId,
+      type: this.eventTypeForStatus(dto.status),
+      title: this.eventTitleForStatus(dto.status),
+      message: dto.note || `Statut modifié: ${intervention.status} -> ${dto.status}`,
+      createdById: user.id,
+      metadata: {
+        previousStatus: intervention.status,
+        newStatus: dto.status,
+      },
+    });
+
+    return updated;
+  }
+
+  // ==========================================================
+  // 6. PROFESSIONAL WORKFLOW HELPERS
+  // These methods can be called inside your other services.
+  // ==========================================================
+
+  async markRequestCreated(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.CREATED,
+        requestCreatedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.REQUEST_CREATED,
+      title: 'Demande créée',
+      message: 'La demande d’intervention a été créée.',
+      createdById,
+    });
+  }
+
+  async markWaitingAdminReview(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.WAITING_ADMIN_REVIEW,
+        adminReviewStartedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.ADMIN_REVIEWING,
+      title: 'Analyse admin en attente',
+      message: 'La demande est en attente de validation par l’administration.',
+      createdById,
+    });
+  }
+
+  async markQuoteSent(
+    interventionId: number,
+    createdById?: number,
+    amountTTC?: number,
+  ) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.QUOTE_SENT,
+        quoteSentAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.QUOTE_SENT,
+      title: 'Devis envoyé',
+      message:
+        amountTTC !== undefined
+          ? `Un devis de ${amountTTC} € TTC a été envoyé.`
+          : 'Un devis a été envoyé au client.',
+      createdById,
+      metadata:
+        amountTTC !== undefined
+          ? {
+              amountTTC,
+            }
+          : undefined,
+    });
+  }
+
+  async markQuoteAccepted(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.QUOTE_ACCEPTED,
+        quoteAcceptedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.QUOTE_ACCEPTED,
+      title: 'Devis accepté',
+      message: 'Le client a accepté le devis.',
+      createdById,
+    });
+  }
+
+  async markArtisanAssigned(
+    interventionId: number,
+    artisanId: number,
+    createdById?: number,
+  ) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        artisanId,
+        status: Status.ASSIGNED,
+        assignedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.ARTISAN_ASSIGNED,
+      title: 'Artisan assigné',
+      message: 'Un artisan a été assigné à la mission.',
+      createdById,
+      metadata: {
+        artisanId,
+      },
+    });
+  }
+
+  async markArtisanAccepted(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.ARTISAN_ACCEPTED,
+        artisanAcceptedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.ARTISAN_ACCEPTED,
+      title: 'Mission acceptée',
+      message: 'L’artisan a accepté la mission.',
+      createdById,
+    });
+  }
+
+  async markArtisanOnTheWay(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.ARTISAN_ON_THE_WAY,
+        artisanOnTheWayAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.ARTISAN_ON_THE_WAY,
+      title: 'Artisan en route',
+      message: 'L’artisan est en route vers le lieu d’intervention.',
+      createdById,
+    });
+  }
+
+  async markArtisanArrived(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.ARTISAN_ARRIVED,
+        artisanArrivedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.ARTISAN_ARRIVED,
+      title: 'Artisan arrivé',
+      message: 'L’artisan est arrivé sur place.',
+      createdById,
+    });
+  }
+
+  async markBeforePhotoUploaded(
+    interventionId: number,
+    createdById?: number,
+    photoUrl?: string,
+  ) {
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.BEFORE_PHOTO_UPLOADED,
+      title: 'Photo avant intervention ajoutée',
+      message: 'Une photo avant intervention a été ajoutée.',
+      createdById,
+      metadata: photoUrl
+        ? {
+            photoUrl,
+          }
+        : undefined,
+    });
+  }
+
+  async markWorkStarted(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.IN_PROGRESS,
+        workStartedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.WORK_STARTED,
+      title: 'Intervention commencée',
+      message: 'L’artisan a commencé l’intervention.',
+      createdById,
+    });
+  }
+
+  async markAfterPhotoUploaded(
+    interventionId: number,
+    createdById?: number,
+    photoUrl?: string,
+  ) {
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.AFTER_PHOTO_UPLOADED,
+      title: 'Photo après intervention ajoutée',
+      message: 'Une photo après intervention a été ajoutée.',
+      createdById,
+      metadata: photoUrl
+        ? {
+            photoUrl,
+          }
+        : undefined,
+    });
+  }
+
+  async markWaitingClientValidation(
+    interventionId: number,
+    createdById?: number,
+  ) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.WAITING_CLIENT_VALIDATION,
+        waitingClientValidationAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.CLIENT_VALIDATION_PENDING,
+      title: 'Validation client demandée',
+      message: 'L’intervention attend la validation du client.',
+      createdById,
+    });
+  }
+
+  async markWorkCompleted(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.COMPLETED,
+        workCompletedAt: new Date(),
+        clientValidatedAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.WORK_COMPLETED,
+      title: 'Intervention terminée',
+      message: 'L’intervention a été terminée.',
+      createdById,
+    });
+  }
+
+  async markPaymentPending(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.PAYMENT_PENDING,
+        paymentPendingAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.PAYMENT_PENDING,
+      title: 'Paiement en attente',
+      message: 'Le paiement est en attente.',
+      createdById,
+    });
+  }
+
+  async markClientPaid(
+    interventionId: number,
+    createdById?: number,
+    amount?: number,
+  ) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.PAID,
+        paidAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.CLIENT_PAID,
+      title: 'Paiement confirmé',
+      message:
+        amount !== undefined
+          ? `Le client a payé ${amount} €.`
+          : 'Le paiement du client a été confirmé.',
+      createdById,
+      metadata:
+        amount !== undefined
+          ? {
+              amount,
+            }
+          : undefined,
+    });
+  }
+
+  async markInvoiceSent(interventionId: number, createdById?: number) {
+    await this.prisma.intervention.update({
+      where: {
+        id: interventionId,
+      },
+      data: {
+        status: Status.INVOICE_SENT,
+        invoiceSentAt: new Date(),
+        lastStatusChangedAt: new Date(),
+      },
+    });
+
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.INVOICE_SENT,
+      title: 'Facture envoyée',
+      message: 'La facture a été envoyée au client.',
+      createdById,
+    });
+  }
+
+  async markReviewSubmitted(
+    interventionId: number,
+    createdById?: number,
+    rating?: number,
+  ) {
+    return this.createTimelineEvent({
+      interventionId,
+      type: InterventionEventType.REVIEW_SUBMITTED,
+      title: 'Avis client envoyé',
+      message:
+        rating !== undefined
+          ? `Le client a laissé une note de ${rating}/5.`
+          : 'Le client a laissé un avis.',
+      createdById,
+      metadata:
+        rating !== undefined
+          ? {
+              rating,
+            }
+          : undefined,
+    });
+  }
+}
