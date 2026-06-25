@@ -34,7 +34,6 @@ enum ServiceType {
 }
 
 enum Status {
-  // Professional workflow
   CREATED
   WAITING_ADMIN_REVIEW
   QUOTE_SENT
@@ -52,7 +51,6 @@ enum Status {
   CANCELLED
   DISPUTED
 
-  // Old compatibility statuses
   PENDING
   ADMIN_REVIEW
   ACCEPTED
@@ -386,6 +384,25 @@ enum ReviewModerationStatus {
   HIDDEN
 }
 
+enum PayoutStatus {
+  PENDING
+  READY
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum BusinessExportFormat {
+  CSV
+  PDF
+  JSON
+}
+
+enum AccountingExportStatus {
+  GENERATED
+  FAILED
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -398,39 +415,29 @@ model User {
   name  String?
   phone String?
 
-  // Profile / company information
   address String?
   taxId   String?
   website String?
 
-  // GPS location, useful especially for artisans
   latitude  Float?
   longitude Float?
 
-  // Role and account status
   role     Role    @default(CLIENT)
   isActive Boolean @default(true)
 
-  // Guest account support
-  // Guest users are created from public requests without usable password.
-  // They can activate their account later with magic link / OTP.
   isGuest          Boolean   @default(false)
   guestActivatedAt DateTime?
 
-  // Soft delete / account deactivation
   deletedAt DateTime?
 
-  // Verification fields
   emailVerifiedAt DateTime?
   phoneVerifiedAt DateTime?
 
-  // Security tracking
   passwordChangedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
   clientInterventions  Intervention[] @relation("ClientInterventions")
   artisanInterventions Intervention[] @relation("ArtisanInterventions")
 
@@ -462,6 +469,10 @@ model User {
   clientAppointments  Appointment[]     @relation("ClientAppointments")
   artisanAppointments Appointment[]     @relation("ArtisanAppointments")
   artisanTimeBlocks   ArtisanTimeBlock[] @relation("ArtisanTimeBlocks")
+
+  artisanPayouts           ArtisanPayout[]    @relation("ArtisanPayouts")
+  businessReportsCreated   BusinessReport[]   @relation("BusinessReportsCreated")
+  accountingExportsCreated AccountingExport[] @relation("AccountingExportsCreated")
 
   @@index([role])
   @@index([isActive])
@@ -530,14 +541,12 @@ model NotificationPreference {
   userId Int  @unique
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Channels
   inAppEnabled         Boolean @default(true)
   emailEnabled         Boolean @default(true)
   smsEnabled           Boolean @default(true)
   pushEnabled          Boolean @default(true)
   adminRealtimeEnabled Boolean @default(true)
 
-  // Global categories
   interventionUpdates Boolean @default(true)
   quoteUpdates        Boolean @default(true)
   paymentUpdates      Boolean @default(true)
@@ -545,7 +554,6 @@ model NotificationPreference {
   complaintUpdates    Boolean @default(true)
   marketingUpdates    Boolean @default(false)
 
-  // Event preferences
   newInterventionCreated      Boolean @default(true)
   artisanAssigned            Boolean @default(true)
   artisanAcceptedMission     Boolean @default(true)
@@ -700,17 +708,12 @@ model SubService {
   name        String
   description String?
 
-  // Estimated duration in minutes.
-  // Example: 60 = 1 hour.
   estimatedDuration Int?
 
-  // Base intervention price.
   basePrice Float?
 
-  // Emergency / urgent intervention price.
   emergencyPrice Float?
 
-  // Should the client upload photos before submitting the request?
   requiresPhotos Boolean @default(false)
 
   isActive Boolean @default(true)
@@ -740,68 +743,53 @@ model Intervention {
   status      Status       @default(CREATED)
   urgency     UrgencyLevel @default(NORMAL)
 
-  // Sub-service
   subServiceId Int?
   subService   SubService? @relation(fields: [subServiceId], references: [id])
 
-  // Optional saved address used by client
   savedAddressId Int?
   savedAddress   ClientAddress? @relation(fields: [savedAddressId], references: [id])
 
-  // GPS position of the intervention address
   latitude  Float?
   longitude Float?
 
-  // Preferred appointment window
   preferredDate      DateTime?
   preferredStartTime String?
   preferredEndTime   String?
 
-  // Contact information for this specific request
   contactName  String?
   contactPhone String?
   contactEmail String?
 
-  // Access details
   accessInstructions String?
   buildingInfo       String?
   floor              String?
   apartmentCode      String?
 
-  // Client relation
   clientId Int
   client   User @relation("ClientInterventions", fields: [clientId], references: [id])
 
-  // Artisan relation
   artisanId Int?
   artisan   User? @relation("ArtisanInterventions", fields: [artisanId], references: [id])
 
-  // Initial damage photos uploaded by client
   photos String[]
 
-  // Tamper-proof before photo data uploaded by artisan
   beforePhotoUrl String?
   beforePhotoLat Float?
   beforePhotoLng Float?
   beforePhotoAt  DateTime?
 
-  // Tamper-proof after photo data uploaded by artisan
   afterPhotoUrl String?
   afterPhotoLat Float?
   afterPhotoLng Float?
   afterPhotoAt  DateTime?
 
-  // Public tracking security
-  // Store only the hashed token, never the raw token
   trackingToken String @unique
 
-  // User feedback and issue fields
   rating        Int?
   isOnTime      Boolean?
   hasIssue      Boolean @default(false)
   feedbackNotes String?
 
-  // Professional workflow timestamps
   requestCreatedAt          DateTime?
   adminReviewStartedAt      DateTime?
   quoteSentAt               DateTime?
@@ -813,7 +801,6 @@ model Intervention {
   paidAt                    DateTime?
   invoiceSentAt             DateTime?
 
-  // Artisan workflow timestamps
   artisanAcceptedAt DateTime?
   artisanRejectedAt DateTime?
   artisanOnTheWayAt DateTime?
@@ -822,32 +809,25 @@ model Intervention {
   workCompletedAt   DateTime?
   cancelledAt       DateTime?
 
-  // Artisan mission details
   diagnosticNotes String?
   materialUsed    Json?
 
-  // Extra quote request by artisan
   extraQuoteRequested Boolean @default(false)
   extraQuoteReason    String?
 
-  // Client signature collected by artisan
   clientSignatureUrl String?
   clientSignatureAt  DateTime?
 
-  // Artisan problem report
   problemReported Boolean             @default(false)
   problemType     MissionProblemType?
   problemNotes    String?
 
-  // Status tracking
   lastStatusChangedAt DateTime?
 
-  // Admin management
   adminInternalNotes String?
   cancelledReason    String?
   cancelledById      Int?
 
-  // Relations
   events     InterventionEvent[]
   quotes     Quote[]
   payments   Payment[]
@@ -857,6 +837,7 @@ model Intervention {
   review     Review?
 
   appointment Appointment?
+  financials  InterventionFinancials?
 
   missionRejections ArtisanMissionRejection[]
 
@@ -915,20 +896,17 @@ model Quote {
   interventionId Int
   intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
 
-  // Admin, support, dispatcher, or artisan who created the quote
   createdById Int?
   createdBy   User? @relation("QuotesCreated", fields: [createdById], references: [id])
 
   title       String
   description String?
 
-  // Financial totals
   amountHT  Float
   taxRate   Float @default(20)
   taxAmount Float
   amountTTC Float
 
-  // Quote lifecycle
   status     QuoteStatus @default(DRAFT)
   clientNote String?
   pdfUrl     String?
@@ -973,7 +951,7 @@ model QuoteItem {
 }
 
 // ==========================================================
-// Payments - no external API for now
+// Payments
 // ==========================================================
 
 model Payment {
@@ -999,7 +977,7 @@ model Payment {
   reference         String?
   providerPaymentId String?
 
-  receiptNumber      String?   @unique
+  receiptNumber      String? @unique
   receiptUrl         String?
   receiptGeneratedAt DateTime?
 
@@ -1054,10 +1032,8 @@ model Invoice {
   invoiceNumber String        @unique
   status        InvoiceStatus @default(DRAFT)
 
-  // Payment status snapshot
   paymentStatus PaymentStatus @default(PENDING)
 
-  // Company information snapshot
   companyName    String?
   companyPhone   String?
   companyEmail   String?
@@ -1065,25 +1041,21 @@ model Invoice {
   companyTaxId   String?
   companyWebsite String?
 
-  // Client information snapshot
   clientName    String?
   clientEmail   String?
   clientPhone   String?
   clientAddress String?
 
-  // Intervention details snapshot
   interventionDescription String?
   interventionAddress     String?
   serviceType             ServiceType?
   subServiceName          String?
 
-  // Financial totals
   amountHT  Float
   taxRate   Float @default(20)
   taxAmount Float
   amountTTC Float
 
-  // PDF / email
   pdfUrl    String?
   emailedTo String?
 
@@ -1119,7 +1091,7 @@ model InvoiceItem {
 
   label       String
   description String?
-  quantity    Float  @default(1)
+  quantity    Float @default(1)
   unitPrice   Float
   total       Float
 
@@ -1143,8 +1115,6 @@ model FileAsset {
 
   storageProvider StorageProvider @default(LOCAL)
 
-  // Flexible link to any model:
-  // INTERVENTION, ARTISAN_PROFILE, QUOTE, INVOICE, COMPLAINT, USER, etc.
   entityType String?
   entityId   Int?
 
@@ -1203,24 +1173,20 @@ model Complaint {
   title       String
   description String
 
-  // Photos / attachments from client, artisan, or admin
   photos      String[] @default([])
   attachments String[] @default([])
 
   status ComplaintStatus @default(OPEN)
 
-  // Quick conversation snapshots
   clientMessage      String?
   artisanResponse    String?
   artisanRespondedAt DateTime?
 
-  // Admin decision
   adminDecision     ComplaintDecision?
   adminDecisionNote String?
   adminDecisionById Int?
   adminDecisionAt   DateTime?
 
-  // Refund decision
   refundRequested   Boolean                 @default(false)
   refundDecision    ComplaintRefundDecision @default(NOT_REQUESTED)
   refundApproved    Boolean                 @default(false)
@@ -1228,13 +1194,11 @@ model Complaint {
   refundDecidedById Int?
   refundDecidedAt   DateTime?
 
-  // Resolution
   resolutionNotes String?
   resolvedAt      DateTime?
   rejectedAt      DateTime?
   closedAt        DateTime?
 
-  // Internal admin/support notes
   adminNotes    String?
   internalNotes String?
 
@@ -1269,7 +1233,6 @@ model ComplaintMessage {
   content     String
   attachments String[] @default([])
 
-  // Internal messages are only visible to admin/support.
   isInternal Boolean @default(false)
 
   deletedAt DateTime?
@@ -1295,18 +1258,12 @@ model Message {
 
   audience MessageAudience
 
-  // Text can be optional when the message only contains attachments.
   content String?
 
-  // Attachment URLs generated by FilesModule.
-  // Example: ["/files/15/download"]
   attachments String[]
 
-  // Simple legacy flag. Kept for compatibility.
   isRead Boolean @default(false)
 
-  // Real read tracking per user.
-  // Sender is inserted here automatically when the message is created.
   readByUserIds Int[] @default([])
 
   readAt    DateTime?
@@ -1335,17 +1292,14 @@ model Review {
   artisanId Int?
   artisan   User? @relation("ReviewsReceived", fields: [artisanId], references: [id])
 
-  // Rating from 1 to 5
   rating Int
 
-  // Detailed client feedback
   comment          String?
   isOnTime         Boolean?
   isWorkClean      Boolean?
   isPriceRespected Boolean?
   wouldRecommend  Boolean?
 
-  // Admin moderation
   status           ReviewModerationStatus @default(PENDING)
   isVisible        Boolean                @default(false)
   moderatedById    Int?
@@ -1437,7 +1391,7 @@ model ArtisanDocument {
   status        ArtisanDocumentStatus @default(PENDING)
   rejectionNote String?
 
-  uploadedAt   DateTime  @default(now())
+  uploadedAt   DateTime @default(now())
   reviewedAt   DateTime?
   reviewedById Int?
 
@@ -1457,7 +1411,7 @@ model ArtisanServiceZone {
   postalCode String?
   latitude   Float?
   longitude  Float?
-  radiusKm   Float   @default(10)
+  radiusKm   Float @default(10)
 
   isActive Boolean @default(true)
 
@@ -1540,12 +1494,10 @@ model Appointment {
 
   status AppointmentStatus @default(REQUESTED)
 
-  // Client preferred appointment window
   preferredDate      DateTime?
   preferredStartTime String?
   preferredEndTime   String?
 
-  // Confirmed scheduled appointment
   startsAt DateTime?
   endsAt   DateTime?
 
@@ -1590,7 +1542,6 @@ model AppointmentRequest {
   type   AppointmentRequestType
   status AppointmentRequestStatus @default(PENDING)
 
-  // Used for reschedule requests
   requestedStartAt DateTime?
   requestedEndAt   DateTime?
 
@@ -1621,9 +1572,6 @@ model AppointmentReminder {
 
   recipientId Int?
 
-  // Example:
-  // 1440 = 24 hours before
-  // 120 = 2 hours before
   minutesBefore Int
 
   dueAt DateTime
@@ -1669,6 +1617,184 @@ model ArtisanTimeBlock {
   @@index([createdById])
   @@index([createdAt])
   @@index([artisanId, startsAt, endsAt])
+}
+
+// ==========================================================
+// Business / Revenue / Accounting
+// ==========================================================
+
+model InterventionFinancials {
+  id Int @id @default(autoincrement())
+
+  interventionId Int          @unique
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  currency String @default("EUR")
+
+  totalPrice Float
+
+  commissionRate     Float @default(20)
+  platformCommission Float
+  artisanPayout      Float
+  paymentProviderFee Float @default(0)
+  refundAmount       Float @default(0)
+
+  netRevenue    Float
+  companyMargin Float
+
+  notes          String?
+  calculatedById Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payoutItems ArtisanPayoutItem[]
+
+  @@index([interventionId])
+  @@index([currency])
+  @@index([commissionRate])
+  @@index([totalPrice])
+  @@index([platformCommission])
+  @@index([artisanPayout])
+  @@index([paymentProviderFee])
+  @@index([refundAmount])
+  @@index([netRevenue])
+  @@index([companyMargin])
+  @@index([calculatedById])
+  @@index([createdAt])
+}
+
+model ArtisanPayout {
+  id Int @id @default(autoincrement())
+
+  artisanId Int
+  artisan   User @relation("ArtisanPayouts", fields: [artisanId], references: [id], onDelete: Cascade)
+
+  status PayoutStatus @default(PENDING)
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  currency String @default("EUR")
+
+  grossAmount         Float @default(0)
+  paymentProviderFees Float @default(0)
+  refundsDeducted     Float @default(0)
+  netAmount           Float @default(0)
+
+  paymentReference String?
+  paidAt           DateTime?
+
+  notes String?
+
+  items ArtisanPayoutItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([artisanId])
+  @@index([status])
+  @@index([periodStart])
+  @@index([periodEnd])
+  @@index([currency])
+  @@index([grossAmount])
+  @@index([netAmount])
+  @@index([paidAt])
+  @@index([createdAt])
+}
+
+model ArtisanPayoutItem {
+  id Int @id @default(autoincrement())
+
+  payoutId Int
+  payout   ArtisanPayout @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+
+  financialId Int
+  financial   InterventionFinancials @relation(fields: [financialId], references: [id], onDelete: Cascade)
+
+  interventionId Int
+
+  amount Float
+
+  createdAt DateTime @default(now())
+
+  @@unique([payoutId, financialId])
+  @@index([payoutId])
+  @@index([financialId])
+  @@index([interventionId])
+  @@index([amount])
+  @@index([createdAt])
+}
+
+model BusinessReport {
+  id Int @id @default(autoincrement())
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  label String?
+
+  currency String @default("EUR")
+
+  interventionCount     Int @default(0)
+  paidInterventionCount Int @default(0)
+  refundedCount         Int @default(0)
+
+  totalRevenue        Float @default(0)
+  totalCommission     Float @default(0)
+  totalArtisanPayouts Float @default(0)
+  totalPaymentFees    Float @default(0)
+  totalRefunds        Float @default(0)
+
+  netRevenue    Float @default(0)
+  companyMargin Float @default(0)
+
+  data Json?
+
+  createdById Int?
+  createdBy   User? @relation("BusinessReportsCreated", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([periodStart])
+  @@index([periodEnd])
+  @@index([label])
+  @@index([currency])
+  @@index([createdById])
+  @@index([createdAt])
+}
+
+model AccountingExport {
+  id Int @id @default(autoincrement())
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  format BusinessExportFormat   @default(CSV)
+  status AccountingExportStatus @default(GENERATED)
+
+  fileName String?
+  fileUrl  String?
+
+  totalLines  Int   @default(0)
+  totalDebit  Float @default(0)
+  totalCredit Float @default(0)
+
+  data Json?
+
+  generatedById Int?
+  generatedBy   User? @relation("AccountingExportsCreated", fields: [generatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([periodStart])
+  @@index([periodEnd])
+  @@index([format])
+  @@index([status])
+  @@index([generatedById])
+  @@index([createdAt])
 }
 
 // ==========================================================
@@ -1742,7 +1868,7 @@ model AdminServiceZone {
 model NotificationTemplate {
   id Int @id @default(autoincrement())
 
-  key     String                   @unique
+  key     String @unique
   type    NotificationTemplateType
   subject String?
   content String
