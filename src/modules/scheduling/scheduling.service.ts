@@ -36,6 +36,13 @@ import {
   UpdateAvailabilitySlotDto,
 } from './dto/scheduling.dto';
 
+type AppointmentReminderCreateData = {
+  appointmentId: number;
+  recipientId: number;
+  minutesBefore: number;
+  dueAt: Date;
+};
+
 @Injectable()
 export class SchedulingService {
   constructor(
@@ -53,28 +60,39 @@ export class SchedulingService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    return [
+    const staffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return staffRoles.includes(role);
   }
 
   private assertValidRange(startsAt: Date, endsAt: Date) {
-    if (!startsAt || !endsAt || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+    if (
+      !startsAt ||
+      !endsAt ||
+      Number.isNaN(startsAt.getTime()) ||
+      Number.isNaN(endsAt.getTime())
+    ) {
       throw new BadRequestException('Date ou horaire invalide.');
     }
 
     if (startsAt >= endsAt) {
-      throw new BadRequestException('La date de fin doit être après la date de début.');
+      throw new BadRequestException(
+        'La date de fin doit être après la date de début.',
+      );
     }
   }
 
   private assertValidTimeSlot(startTime: string, endTime: string) {
     if (startTime >= endTime) {
-      throw new BadRequestException('Le créneau de fin doit être après le créneau de début.');
+      throw new BadRequestException(
+        'Le créneau de fin doit être après le créneau de début.',
+      );
     }
   }
 
@@ -364,12 +382,11 @@ export class SchedulingService {
       },
     });
 
-    const recipients = [
-      appointment.clientId,
-      appointment.artisanId,
-    ].filter(Boolean) as number[];
+    const recipients = [appointment.clientId, appointment.artisanId].filter(
+      Boolean,
+    ) as number[];
 
-    const reminders = [];
+    const reminders: AppointmentReminderCreateData[] = [];
 
     for (const recipientId of recipients) {
       for (const minutesBefore of [1440, 120]) {
@@ -740,9 +757,7 @@ export class SchedulingService {
         },
         ...(artisanId ? { artisanId } : {}),
         status: {
-          notIn: [
-            AppointmentStatus.CANCELLED,
-          ],
+          notIn: [AppointmentStatus.CANCELLED],
         },
       },
       include: {
@@ -883,7 +898,9 @@ export class SchedulingService {
     dto: ReviewAppointmentRequestDto,
   ) {
     if (!this.isStaff(role)) {
-      throw new ForbiddenException('Seule l’administration peut traiter cette demande.');
+      throw new ForbiddenException(
+        'Seule l’administration peut traiter cette demande.',
+      );
     }
 
     const request = await this.prisma.appointmentRequest.findUnique({
@@ -945,7 +962,9 @@ export class SchedulingService {
 
     if (request.type === AppointmentRequestType.RESCHEDULE) {
       if (!request.requestedStartAt || !request.requestedEndAt) {
-        throw new BadRequestException('La demande de report ne contient pas de nouveau créneau.');
+        throw new BadRequestException(
+          'La demande de report ne contient pas de nouveau créneau.',
+        );
       }
 
       if (!request.appointment.artisanId) {
@@ -1122,7 +1141,9 @@ export class SchedulingService {
     dto: UpdateAvailabilitySlotDto,
   ) {
     if (role !== Role.ARTISAN && !this.isStaff(role)) {
-      throw new ForbiddenException('Seul un artisan peut modifier ses disponibilités.');
+      throw new ForbiddenException(
+        'Seul un artisan peut modifier ses disponibilités.',
+      );
     }
 
     this.assertValidTimeSlot(dto.startTime, dto.endTime);
@@ -1160,7 +1181,9 @@ export class SchedulingService {
     dto: CreateTimeBlockDto,
   ) {
     if (role !== Role.ARTISAN && !this.isStaff(role)) {
-      throw new ForbiddenException('Seul un artisan peut bloquer un créneau.');
+      throw new ForbiddenException(
+        'Seul un artisan peut bloquer un créneau.',
+      );
     }
 
     const startsAt = new Date(dto.startsAt);
@@ -1176,7 +1199,8 @@ export class SchedulingService {
 
     if (availability.overlappingAppointments.length) {
       throw new BadRequestException({
-        message: 'Impossible de bloquer un créneau contenant une intervention planifiée.',
+        message:
+          'Impossible de bloquer un créneau contenant une intervention planifiée.',
         availability,
       });
     }

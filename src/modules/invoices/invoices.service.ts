@@ -96,13 +96,15 @@ export class InvoicesService {
   };
 
   private isAdminRole(role: Role): boolean {
-    return [
+    const adminRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return adminRoles.includes(role);
   }
 
   private roundMoney(value: number): number {
@@ -358,7 +360,10 @@ export class InvoicesService {
   ) {
     const intervention = await this.getInterventionForInvoice(interventionId);
 
-    if (intervention.invoice && intervention.invoice.status !== InvoiceStatus.CANCELLED) {
+    if (
+      intervention.invoice &&
+      intervention.invoice.status !== InvoiceStatus.CANCELLED
+    ) {
       throw new BadRequestException(
         'Une facture existe déjà pour cette intervention.',
       );
@@ -384,7 +389,9 @@ export class InvoicesService {
       ? this.getInvoiceItemsFromQuote(quote)
       : [
           {
-            label: intervention.subService?.name || String(intervention.serviceType),
+            label:
+              intervention.subService?.name ||
+              String(intervention.serviceType),
             description: intervention.description,
             quantity: 1,
             unitPrice: totals.amountHT,
@@ -399,9 +406,10 @@ export class InvoicesService {
           invoiceNumber: dto.invoiceNumber || this.generateInvoiceNumber(),
 
           status: paidPayment ? InvoiceStatus.PAID : InvoiceStatus.ISSUED,
-          paymentStatus: paidPayment ? PaymentStatus.PAID : PaymentStatus.PENDING,
+          paymentStatus: paidPayment
+            ? PaymentStatus.PAID
+            : PaymentStatus.PENDING,
 
-          // Company snapshot
           companyName: company?.companyName,
           companyPhone: company?.companyPhone,
           companyEmail: company?.companyEmail,
@@ -409,13 +417,11 @@ export class InvoicesService {
           companyTaxId: undefined,
           companyWebsite: undefined,
 
-          // Client snapshot
           clientName: intervention.contactName || intervention.client.name,
           clientEmail: intervention.contactEmail || intervention.client.email,
           clientPhone: intervention.contactPhone || intervention.client.phone,
           clientAddress: intervention.address,
 
-          // Intervention snapshot
           interventionDescription: intervention.description,
           interventionAddress: intervention.address,
           serviceType: intervention.serviceType,

@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
-import { Response } from 'express';
+import type { Response } from 'express';
 
 import { BusinessService } from './business.service';
 
@@ -29,6 +29,12 @@ import {
   MarkPayoutPaidDto,
 } from './dto/business.dto';
 
+type DownloadableFile = {
+  filename: string;
+  contentType: string;
+  buffer: Buffer;
+};
+
 @Controller('business')
 @UseGuards(JwtAuthGuard)
 export class BusinessController {
@@ -36,11 +42,7 @@ export class BusinessController {
 
   private sendFile(
     res: Response,
-    file: {
-      filename: string;
-      contentType: string;
-      buffer: Buffer;
-    },
+    file: DownloadableFile,
   ) {
     res.setHeader('Content-Type', file.contentType);
     res.setHeader(
@@ -208,7 +210,11 @@ export class BusinessController {
       query,
     );
 
-    return this.sendFile(res, file);
+    return this.sendFile(res, {
+      filename: file.filename,
+      contentType: file.contentType,
+      buffer: file.buffer,
+    });
   }
 
   /**
@@ -227,7 +233,11 @@ export class BusinessController {
       query,
     );
 
-    return this.sendFile(res, file);
+    return this.sendFile(res, {
+      filename: file.filename,
+      contentType: file.contentType,
+      buffer: file.buffer,
+    });
   }
 
   /**
@@ -246,6 +256,10 @@ export class BusinessController {
       query,
     );
 
-    return this.sendFile(res, result.file);
+    return this.sendFile(res, {
+      filename: result.file.filename || `accounting-export-${Date.now()}.csv`,
+      contentType: result.file.contentType,
+      buffer: result.file.buffer,
+    });
   }
 }

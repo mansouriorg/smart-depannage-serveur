@@ -54,13 +54,15 @@ export class MatchingService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    return [
+    const staffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return staffRoles.includes(role);
   }
 
   private assertStaff(role: Role) {
@@ -295,15 +297,14 @@ export class MatchingService {
 
     const keywords = this.serviceTypeKeywords(params.serviceType);
 
-    const allSpecialties = [
-      params.specialty,
-      ...(params.specialties || []),
-    ]
+    const allSpecialties = [params.specialty, ...(params.specialties || [])]
       .filter(Boolean)
       .map((item) => this.normalizeText(item));
 
     const keywordMatch = allSpecialties.some((specialty) =>
-      keywords.some((keyword) => specialty.includes(this.normalizeText(keyword))),
+      keywords.some((keyword) =>
+        specialty.includes(this.normalizeText(keyword)),
+      ),
     );
 
     if (keywordMatch) {
@@ -602,7 +603,11 @@ export class MatchingService {
       );
     }
 
-    if (context.startsAt && context.endsAt && context.startsAt >= context.endsAt) {
+    if (
+      context.startsAt &&
+      context.endsAt &&
+      context.startsAt >= context.endsAt
+    ) {
       throw new BadRequestException('Créneau invalide.');
     }
   }
@@ -683,9 +688,7 @@ export class MatchingService {
       preferredRange.startsAt;
 
     const endsAt =
-      queryRange.endsAt ||
-      appointmentRange.endsAt ||
-      preferredRange.endsAt;
+      queryRange.endsAt || appointmentRange.endsAt || preferredRange.endsAt;
 
     const context: MatchingContext = {
       serviceType: intervention.serviceType,
@@ -700,8 +703,7 @@ export class MatchingService {
           : intervention.longitude ?? undefined,
       startsAt,
       endsAt,
-      emergency:
-        query.emergency ?? intervention.urgency === 'EMERGENCY',
+      emergency: query.emergency ?? intervention.urgency === 'EMERGENCY',
       onlyAvailable: query.onlyAvailable ?? false,
       limit: query.limit || 10,
     };
@@ -903,10 +905,7 @@ export class MatchingService {
           hardIssues.push('Artisan ne prend pas de missions.');
         }
 
-        if (
-          context.emergency &&
-          !profile.emergencyAvailable
-        ) {
+        if (context.emergency && !profile.emergencyAvailable) {
           hardIssues.push('Artisan non disponible pour urgence.');
         }
 

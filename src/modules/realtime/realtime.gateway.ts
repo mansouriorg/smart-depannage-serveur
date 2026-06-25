@@ -79,13 +79,15 @@ export class RealtimeGateway
   }
 
   private isAdminRole(role: Role): boolean {
-    return [
+    const adminRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return adminRoles.includes(role);
   }
 
   private getUser(client: Socket): SocketUser {

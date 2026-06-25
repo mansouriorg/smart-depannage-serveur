@@ -30,13 +30,15 @@ export class ReviewsService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    return [
+    const staffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return staffRoles.includes(role);
   }
 
   private assertStaff(role: Role) {
@@ -141,7 +143,6 @@ export class ReviewsService {
           serviceType: true,
           status: true,
           createdAt: true,
-          completedAt: true,
           workCompletedAt: true,
           paidAt: true,
         },
@@ -185,7 +186,8 @@ export class ReviewsService {
     const averageRating =
       ratingCount === 0
         ? 0
-        : reviews.reduce((sum, review) => sum + review.rating, 0) / ratingCount;
+        : reviews.reduce((sum, review) => sum + review.rating, 0) /
+          ratingCount;
 
     await this.prisma.artisanProfile.updateMany({
       where: {
@@ -605,9 +607,7 @@ export class ReviewsService {
         hidden,
         visible,
       },
-      averageVisibleRating: Number(
-        (average._avg.rating || 0).toFixed(2),
-      ),
+      averageVisibleRating: Number((average._avg.rating || 0).toFixed(2)),
       latest,
     };
   }

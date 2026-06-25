@@ -31,8 +31,11 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import {
   ArtisanDocumentType,
-  FileAssetVisibility,
   Role,
+} from '../../../generated/prisma/client';
+
+import type {
+  FileAssetVisibility,
 } from '../../../generated/prisma/client';
 
 type AuthenticatedUser = {
@@ -40,10 +43,22 @@ type AuthenticatedUser = {
   role: Role;
 };
 
+type PrivateFileVisibility = 'PRIVATE';
+
 @Controller('files')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
+
+  private normalizePrivateVisibility(
+    visibility?: FileAssetVisibility,
+  ): PrivateFileVisibility | undefined {
+    if (visibility === 'PRIVATE') {
+      return 'PRIVATE';
+    }
+
+    return undefined;
+  }
 
   // ==========================================================
   // Client damage photos
@@ -177,7 +192,12 @@ export class FilesController {
    * FormData:
    * file: pdf/image
    * type: IDENTITY / INSURANCE / COMPANY_LEGAL / CERTIFICATE / PROFILE_PHOTO / OTHER
-   * visibility: PRIVATE / PUBLIC
+   * visibility: PRIVATE
+   *
+   * Note:
+   * The service currently only accepts PRIVATE for artisan documents.
+   * PUBLIC visibility can still be handled later via:
+   * PATCH /files/:fileId/visibility
    */
   @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
   @Post('artisan/documents')
@@ -198,7 +218,7 @@ export class FilesController {
       user,
       file,
       dto.type,
-      dto.visibility,
+      this.normalizePrivateVisibility(dto.visibility),
     );
   }
 
@@ -228,7 +248,7 @@ export class FilesController {
       user,
       file,
       ArtisanDocumentType.IDENTITY,
-      FileAssetVisibility.PRIVATE,
+      'PRIVATE',
     );
   }
 
@@ -258,7 +278,7 @@ export class FilesController {
       user,
       file,
       ArtisanDocumentType.INSURANCE,
-      FileAssetVisibility.PRIVATE,
+      'PRIVATE',
     );
   }
 

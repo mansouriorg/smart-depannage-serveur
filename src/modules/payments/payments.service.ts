@@ -239,13 +239,13 @@ export class PaymentsService {
   }
 
   private ensurePaymentCanBeConfirmed(payment: any) {
-    if (
-      ![
-        PaymentStatus.PENDING,
-        PaymentStatus.AWAITING_CONFIRMATION,
-        PaymentStatus.FAILED,
-      ].includes(payment.status)
-    ) {
+    const confirmableStatuses: PaymentStatus[] = [
+      PaymentStatus.PENDING,
+      PaymentStatus.AWAITING_CONFIRMATION,
+      PaymentStatus.FAILED,
+    ];
+
+    if (!confirmableStatuses.includes(payment.status)) {
       throw new BadRequestException(
         `Ce paiement ne peut pas être confirmé car son statut est ${payment.status}.`,
       );
@@ -253,13 +253,13 @@ export class PaymentsService {
   }
 
   private ensurePaymentCanBeCancelled(payment: any) {
-    if (
-      ![
-        PaymentStatus.PENDING,
-        PaymentStatus.AWAITING_CONFIRMATION,
-        PaymentStatus.FAILED,
-      ].includes(payment.status)
-    ) {
+    const cancellableStatuses: PaymentStatus[] = [
+      PaymentStatus.PENDING,
+      PaymentStatus.AWAITING_CONFIRMATION,
+      PaymentStatus.FAILED,
+    ];
+
+    if (!cancellableStatuses.includes(payment.status)) {
       throw new BadRequestException(
         `Ce paiement ne peut pas être annulé car son statut est ${payment.status}.`,
       );
@@ -267,12 +267,12 @@ export class PaymentsService {
   }
 
   private ensurePaymentCanBeRefunded(payment: any) {
-    if (
-      ![
-        PaymentStatus.PAID,
-        PaymentStatus.PARTIALLY_REFUNDED,
-      ].includes(payment.status)
-    ) {
+    const refundableStatuses: PaymentStatus[] = [
+      PaymentStatus.PAID,
+      PaymentStatus.PARTIALLY_REFUNDED,
+    ];
+
+    if (!refundableStatuses.includes(payment.status)) {
       throw new BadRequestException(
         'Seuls les paiements payés peuvent être remboursés.',
       );
@@ -554,13 +554,13 @@ export class PaymentsService {
   async fail(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
     const payment = await this.getPaymentOrFail(paymentId);
 
-    if (
-      [
-        PaymentStatus.PAID,
-        PaymentStatus.REFUNDED,
-        PaymentStatus.PARTIALLY_REFUNDED,
-      ].includes(payment.status)
-    ) {
+    const statusesThatCannotFail: PaymentStatus[] = [
+      PaymentStatus.PAID,
+      PaymentStatus.REFUNDED,
+      PaymentStatus.PARTIALLY_REFUNDED,
+    ];
+
+    if (statusesThatCannotFail.includes(payment.status)) {
       throw new BadRequestException(
         'Un paiement payé ou remboursé ne peut pas être marqué comme échoué.',
       );

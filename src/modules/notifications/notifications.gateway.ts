@@ -52,13 +52,15 @@ export class NotificationsGateway
   }
 
   private isAdminRole(role: Role): boolean {
-    return [
+    const adminRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return adminRoles.includes(role);
   }
 
   async handleConnection(client: Socket) {

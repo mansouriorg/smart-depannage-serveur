@@ -71,10 +71,7 @@ export class QuotesService {
     return Math.round(value * 100) / 100;
   }
 
-  private calculateTotals(
-    items: CreateQuoteDto['items'],
-    taxRate = 20,
-  ) {
+  private calculateTotals(items: CreateQuoteDto['items'], taxRate = 20) {
     if (!items?.length) {
       throw new BadRequestException(
         'Le devis doit contenir au moins une ligne.',
@@ -207,13 +204,13 @@ export class QuotesService {
   }
 
   private ensureQuoteEditable(quote: any) {
-    if (
-      ![
-        QuoteStatus.DRAFT,
-        QuoteStatus.SENT,
-        QuoteStatus.MODIFICATION_REQUESTED,
-      ].includes(quote.status)
-    ) {
+    const editableStatuses: QuoteStatus[] = [
+      QuoteStatus.DRAFT,
+      QuoteStatus.SENT,
+      QuoteStatus.MODIFICATION_REQUESTED,
+    ];
+
+    if (!editableStatuses.includes(quote.status)) {
       throw new BadRequestException(
         `Ce devis ne peut pas être modifié car son statut est ${quote.status}.`,
       );
@@ -412,12 +409,12 @@ export class QuotesService {
   async sendQuote(quoteId: number, sentById: number) {
     const quote = await this.getQuoteOrFail(quoteId);
 
-    if (
-      ![
-        QuoteStatus.DRAFT,
-        QuoteStatus.MODIFICATION_REQUESTED,
-      ].includes(quote.status)
-    ) {
+    const sendableStatuses: QuoteStatus[] = [
+      QuoteStatus.DRAFT,
+      QuoteStatus.MODIFICATION_REQUESTED,
+    ];
+
+    if (!sendableStatuses.includes(quote.status)) {
       throw new BadRequestException(
         'Seuls les devis brouillons ou à modifier peuvent être envoyés.',
       );
@@ -640,12 +637,12 @@ export class QuotesService {
 
     this.ensureClientOwnsQuote(clientId, quote);
 
-    if (
-      ![
-        QuoteStatus.SENT,
-        QuoteStatus.MODIFICATION_REQUESTED,
-      ].includes(quote.status)
-    ) {
+    const modificationRequestAllowedStatuses: QuoteStatus[] = [
+      QuoteStatus.SENT,
+      QuoteStatus.MODIFICATION_REQUESTED,
+    ];
+
+    if (!modificationRequestAllowedStatuses.includes(quote.status)) {
       throw new BadRequestException(
         'Vous pouvez demander une modification uniquement sur un devis envoyé.',
       );
@@ -709,15 +706,13 @@ export class QuotesService {
   ) {
     const quote = await this.getQuoteOrFail(quoteId);
 
-    if (
-      [
-        QuoteStatus.ACCEPTED,
-        QuoteStatus.CANCELLED,
-      ].includes(quote.status)
-    ) {
-      throw new BadRequestException(
-        'Ce devis ne peut plus être annulé.',
-      );
+    const nonCancellableStatuses: QuoteStatus[] = [
+      QuoteStatus.ACCEPTED,
+      QuoteStatus.CANCELLED,
+    ];
+
+    if (nonCancellableStatuses.includes(quote.status)) {
+      throw new BadRequestException('Ce devis ne peut plus être annulé.');
     }
 
     const updated = await this.prisma.quote.update({
@@ -753,14 +748,14 @@ export class QuotesService {
   async expireQuote(quoteId: number, expiredById?: number) {
     const quote = await this.getQuoteOrFail(quoteId);
 
-    if (
-      [
-        QuoteStatus.ACCEPTED,
-        QuoteStatus.REJECTED,
-        QuoteStatus.EXPIRED,
-        QuoteStatus.CANCELLED,
-      ].includes(quote.status)
-    ) {
+    const nonExpirableStatuses: QuoteStatus[] = [
+      QuoteStatus.ACCEPTED,
+      QuoteStatus.REJECTED,
+      QuoteStatus.EXPIRED,
+      QuoteStatus.CANCELLED,
+    ];
+
+    if (nonExpirableStatuses.includes(quote.status)) {
       throw new BadRequestException(
         'Ce devis ne peut pas être marqué comme expiré.',
       );

@@ -73,9 +73,7 @@ export class FilesService {
     'image/webp',
   ];
 
-  private readonly pdfMimeTypes = [
-    'application/pdf',
-  ];
+  private readonly pdfMimeTypes = ['application/pdf'];
 
   private readonly documentMimeTypes = [
     'application/pdf',
@@ -90,13 +88,15 @@ export class FilesService {
   // ==========================================================
 
   private isAdminRole(role: Role): boolean {
-    return [
+    const adminRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return adminRoles.includes(role);
   }
 
   private isImage(mimeType: string): boolean {

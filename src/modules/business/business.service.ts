@@ -34,13 +34,15 @@ export class BusinessService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    return [
+    const staffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return staffRoles.includes(role);
   }
 
   private assertStaff(role: Role) {
@@ -242,6 +244,10 @@ export class BusinessService {
     return Buffer.from(pdf, 'latin1');
   }
 
+  private toJsonValue(value: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+
   // ==========================================================
   // Intervention financials
   // ==========================================================
@@ -272,7 +278,7 @@ export class BusinessService {
       totalPrice * (commissionRate / 100),
     );
 
-    let artisanPayout =
+    const artisanPayout =
       dto.artisanPayout !== undefined
         ? this.roundMoney(dto.artisanPayout)
         : this.roundMoney(totalPrice - platformCommission);
@@ -293,7 +299,7 @@ export class BusinessService {
 
     const companyMargin = netRevenue;
 
-    const financials = await this.prisma.interventionFinancials.upsert({
+    return this.prisma.interventionFinancials.upsert({
       where: {
         interventionId,
       },
@@ -326,8 +332,6 @@ export class BusinessService {
       },
       include: this.financialInclude(),
     });
-
-    return financials;
   }
 
   async getInterventionFinancials(
@@ -532,7 +536,7 @@ export class BusinessService {
         netRevenue: dashboard.totals.netRevenue,
         companyMargin: dashboard.totals.companyMargin,
 
-        data: dashboard as unknown as Prisma.InputJsonValue,
+        data: this.toJsonValue(dashboard),
 
         createdById: userId,
       },
@@ -922,17 +926,19 @@ export class BusinessService {
       ]),
     );
 
+    const fileName = `accounting-export-${Date.now()}.csv`;
+
     const exportRecord = await this.prisma.accountingExport.create({
       data: {
         periodStart: new Date(query.from),
         periodEnd: new Date(query.to),
         format: query.format || BusinessExportFormat.CSV,
         status: AccountingExportStatus.GENERATED,
-        fileName: `accounting-export-${Date.now()}.csv`,
+        fileName,
         totalLines: rows.length,
         totalDebit,
         totalCredit,
-        data: rows as unknown as Prisma.InputJsonValue,
+        data: this.toJsonValue(rows),
         generatedById: userId,
       },
       include: {
@@ -950,7 +956,7 @@ export class BusinessService {
     return {
       export: exportRecord,
       file: {
-        filename: exportRecord.fileName,
+        filename: fileName,
         contentType: 'text/csv; charset=utf-8',
         buffer: Buffer.from(csv, 'utf8'),
       },

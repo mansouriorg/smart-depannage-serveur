@@ -78,6 +78,17 @@ export class ArtisansService {
     return phone?.trim() || undefined;
   }
 
+  private canAcceptMissionStatus(status: Status): boolean {
+    const allowedStatuses: Status[] = [
+      Status.PENDING,
+      Status.ADMIN_REVIEW,
+      Status.QUOTE_ACCEPTED,
+      Status.ASSIGNED,
+    ];
+
+    return allowedStatuses.includes(status);
+  }
+
   private safeUserSelect = {
     id: true,
     email: true,
@@ -324,7 +335,6 @@ export class ArtisansService {
 
   // ==========================================================
   // 2. ARTISAN ONBOARDING
-  // Public application route
   // ==========================================================
 
   async apply(dto: ApplyArtisanDto) {
@@ -756,16 +766,24 @@ export class ArtisansService {
 
     return {
       availableJobs: await Promise.all(
-        availableJobs.map((job) => this.decorateMissionWithDistance(userId, job)),
+        availableJobs.map((job) =>
+          this.decorateMissionWithDistance(userId, job),
+        ),
       ),
       assignedJobs: await Promise.all(
-        assignedJobs.map((job) => this.decorateMissionWithDistance(userId, job)),
+        assignedJobs.map((job) =>
+          this.decorateMissionWithDistance(userId, job),
+        ),
       ),
       acceptedJobs: await Promise.all(
-        acceptedJobs.map((job) => this.decorateMissionWithDistance(userId, job)),
+        acceptedJobs.map((job) =>
+          this.decorateMissionWithDistance(userId, job),
+        ),
       ),
       activeJobs: await Promise.all(
-        activeJobs.map((job) => this.decorateMissionWithDistance(userId, job)),
+        activeJobs.map((job) =>
+          this.decorateMissionWithDistance(userId, job),
+        ),
       ),
       completedJobs,
       cancelledJobs,
@@ -857,14 +875,7 @@ export class ArtisansService {
       },
     );
 
-    if (
-      ![
-        Status.PENDING,
-        Status.ADMIN_REVIEW,
-        Status.QUOTE_ACCEPTED,
-        Status.ASSIGNED,
-      ].includes(intervention.status)
-    ) {
+    if (!this.canAcceptMissionStatus(intervention.status)) {
       throw new BadRequestException(
         'Cette mission ne peut pas être acceptée.',
       );

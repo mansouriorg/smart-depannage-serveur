@@ -122,13 +122,15 @@ export class NotificationsService {
   // ==========================================================
 
   private isAdminRole(role: Role): boolean {
-    return [
+    const adminRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return adminRoles.includes(role);
   }
 
   private defaultChannelsForType(type: NotificationType): NotificationChannel[] {
@@ -910,7 +912,7 @@ export class NotificationsService {
   async notifyAdmins(payload: Omit<NotifyPayload, 'recipientId'>) {
     const admins = await this.getAdminUsers();
 
-    const notifications = [];
+    const notifications: any[] = [];
 
     for (const admin of admins) {
       const notification = await this.notify({

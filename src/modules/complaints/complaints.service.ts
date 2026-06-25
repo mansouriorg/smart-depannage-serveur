@@ -36,13 +36,27 @@ export class ComplaintsService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    return [
+    const staffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
       Role.SUPPORT,
       Role.DISPATCHER,
       Role.ACCOUNTANT,
-    ].includes(role);
+    ];
+
+    return staffRoles.includes(role);
+  }
+
+  private isApprovedRefundDecision(
+    decision: ComplaintRefundDecision,
+  ): boolean {
+    const approvedDecisions: ComplaintRefundDecision[] = [
+      ComplaintRefundDecision.APPROVED,
+      ComplaintRefundDecision.PARTIAL_REFUND,
+      ComplaintRefundDecision.REFUNDED,
+    ];
+
+    return approvedDecisions.includes(decision);
   }
 
   private assertStaff(role: Role) {
@@ -125,10 +139,7 @@ export class ComplaintsService {
     };
   }
 
-  private formatComplaintForUser(
-    complaint: any,
-    role: Role,
-  ) {
+  private formatComplaintForUser(complaint: any, role: Role) {
     if (this.isStaff(role)) {
       return complaint;
     }
@@ -317,10 +328,7 @@ export class ComplaintsService {
             senderId: userId,
             senderRole: role,
             content: dto.description.trim(),
-            attachments: [
-              ...photos,
-              ...attachments,
-            ],
+            attachments: [...photos, ...attachments],
             isInternal: false,
           },
         },
@@ -328,16 +336,17 @@ export class ComplaintsService {
       include: this.complaintInclude(),
     });
 
-    await this.prisma.intervention.update({
-      where: {
-        id: intervention.id,
-      },
-      data: {
-        hasIssue: true,
-        feedbackNotes: dto.title.trim(),
-        status: ComplaintStatus.OPEN ? undefined : undefined,
-      },
-    }).catch(() => null);
+    await this.prisma.intervention
+      .update({
+        where: {
+          id: intervention.id,
+        },
+        data: {
+          hasIssue: true,
+          feedbackNotes: dto.title.trim(),
+        },
+      })
+      .catch(() => null);
 
     return this.formatComplaintForUser(complaint, role);
   }
@@ -556,11 +565,7 @@ export class ComplaintsService {
   // Admin / Support
   // ==========================================================
 
-  async adminFindAll(
-    userId: number,
-    role: Role,
-    query: ComplaintQueryDto,
-  ) {
+  async adminFindAll(userId: number, role: Role, query: ComplaintQueryDto) {
     this.assertStaff(role);
 
     const where: Prisma.ComplaintWhereInput = {
@@ -790,13 +795,7 @@ export class ComplaintsService {
 
     await this.getComplaintOrFail(complaintId);
 
-    const approvedDecisions = [
-      ComplaintRefundDecision.APPROVED,
-      ComplaintRefundDecision.PARTIAL_REFUND,
-      ComplaintRefundDecision.REFUNDED,
-    ];
-
-    const refundApproved = approvedDecisions.includes(dto.decision);
+    const refundApproved = this.isApprovedRefundDecision(dto.decision);
 
     const status =
       dto.decision === ComplaintRefundDecision.REJECTED

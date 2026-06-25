@@ -87,6 +87,16 @@ export class AdminService {
     return `AdminCreated-Unusable-${crypto.randomBytes(64).toString('hex')}`;
   }
 
+  private isAssignableSupportRole(role: Role): boolean {
+    const allowedRoles: Role[] = [
+      Role.SUPPORT,
+      Role.ADMIN,
+      Role.SUPER_ADMIN,
+    ];
+
+    return allowedRoles.includes(role);
+  }
+
   private getPagination(page?: string | number, limit?: string | number) {
     const safePage = Math.max(1, Number(page || 1));
     const safeLimit = Math.min(100, Math.max(1, Number(limit || 20)));
@@ -245,7 +255,9 @@ export class AdminService {
     return this.events.create(data);
   }
 
-  private averageDurationInMinutes(items: Array<{ start: Date; end: Date | null }>) {
+  private averageDurationInMinutes(
+    items: Array<{ start: Date; end: Date | null }>,
+  ) {
     const validItems = items.filter((item) => item.end);
 
     if (!validItems.length) {
@@ -1665,9 +1677,7 @@ export class AdminService {
 
     if (
       !supportAgent ||
-      ![Role.SUPPORT, Role.ADMIN, Role.SUPER_ADMIN].includes(
-        supportAgent.role,
-      )
+      !this.isAssignableSupportRole(supportAgent.role)
     ) {
       throw new BadRequestException('Agent support invalide.');
     }
