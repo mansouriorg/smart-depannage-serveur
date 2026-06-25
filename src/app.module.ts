@@ -48,6 +48,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { InterventionWorkflowModule } from './modules/intervention-workflow/intervention-workflow.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { MatchingModule } from './modules/matching/matching.module';
+import { BusinessModule } from './modules/business/business.module';
 
 @Module({
   imports: [
@@ -107,6 +108,7 @@ import { MatchingModule } from './modules/matching/matching.module';
     PaymentsModule,
     InvoicesModule,
     ComplaintsModule,
+    BusinessModule,
     MessagesModule,
     ReviewsModule,
     InterventionWorkflowModule,
