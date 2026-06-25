@@ -1,7 +1,14 @@
-import { IsBoolean, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 
 export class CreateSubServiceDto {
-  @IsNumber()
+  @IsInt()
   categoryId: number;
 
   @IsString()
@@ -11,16 +18,23 @@ export class CreateSubServiceDto {
   @IsString()
   description?: string;
 
+  /**
+   * Estimated duration in minutes.
+   * Example: 60 = 1 hour
+   */
   @IsOptional()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   estimatedDuration?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   basePrice?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   emergencyPrice?: number;
 
   @IsOptional()

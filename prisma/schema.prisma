@@ -337,6 +337,10 @@ model ClientAddress {
   @@index([clientId])
 }
 
+// ==========================================================
+// Notification Preferences
+// ==========================================================
+
 model NotificationPreference {
   id     Int  @id @default(autoincrement())
   userId Int  @unique
@@ -364,14 +368,20 @@ model NotificationPreference {
 model ServiceCategory {
   id          Int         @id @default(autoincrement())
   serviceType ServiceType @unique
+
   name        String
   description String?
-  isActive    Boolean     @default(true)
+
+  isActive Boolean @default(true)
 
   subServices SubService[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([serviceType])
+  @@index([isActive])
+  @@index([name])
 }
 
 model SubService {
@@ -379,13 +389,23 @@ model SubService {
   categoryId Int
   category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
-  name              String
-  description       String?
+  name        String
+  description String?
+
+  // Estimated duration in minutes.
+  // Example: 60 = 1 hour.
   estimatedDuration Int?
-  basePrice         Float?
-  emergencyPrice    Float?
-  requiresPhotos    Boolean @default(false)
-  isActive          Boolean @default(true)
+
+  // Base intervention price.
+  basePrice Float?
+
+  // Emergency / urgent intervention price.
+  emergencyPrice Float?
+
+  // Should the client upload photos before submitting the request?
+  requiresPhotos Boolean @default(false)
+
+  isActive Boolean @default(true)
 
   interventions Intervention[]
 
@@ -393,6 +413,11 @@ model SubService {
   updatedAt DateTime @updatedAt
 
   @@index([categoryId])
+  @@index([isActive])
+  @@index([name])
+  @@index([basePrice])
+  @@index([emergencyPrice])
+  @@index([estimatedDuration])
 }
 
 // ==========================================================
@@ -520,6 +545,7 @@ model Intervention {
   @@index([artisanId])
   @@index([status])
   @@index([serviceType])
+  @@index([subServiceId])
   @@index([urgency])
   @@index([createdAt])
   @@index([contactPhone])
