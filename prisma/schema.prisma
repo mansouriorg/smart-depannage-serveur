@@ -176,6 +176,24 @@ enum ComplaintStatus {
   REFUNDED
 }
 
+enum ComplaintDecision {
+  CLIENT_FAVOR
+  ARTISAN_FAVOR
+  PARTIAL_REFUND
+  FULL_REFUND
+  NO_REFUND
+  OTHER
+}
+
+enum ComplaintRefundDecision {
+  NOT_REQUESTED
+  PENDING
+  APPROVED
+  REJECTED
+  PARTIAL_REFUND
+  REFUNDED
+}
+
 enum MessageAudience {
   CLIENT_ARTISAN
   CLIENT_SUPPORT
@@ -425,6 +443,9 @@ model User {
 
   sentMessages Message[] @relation("SentMessages")
   complaints   Complaint[]
+
+  assignedComplaints Complaint[]        @relation("AssignedComplaints")
+  complaintMessages  ComplaintMessage[] @relation("ComplaintMessageAuthor")
 
   reviewsGiven    Review[] @relation("ReviewsGiven")
   reviewsReceived Review[] @relation("ReviewsReceived")
@@ -1174,24 +1195,50 @@ model Complaint {
   intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
 
   userId Int?
-  user   User? @relation(fields: [userId], references: [id])
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   assignedToId Int?
+  assignedTo   User? @relation("AssignedComplaints", fields: [assignedToId], references: [id], onDelete: SetNull)
 
   title       String
   description String
-  status      ComplaintStatus @default(OPEN)
 
-  refundRequested Boolean @default(false)
-  refundApproved  Boolean @default(false)
-  refundAmount    Float?
-  refundDecidedAt DateTime?
+  // Photos / attachments from client, artisan, or admin
+  photos      String[] @default([])
+  attachments String[] @default([])
 
+  status ComplaintStatus @default(OPEN)
+
+  // Quick conversation snapshots
+  clientMessage      String?
+  artisanResponse    String?
+  artisanRespondedAt DateTime?
+
+  // Admin decision
+  adminDecision     ComplaintDecision?
+  adminDecisionNote String?
+  adminDecisionById Int?
+  adminDecisionAt   DateTime?
+
+  // Refund decision
+  refundRequested   Boolean                 @default(false)
+  refundDecision    ComplaintRefundDecision @default(NOT_REQUESTED)
+  refundApproved    Boolean                 @default(false)
+  refundAmount      Float?
+  refundDecidedById Int?
+  refundDecidedAt   DateTime?
+
+  // Resolution
+  resolutionNotes String?
+  resolvedAt      DateTime?
+  rejectedAt      DateTime?
+  closedAt        DateTime?
+
+  // Internal admin/support notes
   adminNotes    String?
   internalNotes String?
-  attachments   String[]
 
-  closedAt DateTime?
+  messages ComplaintMessage[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1200,6 +1247,41 @@ model Complaint {
   @@index([userId])
   @@index([assignedToId])
   @@index([status])
+  @@index([refundRequested])
+  @@index([refundDecision])
+  @@index([refundApproved])
+  @@index([adminDecision])
+  @@index([createdAt])
+  @@index([closedAt])
+}
+
+model ComplaintMessage {
+  id Int @id @default(autoincrement())
+
+  complaintId Int
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+
+  senderId Int?
+  sender   User? @relation("ComplaintMessageAuthor", fields: [senderId], references: [id], onDelete: SetNull)
+
+  senderRole Role
+
+  content     String
+  attachments String[] @default([])
+
+  // Internal messages are only visible to admin/support.
+  isInternal Boolean @default(false)
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([complaintId])
+  @@index([senderId])
+  @@index([senderRole])
+  @@index([isInternal])
+  @@index([deletedAt])
   @@index([createdAt])
 }
 
