@@ -44,6 +44,7 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
 
 import { GuestModule } from './modules/guest/guest.module';
 import { ArtisansModule } from './modules/artisans/artisans.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { ArtisansModule } from './modules/artisans/artisans.module';
     // ======================================================
 
     GuestModule,
+    AdminModule,
     ArtisansModule,
   ],
 

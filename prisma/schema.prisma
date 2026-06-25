@@ -203,6 +203,21 @@ enum MissionProblemType {
   OTHER
 }
 
+enum AdminNoteTargetType {
+  INTERVENTION
+  CLIENT
+  ARTISAN
+  COMPLAINT
+  PAYMENT
+  INVOICE
+}
+
+enum NotificationTemplateType {
+  SMS
+  EMAIL
+  PUSH
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -482,6 +497,11 @@ model Intervention {
   // Status tracking
   lastStatusChangedAt DateTime?
 
+  // Admin management
+  adminInternalNotes String?
+  cancelledReason    String?
+  cancelledById      Int?
+
   // Relations
   events     InterventionEvent[]
   quotes     Quote[]
@@ -505,6 +525,7 @@ model Intervention {
   @@index([contactPhone])
   @@index([contactEmail])
   @@index([lastStatusChangedAt])
+  @@index([cancelledById])
 }
 
 model InterventionEvent {
@@ -599,8 +620,10 @@ model Payment {
   updatedAt DateTime @updatedAt
 
   @@index([interventionId])
+  @@index([quoteId])
   @@index([method])
   @@index([status])
+  @@index([createdAt])
 }
 
 model Invoice {
@@ -637,20 +660,31 @@ model Complaint {
   userId Int?
   user   User? @relation(fields: [userId], references: [id])
 
+  assignedToId Int?
+
   title       String
   description String
   status      ComplaintStatus @default(OPEN)
 
   refundRequested Boolean @default(false)
-  adminNotes      String?
-  attachments     String[]
+  refundApproved  Boolean @default(false)
+  refundAmount    Float?
+  refundDecidedAt DateTime?
+
+  adminNotes    String?
+  internalNotes String?
+  attachments   String[]
+
+  closedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([interventionId])
   @@index([userId])
+  @@index([assignedToId])
   @@index([status])
+  @@index([createdAt])
 }
 
 model Message {
@@ -671,6 +705,8 @@ model Message {
   @@index([interventionId])
   @@index([senderId])
   @@index([audience])
+  @@index([isRead])
+  @@index([createdAt])
 }
 
 model Review {
@@ -694,6 +730,8 @@ model Review {
 
   @@index([clientId])
   @@index([artisanId])
+  @@index([rating])
+  @@index([createdAt])
 }
 
 // ==========================================================
@@ -766,6 +804,7 @@ model ArtisanDocument {
   @@index([artisanProfileId])
   @@index([type])
   @@index([status])
+  @@index([uploadedAt])
 }
 
 model ArtisanServiceZone {
@@ -841,6 +880,89 @@ model ArtisanMissionRejection {
   @@index([artisanProfileId])
   @@index([interventionId])
   @@index([reason])
+}
+
+// ==========================================================
+// Admin Dashboard / Settings / Internal Notes
+// ==========================================================
+
+model AdminInternalNote {
+  id Int @id @default(autoincrement())
+
+  targetType AdminNoteTargetType
+  targetId   Int
+
+  authorId Int?
+  content  String
+
+  createdAt DateTime @default(now())
+
+  @@index([targetType])
+  @@index([targetId])
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+model CompanySettings {
+  id Int @id @default(autoincrement())
+
+  companyName  String?
+  companyPhone String?
+  companyEmail String?
+
+  smsSender String?
+
+  defaultTaxRate      Float @default(20)
+  defaultEmergencyFee Float @default(0)
+
+  openingHours Json?
+
+  paymentMethods String[]
+
+  termsAndConditions String?
+  privacyPolicy      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AdminServiceZone {
+  id Int @id @default(autoincrement())
+
+  name       String
+  city       String?
+  postalCode String?
+
+  latitude  Float?
+  longitude Float?
+  radiusKm  Float @default(10)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([city])
+  @@index([postalCode])
+  @@index([isActive])
+}
+
+model NotificationTemplate {
+  id Int @id @default(autoincrement())
+
+  key     String                   @unique
+  type    NotificationTemplateType
+  subject String?
+  content String
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([type])
+  @@index([isActive])
 }
 
 // ==========================================================
