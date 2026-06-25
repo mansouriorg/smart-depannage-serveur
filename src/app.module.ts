@@ -43,6 +43,7 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
 // ==========================================================
 
 import { GuestModule } from './modules/guest/guest.module';
+import { ArtisansModule } from './modules/artisans/artisans.module';
 
 @Module({
   imports: [
@@ -110,6 +111,7 @@ import { GuestModule } from './modules/guest/guest.module';
     // ======================================================
 
     GuestModule,
+    ArtisansModule,
   ],
 
   controllers: [AppController],

@@ -145,6 +145,64 @@ enum MessageAudience {
   INTERNAL_ADMIN
 }
 
+enum ArtisanVerificationStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum ArtisanDocumentType {
+  IDENTITY
+  COMPANY_LEGAL
+  INSURANCE
+  CERTIFICATE
+  PROFILE_PHOTO
+  OTHER
+}
+
+enum ArtisanDocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ArtisanAvailabilityStatus {
+  ONLINE
+  OFFLINE
+  BUSY
+  UNAVAILABLE
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum MissionRejectionReason {
+  NOT_AVAILABLE
+  TOO_FAR
+  OUT_OF_SPECIALTY
+  PRICE_TOO_LOW
+  OTHER
+}
+
+enum MissionProblemType {
+  CLIENT_ABSENT
+  ACCESS_ISSUE
+  EXTRA_WORK_REQUIRED
+  SAFETY_RISK
+  MATERIAL_MISSING
+  CLIENT_DISPUTE
+  OTHER
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -192,6 +250,8 @@ model User {
   // Relations
   clientInterventions  Intervention[] @relation("ClientInterventions")
   artisanInterventions Intervention[] @relation("ArtisanInterventions")
+
+  artisanProfile ArtisanProfile?
 
   authTokens AuthToken[]
 
@@ -393,6 +453,35 @@ model Intervention {
   hasIssue      Boolean @default(false)
   feedbackNotes String?
 
+  // Artisan workflow timestamps
+  artisanAcceptedAt DateTime?
+  artisanRejectedAt DateTime?
+  artisanOnTheWayAt DateTime?
+  artisanArrivedAt  DateTime?
+  workStartedAt     DateTime?
+  workCompletedAt   DateTime?
+  cancelledAt       DateTime?
+
+  // Artisan mission details
+  diagnosticNotes String?
+  materialUsed    Json?
+
+  // Extra quote request by artisan
+  extraQuoteRequested Boolean @default(false)
+  extraQuoteReason    String?
+
+  // Client signature collected by artisan
+  clientSignatureUrl String?
+  clientSignatureAt  DateTime?
+
+  // Artisan problem report
+  problemReported Boolean             @default(false)
+  problemType     MissionProblemType?
+  problemNotes    String?
+
+  // Status tracking
+  lastStatusChangedAt DateTime?
+
   // Relations
   events     InterventionEvent[]
   quotes     Quote[]
@@ -401,6 +490,8 @@ model Intervention {
   complaints Complaint[]
   messages   Message[]
   review     Review?
+
+  missionRejections ArtisanMissionRejection[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -413,6 +504,7 @@ model Intervention {
   @@index([createdAt])
   @@index([contactPhone])
   @@index([contactEmail])
+  @@index([lastStatusChangedAt])
 }
 
 model InterventionEvent {
@@ -602,6 +694,153 @@ model Review {
 
   @@index([clientId])
   @@index([artisanId])
+}
+
+// ==========================================================
+// Artisan Profile / Onboarding / Mobile App
+// ==========================================================
+
+model ArtisanProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  specialty       String?
+  specialties     String[]
+  yearsExperience Int      @default(0)
+
+  companyName     String?
+  companyNumber   String?
+  insuranceNumber String?
+
+  bio             String?
+  profilePhotoUrl String?
+
+  verificationStatus ArtisanVerificationStatus @default(DRAFT)
+  rejectionReason    String?
+  verifiedAt         DateTime?
+  verifiedById       Int?
+
+  availabilityStatus ArtisanAvailabilityStatus @default(OFFLINE)
+  isAcceptingJobs    Boolean                   @default(false)
+
+  lastSeenAt DateTime?
+
+  averageRating      Float @default(0)
+  completedJobsCount Int   @default(0)
+  cancelledJobsCount Int   @default(0)
+
+  documents    ArtisanDocument[]
+  serviceZones ArtisanServiceZone[]
+  availability ArtisanAvailabilitySlot[]
+  bankDetails  ArtisanBankDetails?
+
+  missionRejections ArtisanMissionRejection[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([verificationStatus])
+  @@index([availabilityStatus])
+  @@index([isAcceptingJobs])
+  @@index([lastSeenAt])
+}
+
+model ArtisanDocument {
+  id               Int            @id @default(autoincrement())
+  artisanProfileId Int
+  artisanProfile   ArtisanProfile @relation(fields: [artisanProfileId], references: [id], onDelete: Cascade)
+
+  type     ArtisanDocumentType
+  fileUrl  String
+  fileName String?
+  mimeType String?
+
+  status        ArtisanDocumentStatus @default(PENDING)
+  rejectionNote String?
+
+  uploadedAt   DateTime  @default(now())
+  reviewedAt   DateTime?
+  reviewedById Int?
+
+  @@index([artisanProfileId])
+  @@index([type])
+  @@index([status])
+}
+
+model ArtisanServiceZone {
+  id               Int            @id @default(autoincrement())
+  artisanProfileId Int
+  artisanProfile   ArtisanProfile @relation(fields: [artisanProfileId], references: [id], onDelete: Cascade)
+
+  label      String?
+  city       String?
+  postalCode String?
+  latitude   Float?
+  longitude  Float?
+  radiusKm   Float   @default(10)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([artisanProfileId])
+  @@index([isActive])
+  @@index([postalCode])
+  @@index([city])
+}
+
+model ArtisanAvailabilitySlot {
+  id               Int            @id @default(autoincrement())
+  artisanProfileId Int
+  artisanProfile   ArtisanProfile @relation(fields: [artisanProfileId], references: [id], onDelete: Cascade)
+
+  dayOfWeek DayOfWeek
+  startTime String
+  endTime   String
+
+  isAvailable Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([artisanProfileId])
+  @@index([dayOfWeek])
+}
+
+model ArtisanBankDetails {
+  id               Int            @id @default(autoincrement())
+  artisanProfileId Int            @unique
+  artisanProfile   ArtisanProfile @relation(fields: [artisanProfileId], references: [id], onDelete: Cascade)
+
+  accountHolderName String?
+  bankName          String?
+  iban              String?
+  bic               String?
+
+  isVerified Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ArtisanMissionRejection {
+  id               Int            @id @default(autoincrement())
+  artisanProfileId Int
+  artisanProfile   ArtisanProfile @relation(fields: [artisanProfileId], references: [id], onDelete: Cascade)
+
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  reason MissionRejectionReason
+  note   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([artisanProfileId])
+  @@index([interventionId])
+  @@index([reason])
 }
 
 // ==========================================================
