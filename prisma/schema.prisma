@@ -133,8 +133,21 @@ enum QuoteStatus {
 
 enum PaymentMethod {
   ONLINE
+  ONLINE_CARD
   CASH
   BANK_TRANSFER
+}
+
+enum PaymentProvider {
+  MANUAL
+  INTERNAL
+  STRIPE
+  PAYPAL
+  KONNECT
+  PAYMEE
+  FLOUCI
+  BANK_TRANSFER
+  CASH
 }
 
 enum PaymentStatus {
@@ -143,6 +156,7 @@ enum PaymentStatus {
   PAID
   FAILED
   REFUNDED
+  PARTIALLY_REFUNDED
   CANCELLED
 }
 
@@ -657,7 +671,8 @@ model Quote {
   expiredAt   DateTime?
   cancelledAt DateTime?
 
-  items QuoteItem[]
+  items    QuoteItem[]
+  payments Payment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -689,7 +704,7 @@ model QuoteItem {
 }
 
 // ==========================================================
-// Payments - no Stripe / manual for now
+// Payments - no external API for now
 // ==========================================================
 
 model Payment {
@@ -698,28 +713,63 @@ model Payment {
   intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
 
   quoteId Int?
-  method  PaymentMethod
-  status  PaymentStatus @default(PENDING)
+  quote   Quote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
 
-  amount   Float
-  currency String @default("EUR")
+  invoiceId Int?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
 
-  reference  String?
+  method   PaymentMethod
+  provider PaymentProvider @default(MANUAL)
+
+  status PaymentStatus @default(PENDING)
+
+  amount         Float
+  amountRefunded Float  @default(0)
+  currency       String @default("EUR")
+
+  reference         String?
+  providerPaymentId String?
+
+  receiptNumber      String?   @unique
+  receiptUrl         String?
+  receiptGeneratedAt DateTime?
+
   clientNote String?
   adminNote  String?
+
+  failureReason String?
+  refundReason  String?
+
+  createdById   Int?
+  confirmedById Int?
+  refundedById  Int?
 
   requestedAt DateTime @default(now())
   confirmedAt DateTime?
   failedAt    DateTime?
   refundedAt  DateTime?
+  cancelledAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([interventionId])
   @@index([quoteId])
+  @@index([invoiceId])
   @@index([method])
+  @@index([provider])
   @@index([status])
+  @@index([reference])
+  @@index([providerPaymentId])
+  @@index([receiptNumber])
+  @@index([createdById])
+  @@index([confirmedById])
+  @@index([refundedById])
+  @@index([requestedAt])
+  @@index([confirmedAt])
+  @@index([failedAt])
+  @@index([refundedAt])
+  @@index([cancelledAt])
   @@index([createdAt])
 }
 
@@ -743,6 +793,8 @@ model Invoice {
   paidAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  payments Payment[]
 }
 
 // ==========================================================

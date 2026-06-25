@@ -4,14 +4,19 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+
 import {
   InterventionEventType,
+  InvoiceStatus,
   PaymentMethod,
+  PaymentProvider,
   PaymentStatus,
+  Prisma,
   Status,
 } from '../../../generated/prisma/client';
 
@@ -22,15 +27,165 @@ export class PaymentsService {
     private readonly events: InterventionEventsService,
   ) {}
 
+  // ==========================================================
+  // Helpers
+  // ==========================================================
+
+  private paymentInclude = {
+    intervention: {
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        artisan: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        subService: true,
+      },
+    },
+    quote: {
+      include: {
+        items: {
+          orderBy: {
+            id: 'asc' as const,
+          },
+        },
+      },
+    },
+    invoice: true,
+  };
+
+  private roundMoney(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
+  private generateReceiptNumber(paymentId: number): string {
+    const year = new Date().getFullYear();
+    return `RCPT-${year}-${String(paymentId).padStart(6, '0')}`;
+  }
+
+  private getOptionalNumber(dto: any, key: string): number | undefined {
+    const value = dto?.[key];
+
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    const numberValue = Number(value);
+
+    if (!Number.isFinite(numberValue)) {
+      return undefined;
+    }
+
+    return numberValue;
+  }
+
+  private getOptionalString(dto: any, key: string): string | undefined {
+    const value = dto?.[key];
+
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    return String(value);
+  }
+
+  private providerFromMethod(method: PaymentMethod): PaymentProvider {
+    switch (method) {
+      case PaymentMethod.CASH:
+        return PaymentProvider.CASH;
+
+      case PaymentMethod.BANK_TRANSFER:
+        return PaymentProvider.BANK_TRANSFER;
+
+      case PaymentMethod.ONLINE:
+      case PaymentMethod.ONLINE_CARD:
+      default:
+        return PaymentProvider.MANUAL;
+    }
+  }
+
+  private initialStatusFromMethod(method: PaymentMethod): PaymentStatus {
+    switch (method) {
+      case PaymentMethod.CASH:
+      case PaymentMethod.BANK_TRANSFER:
+        return PaymentStatus.AWAITING_CONFIRMATION;
+
+      case PaymentMethod.ONLINE:
+      case PaymentMethod.ONLINE_CARD:
+      default:
+        return PaymentStatus.PENDING;
+    }
+  }
+
+  private async createEvent(data: {
+    interventionId: number;
+    type: InterventionEventType;
+    title: string;
+    message?: string;
+    createdById?: number;
+    metadata?: Prisma.InputJsonValue;
+  }) {
+    return this.events.create(data);
+  }
+
+  private async getPaymentOrFail(paymentId: number) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: this.paymentInclude,
+    });
+
+    if (!payment) {
+      throw new NotFoundException('Paiement introuvable.');
+    }
+
+    return payment;
+  }
+
   private async getClientIntervention(clientId: number, interventionId: number) {
     const intervention = await this.prisma.intervention.findUnique({
-      where: { id: interventionId },
+      where: {
+        id: interventionId,
+      },
       include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        artisan: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
         quotes: {
-          where: { status: 'ACCEPTED' },
-          orderBy: { createdAt: 'desc' },
+          where: {
+            status: 'ACCEPTED',
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
           take: 1,
         },
+        invoice: true,
       },
     });
 
@@ -45,6 +200,117 @@ export class PaymentsService {
     return intervention;
   }
 
+  private async getInterventionOrFail(interventionId: number) {
+    const intervention = await this.prisma.intervention.findUnique({
+      where: {
+        id: interventionId,
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        artisan: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        quotes: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+        },
+        invoice: true,
+      },
+    });
+
+    if (!intervention) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+
+    return intervention;
+  }
+
+  private ensurePaymentCanBeConfirmed(payment: any) {
+    if (
+      ![
+        PaymentStatus.PENDING,
+        PaymentStatus.AWAITING_CONFIRMATION,
+        PaymentStatus.FAILED,
+      ].includes(payment.status)
+    ) {
+      throw new BadRequestException(
+        `Ce paiement ne peut pas être confirmé car son statut est ${payment.status}.`,
+      );
+    }
+  }
+
+  private ensurePaymentCanBeCancelled(payment: any) {
+    if (
+      ![
+        PaymentStatus.PENDING,
+        PaymentStatus.AWAITING_CONFIRMATION,
+        PaymentStatus.FAILED,
+      ].includes(payment.status)
+    ) {
+      throw new BadRequestException(
+        `Ce paiement ne peut pas être annulé car son statut est ${payment.status}.`,
+      );
+    }
+  }
+
+  private ensurePaymentCanBeRefunded(payment: any) {
+    if (
+      ![
+        PaymentStatus.PAID,
+        PaymentStatus.PARTIALLY_REFUNDED,
+      ].includes(payment.status)
+    ) {
+      throw new BadRequestException(
+        'Seuls les paiements payés peuvent être remboursés.',
+      );
+    }
+  }
+
+  private async validateLinkedInvoice(
+    interventionId: number,
+    invoiceId?: number,
+  ) {
+    if (!invoiceId) {
+      return undefined;
+    }
+
+    const invoice = await this.prisma.invoice.findUnique({
+      where: {
+        id: invoiceId,
+      },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    if (invoice.interventionId !== interventionId) {
+      throw new BadRequestException(
+        'La facture ne correspond pas à cette intervention.',
+      );
+    }
+
+    return invoice;
+  }
+
+  // ==========================================================
+  // Client creates payment request
+  // Cash / bank transfer / online placeholder
+  // ==========================================================
+
   async createClientPaymentRequest(
     clientId: number,
     interventionId: number,
@@ -56,48 +322,73 @@ export class PaymentsService {
     );
 
     const acceptedQuote = intervention.quotes[0];
-    const amount = dto.amount ?? acceptedQuote?.amountTTC;
 
-    if (!amount) {
+    const invoiceId = this.getOptionalNumber(dto, 'invoiceId');
+    const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
+
+    const amountFromDto = this.getOptionalNumber(dto, 'amount');
+    const amount = this.roundMoney(
+      amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0,
+    );
+
+    if (!amount || amount <= 0) {
       throw new BadRequestException(
-        'Montant introuvable. Acceptez un devis ou envoyez un montant.',
+        'Montant introuvable. Acceptez un devis, liez une facture ou envoyez un montant.',
       );
     }
 
-    const status =
-      dto.method === PaymentMethod.CASH ||
-      dto.method === PaymentMethod.BANK_TRANSFER
-        ? PaymentStatus.AWAITING_CONFIRMATION
-        : PaymentStatus.PENDING;
+    const providerFromDto = this.getOptionalString(dto, 'provider') as
+      | PaymentProvider
+      | undefined;
 
     const payment = await this.prisma.payment.create({
       data: {
         interventionId,
         quoteId: acceptedQuote?.id,
+        invoiceId,
         method: dto.method,
-        status,
+        provider: providerFromDto || this.providerFromMethod(dto.method),
+        status: this.initialStatusFromMethod(dto.method),
         amount,
+        amountRefunded: 0,
+        currency: this.getOptionalString(dto, 'currency') || 'EUR',
         reference: dto.reference,
         clientNote: dto.clientNote,
+        createdById: clientId,
       },
+      include: this.paymentInclude,
     });
 
     await this.prisma.intervention.update({
-      where: { id: interventionId },
+      where: {
+        id: interventionId,
+      },
       data: {
         status: Status.PAYMENT_PENDING,
+        paymentPendingAt: new Date(),
+        lastStatusChangedAt: new Date(),
       },
     });
 
-    await this.events.create({
+    await this.createEvent({
       interventionId,
       type: InterventionEventType.PAYMENT_PENDING,
       title: 'Paiement en attente',
       message:
-        dto.method === PaymentMethod.ONLINE
-          ? 'Le paiement en ligne est enregistré comme demande en attente. Aucun prestataire de paiement externe n’est encore connecté.'
+        dto.method === PaymentMethod.ONLINE ||
+        dto.method === PaymentMethod.ONLINE_CARD
+          ? 'Le paiement en ligne est enregistré comme demande en attente. Aucun prestataire externe n’est encore connecté.'
           : `Paiement ${dto.method} en attente de confirmation.`,
       createdById: clientId,
+      metadata: {
+        paymentId: payment.id,
+        method: payment.method,
+        provider: payment.provider,
+        amount: payment.amount,
+        currency: payment.currency,
+        quoteId: payment.quoteId,
+        invoiceId: payment.invoiceId,
+      },
     });
 
     return {
@@ -115,103 +406,479 @@ export class PaymentsService {
       return 'Effectuez le virement bancaire puis envoyez la référence du virement. Confirmation manuelle par l’administrateur.';
     }
 
+    if (method === PaymentMethod.ONLINE_CARD) {
+      return 'Paiement par carte non connecté pour le moment. Cette demande reste en attente jusqu’à intégration d’un prestataire.';
+    }
+
     return 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente jusqu’à intégration d’un prestataire.';
   }
+
+  // ==========================================================
+  // Client payments for one intervention
+  // ==========================================================
 
   async findForClient(clientId: number, interventionId: number) {
     await this.getClientIntervention(clientId, interventionId);
 
     return this.prisma.payment.findMany({
-      where: { interventionId },
-      orderBy: { createdAt: 'desc' },
+      where: {
+        interventionId,
+      },
+      include: this.paymentInclude,
+      orderBy: {
+        createdAt: 'desc',
+      },
     });
   }
+
+  // ==========================================================
+  // Admin / accounting list
+  // ==========================================================
+
+  async findAllAdmin(params?: {
+    status?: PaymentStatus;
+    method?: PaymentMethod;
+    interventionId?: number;
+  }) {
+    const where: Prisma.PaymentWhereInput = {};
+
+    if (params?.status) {
+      where.status = params.status;
+    }
+
+    if (params?.method) {
+      where.method = params.method;
+    }
+
+    if (params?.interventionId) {
+      where.interventionId = params.interventionId;
+    }
+
+    return this.prisma.payment.findMany({
+      where,
+      include: this.paymentInclude,
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+  }
+
+  async findOne(paymentId: number) {
+    return this.getPaymentOrFail(paymentId);
+  }
+
+  // ==========================================================
+  // Admin manual confirmation
+  // ==========================================================
 
   async confirm(
     paymentId: number,
     adminId: number,
     dto: AdminPaymentActionDto,
   ) {
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    this.ensurePaymentCanBeConfirmed(payment);
+
+    const reference = this.getOptionalString(dto, 'reference');
+    const receiptNumber =
+      payment.receiptNumber || this.generateReceiptNumber(payment.id);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const confirmedPayment = await tx.payment.update({
+        where: {
+          id: paymentId,
+        },
+        data: {
+          status: PaymentStatus.PAID,
+          confirmedAt: new Date(),
+          confirmedById: adminId,
+          reference: reference || payment.reference,
+          adminNote: dto.adminNote,
+          receiptNumber,
+          receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
+        },
+        include: this.paymentInclude,
+      });
+
+      await tx.intervention.update({
+        where: {
+          id: payment.interventionId,
+        },
+        data: {
+          status: Status.PAID,
+          paidAt: new Date(),
+          lastStatusChangedAt: new Date(),
+        },
+      });
+
+      if (payment.invoiceId) {
+        await tx.invoice.update({
+          where: {
+            id: payment.invoiceId,
+          },
+          data: {
+            status: InvoiceStatus.PAID,
+            paidAt: new Date(),
+          },
+        });
+      }
+
+      return confirmedPayment;
     });
 
-    if (!payment) {
-      throw new NotFoundException('Paiement introuvable.');
-    }
-
-    const updated = await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        status: PaymentStatus.PAID,
-        confirmedAt: new Date(),
-        adminNote: dto.adminNote,
-      },
-    });
-
-    await this.prisma.intervention.update({
-      where: { id: payment.interventionId },
-      data: {
-        status: Status.PAID,
-      },
-    });
-
-    await this.events.create({
+    await this.createEvent({
       interventionId: payment.interventionId,
       type: InterventionEventType.PAYMENT_CONFIRMED,
       title: 'Paiement confirmé',
-      message: 'Le paiement a été confirmé.',
+      message: `Le paiement de ${payment.amount} ${payment.currency} a été confirmé.`,
       createdById: adminId,
+      metadata: {
+        paymentId,
+        amount: payment.amount,
+        currency: payment.currency,
+        method: payment.method,
+        provider: payment.provider,
+        reference: updated.reference,
+        receiptNumber: updated.receiptNumber,
+      },
     });
 
     return updated;
   }
 
-  async fail(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-    });
+  // ==========================================================
+  // Admin marks payment as failed
+  // ==========================================================
 
-    if (!payment) {
-      throw new NotFoundException('Paiement introuvable.');
+  async fail(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    if (
+      [
+        PaymentStatus.PAID,
+        PaymentStatus.REFUNDED,
+        PaymentStatus.PARTIALLY_REFUNDED,
+      ].includes(payment.status)
+    ) {
+      throw new BadRequestException(
+        'Un paiement payé ou remboursé ne peut pas être marqué comme échoué.',
+      );
     }
 
-    return this.prisma.payment.update({
-      where: { id: paymentId },
+    const reason =
+      this.getOptionalString(dto, 'reason') ||
+      dto.adminNote ||
+      'Le paiement a échoué.';
+
+    const updated = await this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
       data: {
         status: PaymentStatus.FAILED,
         failedAt: new Date(),
+        failureReason: reason,
         adminNote: dto.adminNote,
       },
-    });
-  }
-
-  async refund(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
+      include: this.paymentInclude,
     });
 
-    if (!payment) {
-      throw new NotFoundException('Paiement introuvable.');
-    }
-
-    const updated = await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        status: PaymentStatus.REFUNDED,
-        refundedAt: new Date(),
-        adminNote: dto.adminNote,
-      },
-    });
-
-    await this.events.create({
+    await this.createEvent({
       interventionId: payment.interventionId,
-      type: InterventionEventType.PAYMENT_CONFIRMED,
-      title: 'Remboursement enregistré',
-      message: 'Un remboursement a été enregistré par l’administration.',
+      type: InterventionEventType.STATUS_CHANGED,
+      title: 'Paiement échoué',
+      message: reason,
       createdById: adminId,
+      metadata: {
+        paymentId,
+      },
     });
 
     return updated;
+  }
+
+  // ==========================================================
+  // Admin cancels payment
+  // ==========================================================
+
+  async cancel(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    this.ensurePaymentCanBeCancelled(payment);
+
+    const reason =
+      this.getOptionalString(dto, 'reason') ||
+      dto.adminNote ||
+      'Le paiement a été annulé.';
+
+    const updated = await this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        status: PaymentStatus.CANCELLED,
+        cancelledAt: new Date(),
+        adminNote: dto.adminNote,
+      },
+      include: this.paymentInclude,
+    });
+
+    await this.createEvent({
+      interventionId: payment.interventionId,
+      type: InterventionEventType.CANCELLED,
+      title: 'Paiement annulé',
+      message: reason,
+      createdById: adminId,
+      metadata: {
+        paymentId,
+      },
+    });
+
+    return updated;
+  }
+
+  // ==========================================================
+  // Admin refund / partial refund
+  // ==========================================================
+
+  async refund(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    this.ensurePaymentCanBeRefunded(payment);
+
+    const amountFromDto = this.getOptionalNumber(dto, 'amount');
+    const refundAmount = this.roundMoney(amountFromDto ?? payment.amount);
+
+    if (refundAmount <= 0) {
+      throw new BadRequestException(
+        'Le montant du remboursement doit être supérieur à 0.',
+      );
+    }
+
+    const alreadyRefunded = payment.amountRefunded || 0;
+    const newRefundedTotal = this.roundMoney(alreadyRefunded + refundAmount);
+
+    if (newRefundedTotal > payment.amount) {
+      throw new BadRequestException(
+        'Le montant total remboursé ne peut pas dépasser le montant du paiement.',
+      );
+    }
+
+    const isFullRefund = newRefundedTotal === payment.amount;
+
+    const reason =
+      this.getOptionalString(dto, 'reason') ||
+      dto.adminNote ||
+      `Remboursement de ${refundAmount} ${payment.currency}.`;
+
+    const updated = await this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        status: isFullRefund
+          ? PaymentStatus.REFUNDED
+          : PaymentStatus.PARTIALLY_REFUNDED,
+        amountRefunded: newRefundedTotal,
+        refundedAt: new Date(),
+        refundedById: adminId,
+        refundReason: reason,
+        adminNote: dto.adminNote,
+      },
+      include: this.paymentInclude,
+    });
+
+    await this.createEvent({
+      interventionId: payment.interventionId,
+      type: InterventionEventType.STATUS_CHANGED,
+      title: isFullRefund
+        ? 'Remboursement enregistré'
+        : 'Remboursement partiel enregistré',
+      message: reason,
+      createdById: adminId,
+      metadata: {
+        paymentId,
+        refundAmount,
+        totalRefunded: newRefundedTotal,
+        isFullRefund,
+      },
+    });
+
+    return updated;
+  }
+
+  // ==========================================================
+  // Generate receipt data
+  // No external PDF generator for now
+  // ==========================================================
+
+  async generateReceipt(paymentId: number) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    if (payment.status !== PaymentStatus.PAID) {
+      throw new BadRequestException(
+        'Un reçu peut être généré uniquement pour un paiement payé.',
+      );
+    }
+
+    const receiptNumber =
+      payment.receiptNumber || this.generateReceiptNumber(payment.id);
+
+    const updated = await this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        receiptNumber,
+        receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
+      },
+      include: this.paymentInclude,
+    });
+
+    return {
+      receiptNumber: updated.receiptNumber,
+      receiptUrl: updated.receiptUrl,
+      generatedAt: updated.receiptGeneratedAt,
+      payment: updated,
+      receipt: {
+        number: updated.receiptNumber,
+        date: updated.receiptGeneratedAt,
+        amount: updated.amount,
+        amountRefunded: updated.amountRefunded,
+        currency: updated.currency,
+        method: updated.method,
+        provider: updated.provider,
+        reference: updated.reference,
+        interventionId: updated.interventionId,
+        quoteId: updated.quoteId,
+        invoiceId: updated.invoiceId,
+        client: updated.intervention.client,
+        artisan: updated.intervention.artisan,
+      },
+      message:
+        'Reçu généré côté backend. Vous pouvez utiliser ces données pour afficher ou imprimer le reçu côté frontend.',
+    };
+  }
+
+  // ==========================================================
+  // Attach receipt PDF URL later
+  // ==========================================================
+
+  async setReceiptUrl(paymentId: number, receiptUrl: string) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    return this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        receiptUrl,
+        receiptNumber:
+          payment.receiptNumber || this.generateReceiptNumber(payment.id),
+        receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
+      },
+      include: this.paymentInclude,
+    });
+  }
+
+  // ==========================================================
+  // Link payment to invoice
+  // ==========================================================
+
+  async linkToInvoice(paymentId: number, invoiceId: number) {
+    const payment = await this.getPaymentOrFail(paymentId);
+
+    const invoice = await this.prisma.invoice.findUnique({
+      where: {
+        id: invoiceId,
+      },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    if (invoice.interventionId !== payment.interventionId) {
+      throw new BadRequestException(
+        'La facture ne correspond pas à l’intervention du paiement.',
+      );
+    }
+
+    return this.prisma.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        invoiceId,
+      },
+      include: this.paymentInclude,
+    });
+  }
+
+  // ==========================================================
+  // Admin creates manual payment directly
+  // Useful for cash/bank transfer recorded from dashboard
+  // ==========================================================
+
+  async createAdminManualPayment(
+    adminId: number,
+    interventionId: number,
+    dto: CreateManualPaymentDto,
+  ) {
+    const intervention = await this.getInterventionOrFail(interventionId);
+
+    const acceptedQuote = intervention.quotes.find(
+      (quote) => quote.status === 'ACCEPTED',
+    );
+
+    const invoiceId = this.getOptionalNumber(dto, 'invoiceId');
+    const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
+
+    const amountFromDto = this.getOptionalNumber(dto, 'amount');
+    const amount = this.roundMoney(
+      amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0,
+    );
+
+    if (!amount || amount <= 0) {
+      throw new BadRequestException(
+        'Montant introuvable. Envoyez un montant, liez une facture ou utilisez un devis accepté.',
+      );
+    }
+
+    const payment = await this.prisma.payment.create({
+      data: {
+        interventionId,
+        quoteId: acceptedQuote?.id,
+        invoiceId,
+        method: dto.method,
+        provider: this.providerFromMethod(dto.method),
+        status: this.initialStatusFromMethod(dto.method),
+        amount,
+        amountRefunded: 0,
+        currency: this.getOptionalString(dto, 'currency') || 'EUR',
+        reference: dto.reference,
+        clientNote: dto.clientNote,
+        adminNote: this.getOptionalString(dto, 'adminNote'),
+        createdById: adminId,
+      },
+      include: this.paymentInclude,
+    });
+
+    await this.createEvent({
+      interventionId,
+      type: InterventionEventType.PAYMENT_PENDING,
+      title: 'Paiement créé par l’administration',
+      message: `Un paiement de ${payment.amount} ${payment.currency} a été créé par l’administration.`,
+      createdById: adminId,
+      metadata: {
+        paymentId: payment.id,
+        method: payment.method,
+        amount: payment.amount,
+        currency: payment.currency,
+      },
+    });
+
+    return payment;
   }
 }
