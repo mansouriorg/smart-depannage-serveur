@@ -1135,7 +1135,7 @@ model FileAsset {
   width   Int?
   height  Int?
 
-  isDeleted Boolean   @default(false)
+  isDeleted Boolean @default(false)
   deletedAt DateTime?
 
   replacedById Int?
@@ -1271,7 +1271,8 @@ model ArtisanProfile {
 
   specialty       String?
   specialties     String[]
-  yearsExperience Int      @default(0)
+  serviceTypes    ServiceType[] @default([])
+  yearsExperience Int           @default(0)
 
   companyName     String?
   companyNumber   String?
@@ -1287,6 +1288,10 @@ model ArtisanProfile {
 
   availabilityStatus ArtisanAvailabilityStatus @default(OFFLINE)
   isAcceptingJobs    Boolean                   @default(false)
+
+  emergencyAvailable     Boolean @default(false)
+  maxActiveJobs          Int     @default(3)
+  averageResponseMinutes Int?
 
   lastSeenAt DateTime?
 
@@ -1307,6 +1312,9 @@ model ArtisanProfile {
   @@index([verificationStatus])
   @@index([availabilityStatus])
   @@index([isAcceptingJobs])
+  @@index([emergencyAvailable])
+  @@index([maxActiveJobs])
+  @@index([averageRating])
   @@index([lastSeenAt])
 }
 

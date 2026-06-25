@@ -47,6 +47,7 @@ import { ArtisansModule } from './modules/artisans/artisans.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { InterventionWorkflowModule } from './modules/intervention-workflow/intervention-workflow.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
+import { MatchingModule } from './modules/matching/matching.module';
 
 @Module({
   imports: [
@@ -110,6 +111,7 @@ import { SchedulingModule } from './modules/scheduling/scheduling.module';
     ReviewsModule,
     InterventionWorkflowModule,
     SchedulingModule,
+    MatchingModule,
 
     // ======================================================
     // G. GUEST CLIENT FEATURES
