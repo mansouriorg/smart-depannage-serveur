@@ -361,6 +361,13 @@ enum ArtisanTimeBlockType {
   OTHER
 }
 
+enum ReviewModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  HIDDEN
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -1246,10 +1253,22 @@ model Review {
   artisanId Int?
   artisan   User? @relation("ReviewsReceived", fields: [artisanId], references: [id])
 
-  rating         Int
-  isOnTime       Boolean?
-  comment        String?
-  wouldRecommend Boolean?
+  // Rating from 1 to 5
+  rating Int
+
+  // Detailed client feedback
+  comment          String?
+  isOnTime         Boolean?
+  isWorkClean      Boolean?
+  isPriceRespected Boolean?
+  wouldRecommend  Boolean?
+
+  // Admin moderation
+  status           ReviewModerationStatus @default(PENDING)
+  isVisible        Boolean                @default(false)
+  moderatedById    Int?
+  moderatedAt      DateTime?
+  moderationReason String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1257,6 +1276,9 @@ model Review {
   @@index([clientId])
   @@index([artisanId])
   @@index([rating])
+  @@index([status])
+  @@index([isVisible])
+  @@index([moderatedById])
   @@index([createdAt])
 }
 
@@ -1296,6 +1318,7 @@ model ArtisanProfile {
   lastSeenAt DateTime?
 
   averageRating      Float @default(0)
+  ratingCount        Int   @default(0)
   completedJobsCount Int   @default(0)
   cancelledJobsCount Int   @default(0)
 
@@ -1315,6 +1338,7 @@ model ArtisanProfile {
   @@index([emergencyAvailable])
   @@index([maxActiveJobs])
   @@index([averageRating])
+  @@index([ratingCount])
   @@index([lastSeenAt])
 }
 
