@@ -36,21 +36,31 @@ enum ServiceType {
 }
 
 enum Status {
-  PENDING
-  ADMIN_REVIEW
+  // Professional workflow
+  CREATED
+  WAITING_ADMIN_REVIEW
   QUOTE_SENT
   QUOTE_ACCEPTED
   ASSIGNED
-  ACCEPTED
-  ON_THE_WAY
-  ARRIVED
+  ARTISAN_ACCEPTED
+  ARTISAN_ON_THE_WAY
+  ARTISAN_ARRIVED
   IN_PROGRESS
+  WAITING_CLIENT_VALIDATION
   COMPLETED
   PAYMENT_PENDING
   PAID
-  INVOICE_READY
+  INVOICE_SENT
   CANCELLED
   DISPUTED
+
+  // Old compatibility statuses
+  PENDING
+  ADMIN_REVIEW
+  ACCEPTED
+  ON_THE_WAY
+  ARRIVED
+  INVOICE_READY
 }
 
 enum ApplicationStatus {
@@ -81,19 +91,34 @@ enum InterventionEventType {
   QUOTE_ACCEPTED
   QUOTE_REJECTED
   QUOTE_MODIFICATION_REQUESTED
+
   ARTISAN_ASSIGNED
   ARTISAN_ACCEPTED
   ARTISAN_ON_THE_WAY
   ARTISAN_ARRIVED
+
+  BEFORE_PHOTO_UPLOADED
   WORK_STARTED
+  AFTER_PHOTO_UPLOADED
   WORK_COMPLETED
+
+  CLIENT_VALIDATION_PENDING
+  CLIENT_VALIDATED
+
   PAYMENT_PENDING
   PAYMENT_CONFIRMED
+  CLIENT_PAID
+
   INVOICE_READY
+  INVOICE_SENT
+
   REVIEW_SUBMITTED
   ISSUE_REPORTED
   COMPLAINT_OPENED
   CANCELLED
+
+  STATUS_CHANGED
+  INTERNAL_NOTE_ADDED
 }
 
 enum QuoteStatus {
@@ -429,7 +454,7 @@ model Intervention {
   description String
   address     String
   serviceType ServiceType
-  status      Status       @default(PENDING)
+  status      Status       @default(CREATED)
   urgency     UrgencyLevel @default(NORMAL)
 
   // Sub-service
@@ -493,6 +518,18 @@ model Intervention {
   hasIssue      Boolean @default(false)
   feedbackNotes String?
 
+  // Professional workflow timestamps
+  requestCreatedAt          DateTime?
+  adminReviewStartedAt      DateTime?
+  quoteSentAt               DateTime?
+  quoteAcceptedAt           DateTime?
+  assignedAt                DateTime?
+  waitingClientValidationAt DateTime?
+  clientValidatedAt         DateTime?
+  paymentPendingAt          DateTime?
+  paidAt                    DateTime?
+  invoiceSentAt             DateTime?
+
   // Artisan workflow timestamps
   artisanAcceptedAt DateTime?
   artisanRejectedAt DateTime?
@@ -551,6 +588,16 @@ model Intervention {
   @@index([contactPhone])
   @@index([contactEmail])
   @@index([lastStatusChangedAt])
+  @@index([requestCreatedAt])
+  @@index([adminReviewStartedAt])
+  @@index([quoteSentAt])
+  @@index([quoteAcceptedAt])
+  @@index([assignedAt])
+  @@index([workStartedAt])
+  @@index([workCompletedAt])
+  @@index([paymentPendingAt])
+  @@index([paidAt])
+  @@index([invoiceSentAt])
   @@index([cancelledById])
 }
 
@@ -571,6 +618,7 @@ model InterventionEvent {
   @@index([interventionId])
   @@index([type])
   @@index([createdAt])
+  @@index([createdById])
 }
 
 // ==========================================================
