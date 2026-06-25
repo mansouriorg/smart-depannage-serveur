@@ -285,6 +285,47 @@ enum StorageProvider {
   GOOGLE_CLOUD
 }
 
+enum NotificationType {
+  NEW_INTERVENTION_CREATED
+  ARTISAN_ASSIGNED
+  ARTISAN_ACCEPTED_MISSION
+  ARTISAN_ON_THE_WAY
+  ARTISAN_ARRIVED
+  WORK_STARTED
+  WORK_COMPLETED
+  QUOTE_SENT
+  QUOTE_ACCEPTED
+  PAYMENT_RECEIVED
+  INVOICE_READY
+  COMPLAINT_OPENED
+  COMPLAINT_UPDATED
+  ARTISAN_APPLICATION_APPROVED
+  ARTISAN_APPLICATION_REJECTED
+  GENERAL
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+  ADMIN_REAL_TIME
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -349,6 +390,11 @@ model User {
   quotesCreated Quote[] @relation("QuotesCreated")
 
   uploadedFiles FileAsset[] @relation("UploadedFiles")
+
+  notifications      Notification[] @relation("UserNotifications")
+  notificationsActed Notification[] @relation("NotificationActor")
+  notificationLogs   NotificationDeliveryLog[]
+  pushTokens         PushDeviceToken[]
 
   @@index([role])
   @@index([isActive])
@@ -417,10 +463,14 @@ model NotificationPreference {
   userId Int  @unique
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  emailEnabled Boolean @default(true)
-  smsEnabled   Boolean @default(true)
-  pushEnabled  Boolean @default(true)
+  // Channels
+  inAppEnabled         Boolean @default(true)
+  emailEnabled         Boolean @default(true)
+  smsEnabled           Boolean @default(true)
+  pushEnabled          Boolean @default(true)
+  adminRealtimeEnabled Boolean @default(true)
 
+  // Global categories
   interventionUpdates Boolean @default(true)
   quoteUpdates        Boolean @default(true)
   paymentUpdates      Boolean @default(true)
@@ -428,8 +478,128 @@ model NotificationPreference {
   complaintUpdates    Boolean @default(true)
   marketingUpdates    Boolean @default(false)
 
+  // Event preferences
+  newInterventionCreated      Boolean @default(true)
+  artisanAssigned            Boolean @default(true)
+  artisanAcceptedMission     Boolean @default(true)
+  artisanOnTheWay            Boolean @default(true)
+  artisanArrived             Boolean @default(true)
+  workStarted                Boolean @default(true)
+  workCompleted              Boolean @default(true)
+  quoteSent                  Boolean @default(true)
+  quoteAccepted              Boolean @default(true)
+  paymentReceived            Boolean @default(true)
+  invoiceReady               Boolean @default(true)
+  complaintOpened            Boolean @default(true)
+  complaintUpdated           Boolean @default(true)
+  artisanApplicationApproved Boolean @default(true)
+  artisanApplicationRejected Boolean @default(true)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id Int @id @default(autoincrement())
+
+  recipientId Int
+  recipient   User @relation("UserNotifications", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  actorId Int?
+  actor   User? @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  type     NotificationType
+  priority NotificationPriority @default(NORMAL)
+
+  title   String
+  message String
+
+  channels NotificationChannel[]
+
+  entityType String?
+  entityId   Int?
+
+  data Json?
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries NotificationDeliveryLog[]
+
+  @@index([recipientId])
+  @@index([actorId])
+  @@index([type])
+  @@index([priority])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([entityType, entityId])
+  @@index([isRead])
+  @@index([deletedAt])
+  @@index([createdAt])
+}
+
+model NotificationDeliveryLog {
+  id Int @id @default(autoincrement())
+
+  notificationId Int
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  userId Int?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  channel NotificationChannel
+  status  NotificationDeliveryStatus @default(PENDING)
+
+  destination String?
+
+  provider          String?
+  providerMessageId String?
+
+  error String?
+
+  sentAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([notificationId])
+  @@index([userId])
+  @@index([channel])
+  @@index([status])
+  @@index([destination])
+  @@index([sentAt])
+  @@index([createdAt])
+}
+
+model PushDeviceToken {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token String @unique
+
+  platform   String?
+  deviceId   String?
+  deviceName String?
+
+  isActive Boolean @default(true)
+
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([token])
+  @@index([platform])
+  @@index([isActive])
+  @@index([lastUsedAt])
 }
 
 // ==========================================================
