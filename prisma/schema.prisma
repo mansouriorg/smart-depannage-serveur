@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider     = "prisma-client"
   output       = "../generated/prisma"
@@ -13,7 +10,6 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
-
 
 // ==========================================================
 // Enums
@@ -327,6 +323,44 @@ enum NotificationPriority {
   URGENT
 }
 
+enum AppointmentStatus {
+  REQUESTED
+  SCHEDULED
+  CONFIRMED
+  RESCHEDULE_REQUESTED
+  CANCEL_REQUESTED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum AppointmentRequestType {
+  RESCHEDULE
+  CANCEL
+}
+
+enum AppointmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AppointmentReminderStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+enum ArtisanTimeBlockType {
+  UNAVAILABLE
+  BREAK
+  VACATION
+  PERSONAL
+  OTHER
+}
+
 // ==========================================================
 // Models
 // ==========================================================
@@ -396,6 +430,10 @@ model User {
   notificationsActed Notification[] @relation("NotificationActor")
   notificationLogs   NotificationDeliveryLog[]
   pushTokens         PushDeviceToken[]
+
+  clientAppointments  Appointment[]     @relation("ClientAppointments")
+  artisanAppointments Appointment[]     @relation("ArtisanAppointments")
+  artisanTimeBlocks   ArtisanTimeBlock[] @relation("ArtisanTimeBlocks")
 
   @@index([role])
   @@index([isActive])
@@ -789,6 +827,8 @@ model Intervention {
   complaints Complaint[]
   messages   Message[]
   review     Review?
+
+  appointment Appointment?
 
   missionRejections ArtisanMissionRejection[]
 
@@ -1366,6 +1406,155 @@ model ArtisanMissionRejection {
   @@index([artisanProfileId])
   @@index([interventionId])
   @@index([reason])
+}
+
+// ==========================================================
+// Appointments / Scheduling
+// ==========================================================
+
+model Appointment {
+  id Int @id @default(autoincrement())
+
+  interventionId Int          @unique
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  clientId Int
+  client   User @relation("ClientAppointments", fields: [clientId], references: [id], onDelete: Cascade)
+
+  artisanId Int?
+  artisan   User? @relation("ArtisanAppointments", fields: [artisanId], references: [id], onDelete: SetNull)
+
+  status AppointmentStatus @default(REQUESTED)
+
+  // Client preferred appointment window
+  preferredDate      DateTime?
+  preferredStartTime String?
+  preferredEndTime   String?
+
+  // Confirmed scheduled appointment
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  timezone String @default("Europe/Paris")
+
+  clientNote  String?
+  adminNote   String?
+  artisanNote String?
+
+  scheduledById Int?
+  confirmedAt   DateTime?
+
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requests  AppointmentRequest[]
+  reminders AppointmentReminder[]
+
+  @@index([interventionId])
+  @@index([clientId])
+  @@index([artisanId])
+  @@index([status])
+  @@index([preferredDate])
+  @@index([startsAt])
+  @@index([endsAt])
+  @@index([scheduledById])
+  @@index([createdAt])
+  @@index([artisanId, startsAt, endsAt])
+}
+
+model AppointmentRequest {
+  id Int @id @default(autoincrement())
+
+  appointmentId Int
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  requestedById Int?
+
+  type   AppointmentRequestType
+  status AppointmentRequestStatus @default(PENDING)
+
+  // Used for reschedule requests
+  requestedStartAt DateTime?
+  requestedEndAt   DateTime?
+
+  reason        String?
+  adminResponse String?
+
+  reviewedById Int?
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([appointmentId])
+  @@index([requestedById])
+  @@index([type])
+  @@index([status])
+  @@index([requestedStartAt])
+  @@index([requestedEndAt])
+  @@index([reviewedById])
+  @@index([createdAt])
+}
+
+model AppointmentReminder {
+  id Int @id @default(autoincrement())
+
+  appointmentId Int
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  recipientId Int?
+
+  // Example:
+  // 1440 = 24 hours before
+  // 120 = 2 hours before
+  minutesBefore Int
+
+  dueAt DateTime
+
+  status AppointmentReminderStatus @default(PENDING)
+
+  sentAt DateTime?
+  error  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([appointmentId])
+  @@index([recipientId])
+  @@index([status])
+  @@index([dueAt])
+  @@index([sentAt])
+  @@index([createdAt])
+}
+
+model ArtisanTimeBlock {
+  id Int @id @default(autoincrement())
+
+  artisanId Int
+  artisan   User @relation("ArtisanTimeBlocks", fields: [artisanId], references: [id], onDelete: Cascade)
+
+  type ArtisanTimeBlockType @default(UNAVAILABLE)
+
+  startsAt DateTime
+  endsAt   DateTime
+
+  reason String?
+
+  createdById Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([artisanId])
+  @@index([type])
+  @@index([startsAt])
+  @@index([endsAt])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([artisanId, startsAt, endsAt])
 }
 
 // ==========================================================
