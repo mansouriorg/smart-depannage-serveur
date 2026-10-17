@@ -7,6 +7,7 @@ import {
   issuePasswordSetupLink,
 } from '../auth/password-setup';
 import * as argon2 from 'argon2';
+import { approvedProfileData } from '../artisans/approved-profile';
 import { Role } from '../../../generated/prisma/client'; // Adjust path if needed
 import {
   phoneColumns,
@@ -92,32 +93,48 @@ export class ArtisanApplicationsService {
     // artisan chooses their own through a single-use link sent by email.
     const hashedPassword = await argon2.hash(generateUnusablePassword());
 
-    const newUser = await this.prisma.user
-      .create({
-        data: {
-          name: application.name,
-          email,
-          ...phone,
-          password: hashedPassword,
-          role: Role.ARTISAN,
-          isActive: true,
-        },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          phone: true,
-          role: true,
-          isActive: true,
-          createdAt: true,
-        },
-      })
-      .catch(rethrowContactConflict);
+    // The account, its profile and the new status of the application go together: an
+    // artisan without an approved profile cannot be given a job (P1-05), and an
+    // application that stays "pending" after its account was made would be approved twice.
+    const newUser = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user
+        .create({
+          data: {
+            name: application.name,
+            email,
+            ...phone,
+            password: hashedPassword,
+            role: Role.ARTISAN,
+            isActive: true,
+          },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            role: true,
+            isActive: true,
+            createdAt: true,
+          },
+        })
+        .catch(rethrowContactConflict);
 
-    // C. Update Application Status
-    await this.prisma.artisanApplication.update({
-      where: { id },
-      data: { status: 'APPROVED' },
+      await tx.artisanProfile.create({
+        data: approvedProfileData({
+          userId: created.id,
+          specialty: application.specialty,
+          yearsExperience: application.experience,
+          bio: application.description,
+        }),
+      });
+
+      // C. Update Application Status
+      await tx.artisanApplication.update({
+        where: { id },
+        data: { status: 'APPROVED' },
+      });
+
+      return created;
     });
 
     // D. One-time link to choose the password (24h, single use)

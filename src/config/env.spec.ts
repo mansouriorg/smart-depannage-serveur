@@ -1,4 +1,4 @@
-import { parseTrustProxy, validateEnv } from './env';
+import { getBusinessTimeZone, parseTrustProxy, validateEnv } from './env';
 
 describe('validateEnv', () => {
   const valid = {
@@ -98,6 +98,38 @@ describe('STATUS_STORAGE', () => {
 
   it('refuses anything else, so a typo cannot silently keep the old names', () => {
     expect(() => validateEnv({ ...base, STATUS_STORAGE: 'cannonical' })).toThrow(/STATUS_STORAGE/);
+  });
+});
+
+describe('BUSINESS_TIMEZONE (P1-05)', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    JWT_ACCESS_SECRET: 'a'.repeat(40),
+    JWT_REFRESH_SECRET: 'b'.repeat(40),
+    FRONTEND_URL: 'https://www.example.tn',
+  };
+
+  it.each([undefined, '', 'Africa/Tunis', 'Europe/Paris', 'UTC'])('accepts %p', (value) => {
+    expect(() => validateEnv({ ...base, BUSINESS_TIMEZONE: value })).not.toThrow();
+  });
+
+  it('refuses a name that is not a time zone, so a typo cannot silently shift every schedule', () => {
+    expect(() => validateEnv({ ...base, BUSINESS_TIMEZONE: 'Africa/Tunnis' })).toThrow(/BUSINESS_TIMEZONE/);
+    expect(() => validateEnv({ ...base, BUSINESS_TIMEZONE: 'GMT+1x' })).toThrow(/BUSINESS_TIMEZONE/);
+  });
+
+  it('is Africa/Tunis when nothing is set', () => {
+    const before = process.env.BUSINESS_TIMEZONE;
+    delete process.env.BUSINESS_TIMEZONE;
+
+    try {
+      expect(getBusinessTimeZone()).toBe('Africa/Tunis');
+      process.env.BUSINESS_TIMEZONE = ' Europe/Paris ';
+      expect(getBusinessTimeZone()).toBe('Europe/Paris');
+    } finally {
+      if (before === undefined) delete process.env.BUSINESS_TIMEZONE;
+      else process.env.BUSINESS_TIMEZONE = before;
+    }
   });
 });
 

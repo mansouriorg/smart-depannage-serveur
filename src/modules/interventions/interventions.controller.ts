@@ -166,7 +166,10 @@ export class InterventionsController {
     // P0-16: staff manage tickets; an artisan may only advance their own
     // mission (en route / on site / in progress); everybody else is refused.
     if (isTicketStaff(req.user.role)) {
-      return this.interventionsService.update(+id, updateInterventionDto);
+      return this.interventionsService.update(+id, updateInterventionDto, {
+        kind: 'staff',
+        userId: req.user.id,
+      });
     }
 
     if (req.user.role === 'ARTISAN') {

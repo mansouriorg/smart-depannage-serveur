@@ -12,6 +12,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { ContactChangeService } from '../users/contact-change.service';
+import { AssignmentService } from '../assignment/assignment.service';
 import {
   phoneColumns,
   phoneWhere,
@@ -75,6 +76,7 @@ export class AdminService {
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
     private readonly contactChange: ContactChangeService,
+    private readonly assignment: AssignmentService,
   ) {}
 
   // ==========================================================
@@ -630,71 +632,26 @@ export class AdminService {
     };
   }
 
+  /**
+   * Gives a job to an artisan: the one path in AssignmentService (approval, status,
+   * availability, appointment, reminders, timeline, notifications) (P1-05).
+   */
   async assignArtisan(
     adminId: number,
     interventionId: number,
     dto: AssignArtisanDto,
   ) {
-    const intervention = await this.prisma.intervention.findUnique({
-      where: { id: interventionId },
-    });
-
-    if (!intervention) {
-      throw new NotFoundException('Intervention introuvable.');
-    }
-
-    const artisanProfile = await this.prisma.artisanProfile.findUnique({
-      where: {
-        userId: dto.artisanId,
-      },
-      include: {
-        user: true,
-      },
-    });
-
-    if (!artisanProfile) {
-      throw new NotFoundException('Profil artisan introuvable.');
-    }
-
-    if (
-      artisanProfile.verificationStatus !==
-      ArtisanVerificationStatus.APPROVED
-    ) {
-      throw new BadRequestException('Cet artisan n’est pas encore approuvé.');
-    }
-
-    // Allowed from the dispatcher queue and for re-assigning a job that has not
-    // started; the status table in intervention-status.ts decides.
-    const updated = await transitionStatus(this.prisma, {
-      id: interventionId,
-      to: Status.ASSIGNED,
-      actor: { kind: 'staff', userId: adminId },
-      data: { artisanId: dto.artisanId, assignedAt: new Date() },
+    const { intervention } = await this.assignment.assign({
+      interventionId,
+      artisanId: dto.artisanId,
+      actorId: adminId,
+      startsAt: dto.startsAt,
+      endsAt: dto.endsAt,
+      adminNote: dto.adminNote,
       include: this.interventionInclude,
     });
 
-    await this.createInterventionEvent({
-      interventionId,
-      type: InterventionEventType.ARTISAN_ASSIGNED,
-      title: 'Artisan assigné',
-      message: `Artisan assigné par l’administration.`,
-      createdById: adminId,
-    });
-
-    await this.notifications.sendEmail(
-      artisanProfile.user.email,
-      'Nouvelle mission assignée',
-      `Une nouvelle mission vous a été assignée. Intervention #${interventionId}.`,
-    );
-
-    if (artisanProfile.user.phone) {
-      await this.notifications.sendSms(
-        artisanProfile.user.phone,
-        `Smart Dépannage: une nouvelle mission vous a été assignée (#${interventionId}).`,
-      );
-    }
-
-    return updated;
+    return intervention;
   }
 
   async changeInterventionStatus(
@@ -1049,6 +1006,10 @@ export class AdminService {
           verificationStatus: ArtisanVerificationStatus.APPROVED,
           verifiedAt: new Date(),
           verifiedById: adminId,
+          // approved means ready for a job (P1-05); the schema default would say "no" and the mobile app has no switch
+          isAcceptingJobs: true,
+          // urgent jobs too, as before: nothing could ever set this flag (turn it off from the profile)
+          emergencyAvailable: true,
         },
         include: {
           user: {
@@ -1119,6 +1080,10 @@ export class AdminService {
           rejectionReason: null,
           verifiedAt: new Date(),
           verifiedById: adminId,
+          // approved means ready for a job (P1-05); the schema default would say "no" and the mobile app has no switch
+          isAcceptingJobs: true,
+          // urgent jobs too, as before: nothing could ever set this flag (turn it off from the profile)
+          emergencyAvailable: true,
         },
         include: {
           user: {
@@ -1262,6 +1227,8 @@ export class AdminService {
         data: {
           verificationStatus: ArtisanVerificationStatus.APPROVED,
           rejectionReason: null,
+          // the suspension switched missions off; reactivating gives them back
+          isAcceptingJobs: true,
         },
       });
     });

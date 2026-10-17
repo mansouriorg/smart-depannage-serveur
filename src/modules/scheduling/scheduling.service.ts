@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -9,9 +10,16 @@ import {
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { getBusinessTimeZone } from '../../config/env';
+import { checkWeeklySchedule } from '../../common/availability/weekly-schedule';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
+import { canonicalStatus, STATUS_GROUPS } from '../intervention-workflow/intervention-status';
+import { AssignmentService } from '../assignment/assignment.service';
+import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
+import { lockArtisanCalendar, lockJob } from '../assignment/artisan-lock';
+import { replaceDefaultReminders } from '../assignment/appointment-reminders';
 
 import {
   AppointmentReminderStatus,
@@ -19,7 +27,6 @@ import {
   AppointmentRequestType,
   AppointmentStatus,
   ArtisanTimeBlockType,
-  DayOfWeek,
   NotificationChannel,
   NotificationPriority,
   NotificationType,
@@ -37,17 +44,11 @@ import {
   UpdateAvailabilitySlotDto,
 } from './dto/scheduling.dto';
 
-type AppointmentReminderCreateData = {
-  appointmentId: number;
-  recipientId: number;
-  minutesBefore: number;
-  dueAt: Date;
-};
-
 @Injectable()
 export class SchedulingService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly assignment: AssignmentService,
 
     @Optional()
     private readonly notifications?: NotificationsService,
@@ -95,32 +96,6 @@ export class SchedulingService {
         'Le créneau de fin doit être après le créneau de début.',
       );
     }
-  }
-
-  private jsDayToDayOfWeek(date: Date): DayOfWeek {
-    const day = date.getDay();
-
-    switch (day) {
-      case 0:
-        return DayOfWeek.SUNDAY;
-      case 1:
-        return DayOfWeek.MONDAY;
-      case 2:
-        return DayOfWeek.TUESDAY;
-      case 3:
-        return DayOfWeek.WEDNESDAY;
-      case 4:
-        return DayOfWeek.THURSDAY;
-      case 5:
-        return DayOfWeek.FRIDAY;
-      case 6:
-      default:
-        return DayOfWeek.SATURDAY;
-    }
-  }
-
-  private timeFromDate(date: Date): string {
-    return date.toISOString().slice(11, 16);
   }
 
   private async getInterventionOrFail(interventionId: number) {
@@ -265,12 +240,18 @@ export class SchedulingService {
     return profile;
   }
 
+  /**
+   * The weekly hours, read by the one rule the matching and the assignment use
+   * (P1-05): no schedule at all is no restriction, any schedule is the list of
+   * the hours the appointment must fit in, on the clock of the business.
+   */
   private async isWithinWeeklyAvailability(
     artisanId: number,
     startsAt: Date,
     endsAt: Date,
+    db: any = this.prisma,
   ) {
-    const profile = await this.prisma.artisanProfile.findUnique({
+    const profile = await db.artisanProfile.findUnique({
       where: {
         userId: artisanId,
       },
@@ -283,21 +264,12 @@ export class SchedulingService {
       return false;
     }
 
-    const dayOfWeek = this.jsDayToDayOfWeek(startsAt);
-    const slots = profile.availability.filter(
-      (slot) => slot.dayOfWeek === dayOfWeek && slot.isAvailable,
-    );
-
-    if (!slots.length) {
-      return true;
-    }
-
-    const startTime = this.timeFromDate(startsAt);
-    const endTime = this.timeFromDate(endsAt);
-
-    return slots.some(
-      (slot) => slot.startTime <= startTime && slot.endTime >= endTime,
-    );
+    return checkWeeklySchedule(
+      profile.availability,
+      startsAt,
+      endsAt,
+      getBusinessTimeZone(),
+    ).ok;
   }
 
   private async checkDoubleBooking(params: {
@@ -305,8 +277,12 @@ export class SchedulingService {
     startsAt: Date;
     endsAt: Date;
     excludeAppointmentId?: number;
+    /** The transaction that holds the artisan's lock, when the caller is about to write. */
+    db?: any;
   }) {
-    const overlappingAppointments = await this.prisma.appointment.findMany({
+    const db: any = params.db ?? this.prisma;
+
+    const overlappingAppointments = await db.appointment.findMany({
       where: {
         artisanId: params.artisanId,
         id: params.excludeAppointmentId
@@ -315,11 +291,7 @@ export class SchedulingService {
             }
           : undefined,
         status: {
-          in: [
-            AppointmentStatus.SCHEDULED,
-            AppointmentStatus.CONFIRMED,
-            AppointmentStatus.RESCHEDULE_REQUESTED,
-          ],
+          in: ACTIVE_APPOINTMENT_STATUSES,
         },
         startsAt: {
           lt: params.endsAt,
@@ -340,7 +312,7 @@ export class SchedulingService {
       },
     });
 
-    const overlappingBlocks = await this.prisma.artisanTimeBlock.findMany({
+    const overlappingBlocks = await db.artisanTimeBlock.findMany({
       where: {
         artisanId: params.artisanId,
         startsAt: {
@@ -356,6 +328,7 @@ export class SchedulingService {
       params.artisanId,
       params.startsAt,
       params.endsAt,
+      db,
     );
 
     return {
@@ -367,54 +340,6 @@ export class SchedulingService {
       overlappingBlocks,
       withinAvailability,
     };
-  }
-
-  private async createDefaultReminders(appointmentId: number) {
-    const appointment = await this.getAppointmentOrFail(appointmentId);
-
-    if (!appointment.startsAt) {
-      return;
-    }
-
-    await this.prisma.appointmentReminder.deleteMany({
-      where: {
-        appointmentId,
-        status: AppointmentReminderStatus.PENDING,
-      },
-    });
-
-    const recipients = [appointment.clientId, appointment.artisanId].filter(
-      Boolean,
-    ) as number[];
-
-    const reminders: AppointmentReminderCreateData[] = [];
-
-    for (const recipientId of recipients) {
-      for (const minutesBefore of [1440, 120]) {
-        const dueAt = new Date(
-          appointment.startsAt.getTime() - minutesBefore * 60 * 1000,
-        );
-
-        if (dueAt <= new Date()) {
-          continue;
-        }
-
-        reminders.push({
-          appointmentId,
-          recipientId,
-          minutesBefore,
-          dueAt,
-        });
-      }
-    }
-
-    if (!reminders.length) {
-      return;
-    }
-
-    await this.prisma.appointmentReminder.createMany({
-      data: reminders,
-    });
   }
 
   private async notifyUser(params: {
@@ -644,92 +569,16 @@ export class SchedulingService {
       throw new ForbiddenException('Seule l’administration peut planifier.');
     }
 
-    const intervention = await this.getInterventionOrFail(interventionId);
-
-    await this.assertArtisanExists(dto.artisanId);
-
-    const startsAt = new Date(dto.startsAt);
-    const endsAt = new Date(dto.endsAt);
-
-    this.assertValidRange(startsAt, endsAt);
-
-    const availability = await this.checkDoubleBooking({
-      artisanId: dto.artisanId,
-      startsAt,
-      endsAt,
-    });
-
-    if (!availability.available) {
-      throw new BadRequestException({
-        message: 'Artisan indisponible ou déjà réservé sur ce créneau.',
-        availability,
-      });
-    }
-
-    // Status and appointment change together: if the job cannot be assigned
-    // from where it is (already started, cancelled...), no appointment is kept.
-    const appointment = await this.prisma.$transaction(async (tx) => {
-      await transitionStatus(tx, {
-        id: interventionId,
-        to: Status.ASSIGNED,
-        actor: { kind: 'staff', userId },
-        data: {
-          artisanId: dto.artisanId,
-          assignedAt: new Date(),
-          preferredDate: startsAt,
-          preferredStartTime: startsAt.toISOString().slice(11, 16),
-          preferredEndTime: endsAt.toISOString().slice(11, 16),
-        },
-      });
-
-      return tx.appointment.upsert({
-        where: {
-          interventionId,
-        },
-        update: {
-          artisanId: dto.artisanId,
-          startsAt,
-          endsAt,
-          adminNote: dto.adminNote,
-          scheduledById: userId,
-          status: AppointmentStatus.SCHEDULED,
-        },
-        create: {
-          interventionId,
-          clientId: intervention.clientId,
-          artisanId: dto.artisanId,
-          startsAt,
-          endsAt,
-          adminNote: dto.adminNote,
-          scheduledById: userId,
-          status: AppointmentStatus.SCHEDULED,
-        },
-      });
-    });
-
-    await this.createDefaultReminders(appointment.id);
-
-    await this.notifyUser({
-      userId: intervention.clientId,
-      title: 'Rendez-vous confirmé',
-      message: 'Votre intervention a été planifiée.',
-      entityType: 'APPOINTMENT',
-      entityId: appointment.id,
-    });
-
-    await this.notifyUser({
-      userId: dto.artisanId,
-      title: 'Nouvelle mission planifiée',
-      message: 'Une mission vous a été planifiée.',
-      entityType: 'APPOINTMENT',
-      entityId: appointment.id,
-    });
-
-    await this.realtime?.emitStatusChange?.({
+    // The one assignment path: the artisan must be approved and free, the job in a
+    // status that can be assigned, and the status, the artisan and the appointment
+    // are written together (with the reminders, the notifications and the live event).
+    const { appointment } = await this.assignment.assign({
       interventionId,
-      oldStatus: intervention.status,
-      newStatus: Status.ASSIGNED,
+      artisanId: dto.artisanId,
       actorId: userId,
+      startsAt: dto.startsAt,
+      endsAt: dto.endsAt,
+      adminNote: dto.adminNote,
     });
 
     return this.getAppointmentOrFail(appointment.id);
@@ -864,11 +713,7 @@ export class SchedulingService {
             gt: dayStart,
           },
           status: {
-            in: [
-              AppointmentStatus.SCHEDULED,
-              AppointmentStatus.CONFIRMED,
-              AppointmentStatus.RESCHEDULE_REQUESTED,
-            ],
+            in: ACTIVE_APPOINTMENT_STATUSES,
           },
         },
         include: {
@@ -924,63 +769,164 @@ export class SchedulingService {
       throw new BadRequestException('Cette demande a déjà été traitée.');
     }
 
-    if (!approved) {
-      const rejected = await this.prisma.appointmentRequest.update({
-        where: {
-          id: requestId,
-        },
-        data: {
-          status: AppointmentRequestStatus.REJECTED,
-          adminResponse: dto.adminResponse,
-          reviewedById: userId,
-          reviewedAt: new Date(),
-        },
+    // What was read above may be out of date by the time the job is ours: a hand-over
+    // closes the pending requests of the appointment, and gives it to somebody else.
+    // So the job is locked first (like an assignment does), and the request and the
+    // appointment are read again under that lock; what they say then is what counts.
+    const lockedPendingRequest = async (tx: any) => {
+      await lockJob(tx, request.appointment.interventionId);
+
+      const fresh = await tx.appointmentRequest.findUnique({
+        where: { id: requestId },
+        include: { appointment: true },
       });
 
-      return rejected;
+      if (!fresh || fresh.status !== AppointmentRequestStatus.PENDING) {
+        throw new BadRequestException('Cette demande a déjà été traitée.');
+      }
+
+      return fresh;
+    };
+
+    // Approving acts on the visit as it is now: still planned, still held by the artisan who
+    // has the job, on a job that is still under way. A request filed before a hand-over, or
+    // beside a cancellation that was approved, would otherwise act on a visit that is gone.
+    const assertVisitStillStands = async (tx: any, fresh: any) => {
+      if (!ACTIVE_APPOINTMENT_STATUSES.includes(fresh.appointment.status)) {
+        throw new BadRequestException('Ce rendez-vous n’est plus actif: la demande n’a plus lieu d’être.');
+      }
+
+      const job = await tx.intervention.findUnique({
+        where: { id: fresh.appointment.interventionId },
+        select: { artisanId: true, status: true },
+      });
+
+      if (!job || job.artisanId === null || job.artisanId !== fresh.appointment.artisanId) {
+        throw new BadRequestException('L’artisan de ce rendez-vous n’est plus celui de la mission.');
+      }
+
+      if (!(STATUS_GROUPS.active as readonly string[]).includes(String(canonicalStatus(job.status)))) {
+        throw new ConflictException('La mission n’est plus en cours: la demande n’a plus lieu d’être.');
+      }
+    };
+
+    const answer = {
+      adminResponse: dto.adminResponse,
+      reviewedById: userId,
+      reviewedAt: new Date(),
+    };
+
+    if (!approved) {
+      return this.prisma.$transaction(async (tx) => {
+        await lockedPendingRequest(tx);
+
+        return tx.appointmentRequest.update({
+          where: {
+            id: requestId,
+          },
+          data: {
+            status: AppointmentRequestStatus.REJECTED,
+            ...answer,
+          },
+        });
+      });
     }
 
+    const approvedData = {
+      status: AppointmentRequestStatus.APPROVED,
+      ...answer,
+    };
+
     if (request.type === AppointmentRequestType.CANCEL) {
-      await this.prisma.$transaction(async (tx) => {
+      return this.prisma.$transaction(async (tx) => {
+        const fresh = await lockedPendingRequest(tx);
+
+        await assertVisitStillStands(tx, fresh);
+
         await transitionStatus(tx, {
-          id: request.appointment.interventionId,
+          id: fresh.appointment.interventionId,
           to: Status.CANCELLED,
           actor: { kind: 'staff', userId },
           dataOnChange: {
             cancelledAt: new Date(),
-            cancelledReason: request.reason,
+            cancelledReason: fresh.reason,
           },
         });
 
         await tx.appointment.update({
           where: {
-            id: request.appointmentId,
+            id: fresh.appointmentId,
           },
           data: {
             status: AppointmentStatus.CANCELLED,
             cancelledAt: new Date(),
-            cancelReason: request.reason,
+            cancelReason: fresh.reason,
           },
+        });
+
+        // The visit is gone: its other waiting requests have nothing left to ask, and the
+        // reminders not sent yet must not go out for a cancelled visit.
+        await tx.appointmentRequest.updateMany({
+          where: { appointmentId: fresh.appointmentId, status: AppointmentRequestStatus.PENDING, id: { not: requestId } },
+          data: {
+            status: AppointmentRequestStatus.CANCELLED,
+            adminResponse: 'Demande classée: le rendez-vous a été annulé.',
+            reviewedById: userId,
+            reviewedAt: new Date(),
+          },
+        });
+
+        await replaceDefaultReminders(tx as any, {
+          id: fresh.appointmentId,
+          startsAt: null,
+          clientId: fresh.appointment.clientId,
+          artisanId: fresh.appointment.artisanId,
+        });
+
+        return tx.appointmentRequest.update({
+          where: {
+            id: requestId,
+          },
+          data: approvedData,
         });
       });
     }
 
-    if (request.type === AppointmentRequestType.RESCHEDULE) {
-      if (!request.requestedStartAt || !request.requestedEndAt) {
-        throw new BadRequestException(
-          'La demande de report ne contient pas de nouveau créneau.',
-        );
-      }
+    // A request to move the appointment
+    if (!request.requestedStartAt || !request.requestedEndAt) {
+      throw new BadRequestException(
+        'La demande de report ne contient pas de nouveau créneau.',
+      );
+    }
 
-      if (!request.appointment.artisanId) {
+    if (!request.appointment.artisanId) {
+      throw new BadRequestException('Aucun artisan assigné au rendez-vous.');
+    }
+
+    const requestedStartAt = request.requestedStartAt;
+    const requestedEndAt = request.requestedEndAt;
+
+    // Checked and written under the artisan's lock, like an assignment: an assignment
+    // and an approval for the same hour cannot both see "free".
+    return this.prisma.$transaction(async (tx) => {
+      const fresh = await lockedPendingRequest(tx);
+
+      await assertVisitStillStands(tx, fresh);
+
+      const artisanId: number | null = fresh.appointment.artisanId;
+
+      if (!artisanId) {
         throw new BadRequestException('Aucun artisan assigné au rendez-vous.');
       }
 
+      await lockArtisanCalendar(tx as any, artisanId);
+
       const availability = await this.checkDoubleBooking({
-        artisanId: request.appointment.artisanId,
-        startsAt: request.requestedStartAt,
-        endsAt: request.requestedEndAt,
-        excludeAppointmentId: request.appointmentId,
+        artisanId,
+        startsAt: requestedStartAt,
+        endsAt: requestedEndAt,
+        excludeAppointmentId: fresh.appointmentId,
+        db: tx,
       });
 
       if (!availability.available) {
@@ -990,30 +936,26 @@ export class SchedulingService {
         });
       }
 
-      await this.prisma.appointment.update({
+      const movedAppointment = await tx.appointment.update({
         where: {
-          id: request.appointmentId,
+          id: fresh.appointmentId,
         },
         data: {
-          startsAt: request.requestedStartAt,
-          endsAt: request.requestedEndAt,
+          startsAt: requestedStartAt,
+          endsAt: requestedEndAt,
           status: AppointmentStatus.SCHEDULED,
         },
       });
 
-      await this.createDefaultReminders(request.appointmentId);
-    }
+      // The reminders follow the appointment: moved, re-made and answered together or not at all.
+      await replaceDefaultReminders(tx as any, movedAppointment);
 
-    return this.prisma.appointmentRequest.update({
-      where: {
-        id: requestId,
-      },
-      data: {
-        status: AppointmentRequestStatus.APPROVED,
-        adminResponse: dto.adminResponse,
-        reviewedById: userId,
-        reviewedAt: new Date(),
-      },
+      return tx.appointmentRequest.update({
+        where: {
+          id: requestId,
+        },
+        data: approvedData,
+      });
     });
   }
 
@@ -1053,11 +995,7 @@ export class SchedulingService {
           gt: dayStart,
         },
         status: {
-          in: [
-            AppointmentStatus.SCHEDULED,
-            AppointmentStatus.CONFIRMED,
-            AppointmentStatus.RESCHEDULE_REQUESTED,
-          ],
+          in: ACTIVE_APPOINTMENT_STATUSES,
         },
       },
       include: {
@@ -1155,6 +1093,16 @@ export class SchedulingService {
     const profile = await this.getArtisanProfileOrFail(userId);
 
     if (dto.slotId) {
+      // A slot is changed by the artisan it belongs to: an id from somebody else's schedule is not found.
+      const owned = await this.prisma.artisanAvailabilitySlot.findFirst({
+        where: { id: dto.slotId, artisanProfileId: profile.id },
+        select: { id: true },
+      });
+
+      if (!owned) {
+        throw new NotFoundException('Créneau introuvable.');
+      }
+
       return this.prisma.artisanAvailabilitySlot.update({
         where: {
           id: dto.slotId,
@@ -1195,29 +1143,36 @@ export class SchedulingService {
 
     this.assertValidRange(startsAt, endsAt);
 
-    const availability = await this.checkDoubleBooking({
-      artisanId: userId,
-      startsAt,
-      endsAt,
-    });
+    // Under the artisan's lock, like an assignment: a block and an appointment for the
+    // same hour cannot both be accepted.
+    return this.prisma.$transaction(async (tx) => {
+      await lockArtisanCalendar(tx as any, userId);
 
-    if (availability.overlappingAppointments.length) {
-      throw new BadRequestException({
-        message:
-          'Impossible de bloquer un créneau contenant une intervention planifiée.',
-        availability,
-      });
-    }
-
-    return this.prisma.artisanTimeBlock.create({
-      data: {
+      const availability = await this.checkDoubleBooking({
         artisanId: userId,
         startsAt,
         endsAt,
-        type: dto.type || ArtisanTimeBlockType.UNAVAILABLE,
-        reason: dto.reason,
-        createdById: userId,
-      },
+        db: tx,
+      });
+
+      if (availability.overlappingAppointments.length) {
+        throw new BadRequestException({
+          message:
+            'Impossible de bloquer un créneau contenant une intervention planifiée.',
+          availability,
+        });
+      }
+
+      return tx.artisanTimeBlock.create({
+        data: {
+          artisanId: userId,
+          startsAt,
+          endsAt,
+          type: dto.type || ArtisanTimeBlockType.UNAVAILABLE,
+          reason: dto.reason,
+          createdById: userId,
+        },
+      });
     });
   }
 

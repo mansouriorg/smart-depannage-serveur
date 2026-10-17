@@ -16,6 +16,7 @@ import { isMadeUpGuestEmail } from '../notifications/delivery/contact';
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateUnusablePassword } from '../auth/password-setup';
 import { StaffAlertsService } from './staff-alerts.service';
+import { AssignmentService } from '../assignment/assignment.service';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto'; 
 
@@ -53,6 +54,7 @@ export class InterventionsService {
     private gateway: InterventionsGateway,
     private notifications: NotificationsService,
     private staffAlerts: StaffAlertsService,
+    private assignment: AssignmentService,
   ) {}
 
   // ==========================================================
@@ -375,20 +377,54 @@ export class InterventionsService {
     // 1. Separate the status and the artisan from the rest of the data
     const { artisanId, status, ...rest } = updateInterventionDto;
 
-    // 2. Prepare the columns for Prisma
-    const data: Record<string, unknown> = { ...rest };
-
-    if (artisanId) {
-      data.artisanId = artisanId;
-    }
-
-    // Assigning an artisan without saying which status keeps the old behaviour: ACCEPTED.
-    const target = status ?? (artisanId ? Status.ACCEPTED : undefined);
-
     const include = {
       client: { select: { id: true, name: true, phone: true } },
       artisan: { select: { id: true, name: true, phone: true } },
     };
+
+    // Giving a job to an artisan is the one assignment path (P1-05): the artisan must
+    // be approved and free, the job in a status that can be assigned, and the status,
+    // the artisan and the appointment change together. Nothing else rides along: the
+    // check is about that artisan and that job, not about a title or a photo.
+    if (artisanId) {
+      if (actor.kind !== 'staff' || !actor.userId) {
+        throw new ForbiddenException('Seule l’administration peut assigner un artisan.');
+      }
+
+      // The dropdown has always put the job on "accepted" (what the mobile app and the
+      // dashboard show as "affecté"); the same statuses are still the only ones allowed.
+      const landing = status === undefined ? Status.ARTISAN_ACCEPTED : canonicalStatus(status);
+
+      if (landing !== 'ASSIGNED' && landing !== 'ARTISAN_ACCEPTED') {
+        throw new BadRequestException(
+          'Pour confier la mission à un artisan, le statut ne peut être que « assignée » ou « acceptée ».',
+        );
+      }
+
+      if (Object.values(rest).some((value) => value !== undefined)) {
+        throw new BadRequestException(
+          'Assignez l’artisan dans une requête séparée des autres modifications.',
+        );
+      }
+
+      const { intervention } = await this.assignment.assign({
+        interventionId: id,
+        artisanId,
+        actorId: actor.userId,
+        status: landing,
+        include,
+      });
+
+      // Live event for the dashboards; the artisan and the client are told by the assignment.
+      this.gateway.sendInterventionStatus(intervention);
+
+      return intervention;
+    }
+
+    // 2. Prepare the columns for Prisma
+    const data: Record<string, unknown> = { ...rest };
+
+    const target = status;
 
     // 3. Save to Database. A status change goes through the status table.
     let statusChanged = false;
@@ -417,9 +453,9 @@ export class InterventionsService {
     this.gateway.sendInterventionStatus(updatedIntervention);
 
     // 5. 📱 SMS Notification Logic
-    
-    // Case A: Client Notification (Accepted, or handed to another artisan)
-    if ((statusChanged || !!artisanId) && canonicalStatus(updatedIntervention.status) === 'ARTISAN_ACCEPTED' && updatedIntervention.client.phone) {
+
+    // Case A: Client Notification (the artisan accepted)
+    if (statusChanged && canonicalStatus(updatedIntervention.status) === 'ARTISAN_ACCEPTED' && updatedIntervention.client.phone) {
       const artisanName = updatedIntervention.artisan?.name || 'Un artisan';
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
@@ -432,14 +468,6 @@ export class InterventionsService {
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
         `Intervention terminée. Merci de votre confiance !`
-      );
-    }
-
-    // Case C: Artisan Notification (New Assignment)
-    if (artisanId && updatedIntervention.artisan?.phone) {
-      await this.notifications.sendSms(
-        updatedIntervention.artisan.phone,
-        `Nouveau Chantier: ${updatedIntervention.serviceType} à ${updatedIntervention.address}. Client: ${updatedIntervention.client.name}`
       );
     }
 

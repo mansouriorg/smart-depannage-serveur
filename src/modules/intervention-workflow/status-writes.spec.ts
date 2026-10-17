@@ -188,8 +188,17 @@ export function scanSource(rel: string, source: string): { findings: Finding[]; 
     }
   }
 
-  if (/\$(execute|query)Raw(Unsafe)?\b[\s\S]{0,400}?\bIntervention\b/.test(text)) {
-    findings.push({ file: rel, problem: 'raw SQL on the Intervention table' });
+  // Raw SQL: only the statement itself is read (the tagged template, or the call's arguments),
+  // not the code that follows it, which may well say "Intervention" in an error message.
+  const rawPattern = /\$(?:execute|query)Raw(?:Unsafe)?\s*(?=[`(])/g;
+
+  while ((match = rawPattern.exec(text))) {
+    const open = match.index + match[0].length;
+    const statement = text[open] === '`' ? text.slice(open + 1, text.indexOf('`', open + 1)) : balanced(text, open);
+
+    if (/\bIntervention\b/.test(statement)) {
+      findings.push({ file: rel, problem: 'raw SQL on the Intervention table' });
+    }
   }
 
   return { findings, writes };
@@ -249,6 +258,14 @@ describe('nothing writes Intervention.status outside transitionStatus()', () => 
 
     it('raw SQL on the table', () => {
       expect(problems('await prisma.$executeRaw`UPDATE "Intervention" SET status = 1`;').length).toBe(1);
+      expect(problems('await prisma.$executeRawUnsafe(\'UPDATE "Intervention" SET status = 1\');').length).toBe(1);
+      expect(problems('await prisma.$queryRaw`SELECT * FROM "Intervention"`;').length).toBe(1);
+    });
+
+    it('raw SQL on something else is fine, even when the next lines say "Intervention"', () => {
+      const lock = 'await tx.$executeRaw`SELECT pg_advisory_xact_lock(${A}::int, ${id}::int)`;\nthrow new NotFoundException(\'Intervention introuvable.\');';
+
+      expect(problems(lock)).toEqual([]);
     });
 
     it('while the normal code passes', () => {

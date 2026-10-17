@@ -1259,6 +1259,8 @@ export class NotificationsService {
     interventionId: number,
     artisanId: number,
     actorId?: number,
+    /** `when`: the appointment, already written for a person ("19/10/2026 à 08:00"). */
+    schedule?: { when: string },
   ) {
     const intervention = await this.prisma.intervention.findUnique({
       where: {
@@ -1280,7 +1282,7 @@ export class NotificationsService {
       type: NotificationType.ARTISAN_ASSIGNED,
       priority: NotificationPriority.HIGH,
       title: 'Nouvelle mission assignée',
-      message: `Une mission vous a été assignée: ${intervention.address}.`,
+      message: `Une mission vous a été assignée: ${intervention.address}.${schedule ? ` Rendez-vous le ${schedule.when}.` : ''}`,
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });
@@ -1290,7 +1292,7 @@ export class NotificationsService {
       actorId,
       type: NotificationType.ARTISAN_ASSIGNED,
       title: 'Artisan assigné',
-      message: 'Un artisan a été assigné à votre intervention.',
+      message: `Un artisan a été assigné à votre intervention.${schedule ? ` Rendez-vous le ${schedule.when}.` : ''}`,
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });

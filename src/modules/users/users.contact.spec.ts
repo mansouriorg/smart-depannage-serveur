@@ -31,7 +31,8 @@ async function makeWorld() {
     defaults: () => ({ usedAt: null, revokedAt: null, newValue: null }),
     include: { user: (row) => users.rows.find((user) => user.id === row.userId) },
   });
-  const prisma: any = withTransactions({ user: users, authToken }, [users, authToken]);
+  const profiles = new FakeTable({ unique: ['userId'] });
+  const prisma: any = withTransactions({ user: users, authToken, artisanProfile: profiles }, [users, authToken, profiles]);
 
   const sentEmails: any[] = [];
   const notifications: any = {
@@ -55,7 +56,7 @@ async function makeWorld() {
   const amel = users.insert({ email: 'amel@mail.tn', password, phone: '22 123 456', phoneKey: '+21622123456', emailVerifiedAt: new Date(), phoneVerifiedAt: new Date() });
   const other = users.insert({ email: 'other@mail.tn', password, phone: '98 765 432', phoneKey: '+21698765432' });
 
-  return { users, authToken, usersService, auth, sentEmails, amel, other, password, contactChange };
+  return { users, authToken, profiles, usersService, auth, sentEmails, amel, other, password, contactChange };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {
@@ -239,6 +240,30 @@ describe('creating accounts: one number, one account', () => {
     w.users.findFirst = original;
 
     expect(error.status).toBe(409);
+  });
+
+  it('an artisan created by staff gets an approved profile that accepts missions, in the same transaction (P1-05)', async () => {
+    const w = await makeWorld();
+    (w.usersService as any).sendPasswordSetupLink = async () => undefined;
+
+    const created = await w.usersService.createArtisanDirectly({ name: 'Karim', email: 'karim@mail.tn', phone: '55 123 456', specialty: 'Électricité' });
+
+    expect(created.role).toBe('ARTISAN');
+    expect(w.profiles.rows.length).toBe(1);
+    expect(w.profiles.rows[0].userId).toBe(created.id);
+    expect(w.profiles.rows[0].verificationStatus).toBe('APPROVED');
+    expect(w.profiles.rows[0].isAcceptingJobs).toBe(true);
+    expect(w.profiles.rows[0].emergencyAvailable).toBe(true);
+    expect(w.profiles.rows[0].specialty).toBe('Électricité');
+  });
+
+  it('a number already taken creates neither the account nor the profile', async () => {
+    const w = await makeWorld();
+    (w.usersService as any).sendPasswordSetupLink = async () => undefined;
+
+    await failure(w.usersService.createArtisanDirectly({ name: 'Ali', email: 'ali2@mail.tn', phone: '22123456' }));
+
+    expect(w.profiles.rows.length).toBe(0);
   });
 
   it('staff-created artisans and staff go through the same rule', async () => {

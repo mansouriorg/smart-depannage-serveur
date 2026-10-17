@@ -22,6 +22,8 @@
  *                       the new names; see scripts/migrate-status-vocabulary.ts.
  *   SMS_PROVIDER, SMTP_HOST, PUSH_PROVIDER, ...  how messages are delivered (P1-03);
  *                       the full list is in ./delivery.ts and .env.example.
+ *   BUSINESS_TIMEZONE   the time zone of the artisans' weekly schedules and of
+ *                       appointments, an IANA name (default Africa/Tunis) (P1-05).
  */
 
 import { deliveryConfigProblems } from './delivery';
@@ -52,6 +54,18 @@ function isProduction(env: Record<string, unknown>): boolean {
 function readString(env: Record<string, unknown>, name: string): string {
   const value = env[name];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+export const DEFAULT_BUSINESS_TIMEZONE = 'Africa/Tunis';
+
+/** Is this an IANA time zone name this server's runtime knows? */
+export function isValidTimeZone(name: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -121,6 +135,12 @@ export function validateEnv(
     errors.push('STATUS_STORAGE must be "legacy" or "canonical" (or empty).');
   }
 
+  const timeZone = readString(rawEnv, 'BUSINESS_TIMEZONE');
+
+  if (timeZone && !isValidTimeZone(timeZone)) {
+    errors.push('BUSINESS_TIMEZONE is not a time zone name (example: Africa/Tunis).');
+  }
+
   errors.push(...deliveryConfigProblems(rawEnv));
 
   if (errors.length > 0) {
@@ -177,6 +197,14 @@ export function getJwtAccessSecret(): string {
 
 export function getJwtRefreshSecret(): string {
   return requireEnv('JWT_REFRESH_SECRET');
+}
+
+/**
+ * The time zone in which the artisans' weekly hours ("Monday 08:00-17:00") are
+ * written and in which appointments are read. Africa/Tunis unless BUSINESS_TIMEZONE says otherwise.
+ */
+export function getBusinessTimeZone(): string {
+  return (process.env.BUSINESS_TIMEZONE ?? '').trim() || DEFAULT_BUSINESS_TIMEZONE;
 }
 
 /** Public website URL without a trailing slash. */

@@ -24,6 +24,7 @@ import { UpdateArtisanProfileDto } from './dto/update-artisan-profile.dto';
 import { UploadArtisanDocumentDto } from './dto/upload-artisan-document.dto';
 import { CreateServiceZoneDto } from './dto/create-service-zone.dto';
 import { UpdateAvailabilityDto } from './dto/update-availability.dto';
+import { slotOrderProblem } from './dto/slot-time';
 import { UpdateBankDetailsDto } from './dto/update-bank-details.dto';
 import { UpdateArtisanLocationDto } from './dto/update-artisan-location.dto';
 import { RejectMissionDto } from './dto/reject-mission.dto';
@@ -587,6 +588,10 @@ export class ArtisansService {
   }
 
   async updateAvailability(userId: number, dto: UpdateAvailabilityDto) {
+    const problem = dto.slots ? slotOrderProblem(dto.slots) : null;
+
+    if (problem) throw new BadRequestException(problem);
+
     const profile = await this.getArtisanProfileByUserId(userId);
 
     const updated = await this.prisma.$transaction(async (tx) => {

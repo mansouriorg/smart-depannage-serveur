@@ -45,4 +45,9 @@ export class UpdateArtisanProfileDto {
   @IsOptional()
   @IsBoolean()
   isAcceptingJobs?: boolean;
+
+  /** Takes urgent jobs. The assignment refuses an urgent job for an artisan who does not. */
+  @IsOptional()
+  @IsBoolean()
+  emergencyAvailable?: boolean;
 }

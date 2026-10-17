@@ -3,20 +3,27 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { RealtimeService } from '../realtime/realtime.service';
-import { transitionStatus } from '../intervention-workflow/transition-status';
+import { getBusinessTimeZone } from '../../config/env';
+import {
+  WeeklySlot,
+  checkWeeklySchedule,
+  zonedInstant,
+} from '../../common/availability/weekly-schedule';
+import { AssignmentService } from '../assignment/assignment.service';
+import {
+  ACTIVE_APPOINTMENT_STATUSES,
+  ACTIVE_JOB_STATUSES,
+  artisanAvailabilityIssues,
+} from '../assignment/artisan-availability';
 
 import {
-  AppointmentStatus,
   ArtisanAvailabilityStatus,
   ArtisanVerificationStatus,
   Role,
   ServiceType,
-  Status,
 } from '../../../generated/prisma/client';
 
 import {
@@ -39,15 +46,17 @@ type MatchingContext = {
   emergency?: boolean;
   limit?: number;
   onlyAvailable?: boolean;
+  /** Only these artisans (to look at one name). */
+  artisanIds?: number[];
+  /** The job being decided: its own appointment and its own place in the artisan's load do not count against them. */
+  excludeInterventionId?: number;
 };
 
 @Injectable()
 export class MatchingService {
   constructor(
     private readonly prisma: PrismaService,
-
-    @Optional()
-    private readonly realtime?: RealtimeService,
+    private readonly assignment: AssignmentService,
   ) {}
 
   // ==========================================================
@@ -70,37 +79,6 @@ export class MatchingService {
     if (!this.isStaff(role)) {
       throw new ForbiddenException('Accès réservé à l’administration.');
     }
-  }
-
-  private activeInterventionStatuses(): Status[] {
-    return [
-      Status.CREATED,
-      Status.WAITING_ADMIN_REVIEW,
-      Status.QUOTE_SENT,
-      Status.QUOTE_ACCEPTED,
-      Status.ASSIGNED,
-      Status.ARTISAN_ACCEPTED,
-      Status.ARTISAN_ON_THE_WAY,
-      Status.ARTISAN_ARRIVED,
-      Status.IN_PROGRESS,
-      Status.WAITING_CLIENT_VALIDATION,
-      Status.PAYMENT_PENDING,
-
-      // Old compatibility statuses
-      Status.PENDING,
-      Status.ADMIN_REVIEW,
-      Status.ACCEPTED,
-      Status.ON_THE_WAY,
-      Status.ARRIVED,
-    ];
-  }
-
-  private activeAppointmentStatuses(): AppointmentStatus[] {
-    return [
-      AppointmentStatus.SCHEDULED,
-      AppointmentStatus.CONFIRMED,
-      AppointmentStatus.RESCHEDULE_REQUESTED,
-    ];
   }
 
   private parseRange(startsAt?: string, endsAt?: string): MatchingRange {
@@ -141,15 +119,13 @@ export class MatchingService {
     }
 
     const day = preferredDate.toISOString().slice(0, 10);
+    const timeZone = getBusinessTimeZone();
 
-    const startsAt = new Date(`${day}T${preferredStartTime}:00.000Z`);
-    const endsAt = new Date(`${day}T${preferredEndTime}:00.000Z`);
+    // The client wrote the hours on the clock of the country, not on the UTC clock.
+    const startsAt = zonedInstant(day, preferredStartTime, timeZone);
+    const endsAt = zonedInstant(day, preferredEndTime, timeZone);
 
-    if (
-      Number.isNaN(startsAt.getTime()) ||
-      Number.isNaN(endsAt.getTime()) ||
-      startsAt >= endsAt
-    ) {
+    if (!startsAt || !endsAt || startsAt >= endsAt) {
       return {};
     }
 
@@ -157,32 +133,6 @@ export class MatchingService {
       startsAt,
       endsAt,
     };
-  }
-
-  private jsDayToDayOfWeek(date: Date) {
-    const day = date.getDay();
-
-    switch (day) {
-      case 0:
-        return 'SUNDAY';
-      case 1:
-        return 'MONDAY';
-      case 2:
-        return 'TUESDAY';
-      case 3:
-        return 'WEDNESDAY';
-      case 4:
-        return 'THURSDAY';
-      case 5:
-        return 'FRIDAY';
-      case 6:
-      default:
-        return 'SATURDAY';
-    }
-  }
-
-  private timeFromDate(date: Date): string {
-    return date.toISOString().slice(11, 16);
   }
 
   private haversineKm(params: {
@@ -442,60 +392,34 @@ export class MatchingService {
     };
   }
 
+  /**
+   * The score and the sentence for the weekly hours. Whether the artisan is free
+   * is decided by artisanAvailabilityIssues (one rule shared with the assignment).
+   */
   private weeklyAvailabilityMatch(params: {
     startsAt?: Date;
     endsAt?: Date;
-    availability: {
-      dayOfWeek: any;
-      startTime: string;
-      endTime: string;
-      isAvailable: boolean;
-    }[];
+    availability: readonly WeeklySlot[];
   }) {
     if (!params.startsAt || !params.endsAt) {
       return {
-        matches: true,
         score: 8,
         reason: 'Aucun créneau précis demandé.',
       };
     }
 
-    const availableSlots = params.availability.filter(
-      (slot) => slot.isAvailable,
+    const verdict = checkWeeklySchedule(
+      params.availability,
+      params.startsAt,
+      params.endsAt,
+      getBusinessTimeZone(),
     );
 
-    if (!availableSlots.length) {
-      return {
-        matches: true,
-        score: 8,
-        reason: 'Aucun planning hebdomadaire configuré.',
-      };
+    if (!verdict.configured) {
+      return { score: 8, reason: verdict.reason };
     }
 
-    const dayOfWeek = this.jsDayToDayOfWeek(params.startsAt);
-    const startTime = this.timeFromDate(params.startsAt);
-    const endTime = this.timeFromDate(params.endsAt);
-
-    const matchingSlot = availableSlots.find(
-      (slot) =>
-        slot.dayOfWeek === dayOfWeek &&
-        slot.startTime <= startTime &&
-        slot.endTime >= endTime,
-    );
-
-    if (matchingSlot) {
-      return {
-        matches: true,
-        score: 10,
-        reason: 'Disponible sur ce créneau hebdomadaire.',
-      };
-    }
-
-    return {
-      matches: false,
-      score: 0,
-      reason: 'Pas disponible sur ce créneau hebdomadaire.',
-    };
+    return { score: verdict.ok ? 10 : 0, reason: verdict.reason };
   }
 
   private availabilityStatusScore(params: {
@@ -707,6 +631,7 @@ export class MatchingService {
       emergency: query.emergency ?? intervention.urgency === 'EMERGENCY',
       onlyAvailable: query.onlyAvailable ?? false,
       limit: query.limit || 10,
+      excludeInterventionId: interventionId,
     };
 
     this.validateMatchingContext(context);
@@ -739,8 +664,11 @@ export class MatchingService {
               gt: context.startsAt,
             },
             status: {
-              in: this.activeAppointmentStatuses(),
+              in: ACTIVE_APPOINTMENT_STATUSES,
             },
+            ...(context.excludeInterventionId !== undefined
+              ? { interventionId: { not: context.excludeInterventionId } }
+              : {}),
           }
         : {
             id: -1,
@@ -765,6 +693,7 @@ export class MatchingService {
         role: Role.ARTISAN,
         isActive: true,
         deletedAt: null,
+        ...(context.artisanIds ? { id: { in: context.artisanIds } } : {}),
         artisanProfile: {
           is: {
             verificationStatus: ArtisanVerificationStatus.APPROVED,
@@ -781,8 +710,11 @@ export class MatchingService {
         artisanInterventions: {
           where: {
             status: {
-              in: this.activeInterventionStatuses(),
+              in: ACTIVE_JOB_STATUSES,
             },
+            ...(context.excludeInterventionId !== undefined
+              ? { id: { not: context.excludeInterventionId } }
+              : {}),
           },
           select: {
             id: true,
@@ -868,6 +800,9 @@ export class MatchingService {
           hardIssues.push(zone.reason);
         }
 
+        // Does the artisan fit the job itself (kind of work, place)? Time and load come next.
+        const serviceFit = specialtyMatch.matches && zone.matches;
+
         const weeklyAvailability = this.weeklyAvailabilityMatch({
           startsAt: context.startsAt,
           endsAt: context.endsAt,
@@ -876,20 +811,14 @@ export class MatchingService {
 
         reasons.push(weeklyAvailability.reason);
 
-        if (!weeklyAvailability.matches) {
-          hardIssues.push(weeklyAvailability.reason);
-        }
-
         const overlappingAppointments = artisan.artisanAppointments.length;
         const overlappingTimeBlocks = artisan.artisanTimeBlocks.length;
 
         if (overlappingAppointments > 0) {
-          hardIssues.push('Artisan déjà réservé sur ce créneau.');
           reasons.push('Conflit avec un rendez-vous existant.');
         }
 
         if (overlappingTimeBlocks > 0) {
-          hardIssues.push('Artisan indisponible sur ce créneau.');
           reasons.push('Conflit avec un bloc d’indisponibilité.');
         }
 
@@ -902,14 +831,6 @@ export class MatchingService {
 
         reasons.push(availabilityStatus.reason);
 
-        if (!profile.isAcceptingJobs) {
-          hardIssues.push('Artisan ne prend pas de missions.');
-        }
-
-        if (context.emergency && !profile.emergencyAvailable) {
-          hardIssues.push('Artisan non disponible pour urgence.');
-        }
-
         const activeJobsCount = artisan.artisanInterventions.length;
 
         const activeJobs = this.activeJobsScore(
@@ -919,9 +840,26 @@ export class MatchingService {
 
         reasons.push(activeJobs.reason);
 
-        if (activeJobsCount >= profile.maxActiveJobs) {
-          hardIssues.push('Artisan au maximum de missions actives.');
-        }
+        // The same rule as the assignment: what is listed as free can be assigned.
+        hardIssues.push(
+          ...artisanAvailabilityIssues({
+            profile: {
+              isAcceptingJobs: profile.isAcceptingJobs,
+              emergencyAvailable: profile.emergencyAvailable,
+              maxActiveJobs: profile.maxActiveJobs,
+              availability: profile.availability,
+            },
+            activeJobsCount,
+            overlappingAppointments,
+            overlappingTimeBlocks,
+            range:
+              context.startsAt && context.endsAt
+                ? { startsAt: context.startsAt, endsAt: context.endsAt }
+                : undefined,
+            emergency: context.emergency,
+            timeZone: getBusinessTimeZone(),
+          }),
+        );
 
         const verificationScore =
           profile.verificationStatus === ArtisanVerificationStatus.APPROVED
@@ -959,11 +897,7 @@ export class MatchingService {
           profile.availabilityStatus,
         );
 
-        const isAvailable =
-          hardIssues.length === 0 &&
-          profile.isAcceptingJobs &&
-          overlappingAppointments === 0 &&
-          overlappingTimeBlocks === 0;
+        const isAvailable = hardIssues.length === 0;
 
         return {
           artisanId: artisan.id,
@@ -973,6 +907,7 @@ export class MatchingService {
 
           score: Math.max(0, Math.min(100, Math.round(score))),
           isAvailable,
+          serviceFit,
 
           distanceKm:
             distanceKm === null ? null : Number(distanceKm.toFixed(2)),
@@ -1084,6 +1019,12 @@ export class MatchingService {
     );
   }
 
+  /**
+   * Gives the job to this artisan, through the one assignment path (P1-05): the
+   * artisan must be approved and free, and the job in a status that can be
+   * assigned. This route also insists that the artisan fits the job (kind of work
+   * and place), since "matched" is what it is for.
+   */
   async assignArtisan(
     userId: number,
     role: Role,
@@ -1097,8 +1038,12 @@ export class MatchingService {
       where: {
         id: interventionId,
       },
-      include: {
-        appointment: true,
+      select: {
+        id: true,
+        serviceType: true,
+        latitude: true,
+        longitude: true,
+        urgency: true,
       },
     });
 
@@ -1106,63 +1051,34 @@ export class MatchingService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const artisan = await this.prisma.user.findFirst({
-      where: {
-        id: artisanId,
-        role: Role.ARTISAN,
-        isActive: true,
-        deletedAt: null,
-        artisanProfile: {
-          is: {
-            verificationStatus: ArtisanVerificationStatus.APPROVED,
-          },
-        },
-      },
-      include: {
-        artisanProfile: true,
-      },
+    const [candidate] = await this.computeMatches({
+      serviceType: intervention.serviceType,
+      latitude: intervention.latitude ?? undefined,
+      longitude: intervention.longitude ?? undefined,
+      emergency: intervention.urgency === 'EMERGENCY',
+      artisanIds: [artisanId],
+      excludeInterventionId: interventionId,
+      onlyAvailable: false,
+      limit: 1,
     });
 
-    if (!artisan || !artisan.artisanProfile) {
+    if (!candidate) {
       throw new NotFoundException('Artisan introuvable ou non vérifié.');
     }
 
-    const range = this.parseRange(dto.startsAt, dto.endsAt);
-
-    if (range.startsAt && range.endsAt) {
-      const matches = await this.computeMatches({
-        serviceType: intervention.serviceType,
-        latitude: intervention.latitude ?? undefined,
-        longitude: intervention.longitude ?? undefined,
-        startsAt: range.startsAt,
-        endsAt: range.endsAt,
-        emergency: intervention.urgency === 'EMERGENCY',
-        onlyAvailable: false,
-        limit: 100,
-      });
-
-      const selected = matches.find((item) => item.artisanId === artisanId);
-
-      if (!selected) {
-        throw new BadRequestException(
-          'Cet artisan ne correspond pas à cette intervention.',
-        );
-      }
-
-      if (!selected.isAvailable) {
-        throw new BadRequestException({
-          message: 'Cet artisan n’est pas disponible.',
-          issues: selected.hardIssues,
-          candidate: selected,
-        });
-      }
+    if (!candidate.serviceFit) {
+      throw new BadRequestException(
+        'Cet artisan ne correspond pas à cette intervention.',
+      );
     }
 
-    const updated = await transitionStatus(this.prisma, {
-      id: interventionId,
-      to: Status.ASSIGNED,
-      actor: { kind: 'staff', userId },
-      data: { artisanId, assignedAt: new Date() },
+    const result = await this.assignment.assign({
+      interventionId,
+      artisanId,
+      actorId: userId,
+      startsAt: dto.startsAt,
+      endsAt: dto.endsAt,
+      adminNote: dto.adminNote,
       include: {
         client: {
           select: {
@@ -1183,39 +1099,6 @@ export class MatchingService {
       },
     });
 
-    if (range.startsAt && range.endsAt) {
-      await this.prisma.appointment.upsert({
-        where: {
-          interventionId,
-        },
-        update: {
-          artisanId,
-          startsAt: range.startsAt,
-          endsAt: range.endsAt,
-          scheduledById: userId,
-          adminNote: dto.adminNote,
-          status: AppointmentStatus.SCHEDULED,
-        },
-        create: {
-          interventionId,
-          clientId: intervention.clientId,
-          artisanId,
-          startsAt: range.startsAt,
-          endsAt: range.endsAt,
-          scheduledById: userId,
-          adminNote: dto.adminNote,
-          status: AppointmentStatus.SCHEDULED,
-        },
-      });
-    }
-
-    await this.realtime?.emitStatusChange?.({
-      interventionId,
-      oldStatus: intervention.status,
-      newStatus: Status.ASSIGNED,
-      actorId: userId,
-    });
-
-    return updated;
+    return result.intervention;
   }
 }

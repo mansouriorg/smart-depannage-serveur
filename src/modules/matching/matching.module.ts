@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { PrismaModule } from '../../prisma/prisma.module';
-import { RealtimeModule } from '../realtime/realtime.module';
+import { AssignmentModule } from '../assignment/assignment.module';
 
 import { MatchingController } from './matching.controller';
 import { MatchingService } from './matching.service';
@@ -9,7 +9,7 @@ import { MatchingService } from './matching.service';
 @Module({
   imports: [
     PrismaModule,
-    RealtimeModule,
+    AssignmentModule,
   ],
   controllers: [MatchingController],
   providers: [MatchingService],

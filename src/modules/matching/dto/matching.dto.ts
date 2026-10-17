@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 import { Transform, Type } from 'class-transformer';
@@ -82,5 +83,6 @@ export class AssignMatchedArtisanDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   adminNote?: string;
 }

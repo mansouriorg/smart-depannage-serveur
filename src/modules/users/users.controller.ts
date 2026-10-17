@@ -14,6 +14,7 @@ import {
 
 import { UsersService } from './users.service';
 import { ContactChangeService } from './contact-change.service';
+import { artisanListWhere, artisanPageSize } from './artisan-list-filter';
 
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -184,24 +185,13 @@ export class UsersController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
+    // ?assignable=true: only the artisans a job can be given to (P1-05)
+    @Query('assignable') assignable?: string,
   ) {
-    const where: any = {
-      role: Role.ARTISAN,
-      deletedAt: null,
-    };
-
-    if (search) {
-      where.OR = [
-        { email: { contains: search, mode: 'insensitive' } },
-        { name: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
     return this.usersService.findAll({
-      where,
+      where: artisanListWhere({ search, assignable }) as any,
       page: page ? Number(page) : 1,
-      limit: limit ? Number(limit) : 50,
+      limit: artisanPageSize(limit),
     });
   }
 

@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { AssignmentModule } from '../assignment/assignment.module';
 
 import { SchedulingController } from './scheduling.controller';
 import { SchedulingService } from './scheduling.service';
@@ -14,6 +15,7 @@ import { SchedulingService } from './scheduling.service';
     ScheduleModule.forRoot(),
     NotificationsModule,
     RealtimeModule,
+    AssignmentModule,
   ],
   controllers: [SchedulingController],
   providers: [SchedulingService],

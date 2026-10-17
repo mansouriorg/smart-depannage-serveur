@@ -18,6 +18,7 @@ import {
   phoneWhere,
   rethrowContactConflict,
 } from '../../common/contact/phone';
+import { approvedProfileData } from '../artisans/approved-profile';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -484,18 +485,28 @@ export class UsersService {
     const temporaryPassword = this.generateTemporaryPassword();
     const hashedPassword = await argon2.hash(temporaryPassword);
 
-    const user = await this.prisma.user
-      .create({
-        data: {
-          name: data.name,
-          email: data.email,
-          ...phoneCols,
-          password: hashedPassword,
-          role: Role.ARTISAN,
-          isActive: true,
-        },
-      })
-      .catch(rethrowContactConflict);
+    // The account and its profile together: an artisan without an approved profile
+    // cannot be given a job (P1-05).
+    const user = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user
+        .create({
+          data: {
+            name: data.name,
+            email: data.email,
+            ...phoneCols,
+            password: hashedPassword,
+            role: Role.ARTISAN,
+            isActive: true,
+          },
+        })
+        .catch(rethrowContactConflict);
+
+      await tx.artisanProfile.create({
+        data: approvedProfileData({ userId: created.id, specialty: data.specialty }),
+      });
+
+      return created;
+    });
 
     const passwordSetupUrl = await this.sendPasswordSetupLink(user);
 

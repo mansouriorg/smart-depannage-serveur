@@ -9,6 +9,8 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -98,6 +100,20 @@ export class AdminInterventionQueryDto extends PaginationQueryDto {
 export class AssignArtisanDto {
   @IsInt()
   artisanId: number;
+
+  /** The visit, both or none: with them the artisan must be free for that time, and an appointment is made. */
+  @IsOptional()
+  @IsDateString()
+  startsAt?: string;
+
+  @IsOptional()
+  @IsDateString()
+  endsAt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  adminNote?: string;
 }
 
 export class ChangeInterventionStatusDto {
@@ -250,6 +266,18 @@ export class EditArtisanProfileDto {
   @IsOptional()
   @IsBoolean()
   isAcceptingJobs?: boolean;
+
+  /** Takes urgent jobs. The assignment refuses an urgent job for an artisan who does not. */
+  @IsOptional()
+  @IsBoolean()
+  emergencyAvailable?: boolean;
+
+  /** How many jobs at a time; the assignment refuses one more. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  maxActiveJobs?: number;
 }
 
 export class AdminReviewArtisanDto {

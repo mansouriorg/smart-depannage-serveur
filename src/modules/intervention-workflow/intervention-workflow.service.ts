@@ -645,28 +645,6 @@ export class InterventionWorkflowService {
     });
   }
 
-  async markArtisanAssigned(
-    interventionId: number,
-    artisanId: number,
-    createdById?: number,
-  ) {
-    await this.applyTransition(interventionId, Status.ASSIGNED, createdById, {
-      artisanId,
-      assignedAt: new Date(),
-    });
-
-    return this.createTimelineEvent({
-      interventionId,
-      type: InterventionEventType.ARTISAN_ASSIGNED,
-      title: 'Artisan assigné',
-      message: 'Un artisan a été assigné à la mission.',
-      createdById,
-      metadata: {
-        artisanId,
-      },
-    });
-  }
-
   async markArtisanAccepted(interventionId: number, createdById?: number) {
     await this.applyTransition(interventionId, Status.ARTISAN_ACCEPTED, createdById, {
       artisanAcceptedAt: new Date(),

@@ -204,3 +204,40 @@ describe('contact change is wired (P1-03, step 4)', () => {
     expect(fs.existsSync(path.join(SRC, '../scripts/backfill-phone-keys.ts'))).toBe(true);
   });
 });
+
+describe('the one assignment path is wired (P1-05)', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
+
+  it.each([
+    'modules/admin/admin.module.ts',
+    'modules/matching/matching.module.ts',
+    'modules/scheduling/scheduling.module.ts',
+    'modules/interventions/interventions.module.ts',
+  ])('%s imports the module that exports AssignmentService', (rel) => {
+    expect(listedIn([read(rel)], 'imports', 'AssignmentModule')).toBe(true);
+  });
+
+  it('the assignment module provides, exports and can build the service', () => {
+    const text = read('modules/assignment/assignment.module.ts');
+
+    expect(listedIn([text], 'providers', 'AssignmentService')).toBe(true);
+    expect(/exports:\s*\[[^\]]*\bAssignmentService\b/.test(text)).toBe(true);
+
+    // What the service is built from: prisma, the timeline, the live events; the
+    // notifications module is global (checked below).
+    for (const name of ['PrismaModule', 'InterventionEventsModule', 'RealtimeModule']) {
+      expect(listedIn([text], 'imports', name)).toBe(true);
+    }
+  });
+
+  it('NotificationsService, which the assignment tells people with, is global', () => {
+    const text = read('modules/notifications/notifications.module.ts');
+
+    expect(text.includes('@Global()')).toBe(true);
+    expect(/exports:\s*\[[^\]]*\bNotificationsService\b/.test(text)).toBe(true);
+  });
+
+  it('the matching no longer needs the realtime module: the assignment sends the live event', () => {
+    expect(listedIn([read('modules/matching/matching.module.ts')], 'imports', 'RealtimeModule')).toBe(false);
+  });
+});

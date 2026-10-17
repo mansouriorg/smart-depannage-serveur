@@ -136,6 +136,35 @@ export class FakeTable {
     return { ...row };
   };
 
+  upsert = async ({ where, update, create }: any) => {
+    const row = this.rows.find((candidate) => matchesWhere(candidate, where));
+
+    if (row) {
+      const changes = withoutUndefined(update);
+
+      this.assertUnique({ ...row, ...changes }, row.id);
+      Object.assign(row, changes);
+
+      return { ...row };
+    }
+
+    return { ...this.insert(withoutUndefined(create) as Row) };
+  };
+
+  createMany = async ({ data }: any) => {
+    for (const item of data) this.insert(item);
+
+    return { count: data.length };
+  };
+
+  deleteMany = async ({ where }: any = {}) => {
+    const before = this.rows.length;
+
+    this.rows = this.rows.filter((row) => !matchesWhere(row, where));
+
+    return { count: before - this.rows.length };
+  };
+
   updateMany = async ({ where, data }: any) => {
     const hit = this.rows.filter((row) => matchesWhere(row, where));
 

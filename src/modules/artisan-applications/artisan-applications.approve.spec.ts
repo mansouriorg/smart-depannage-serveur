@@ -8,7 +8,11 @@ function makeWorld() {
   });
   const applications = new FakeTable({ defaults: () => ({ status: 'PENDING' }) });
   const authToken = new FakeTable({ unique: ['tokenHash'], defaults: () => ({ usedAt: null, revokedAt: null, newValue: null }) });
-  const prisma: any = withTransactions({ user: users, artisanApplication: applications, authToken }, [users, applications, authToken]);
+  const profiles = new FakeTable({ unique: ['userId'], defaults: () => ({ isAcceptingJobs: false }) });
+  const prisma: any = withTransactions(
+    { user: users, artisanApplication: applications, authToken, artisanProfile: profiles },
+    [users, applications, authToken, profiles],
+  );
 
   const sent: any[] = [];
   const notifications: any = {
@@ -21,7 +25,7 @@ function makeWorld() {
 
   process.env.FRONTEND_URL = 'https://app.example.tn';
 
-  return { users, applications, authToken, sent, service: new ArtisanApplicationsService(prisma, notifications) };
+  return { users, applications, authToken, profiles, sent, service: new ArtisanApplicationsService(prisma, notifications) };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {
@@ -55,6 +59,40 @@ describe('approving an artisan application (phone number rules)', () => {
     expect(row.phoneKey).toBe('+21655111222');
     expect(w.applications.rows[0].status).toBe('APPROVED');
     expect(w.sent.length).toBe(1);
+  });
+
+  it('the artisan gets an approved profile that accepts missions, so the dispatcher can give them a job (P1-05)', async () => {
+    const w = makeWorld();
+    const app = w.applications.insert(application({ specialty: 'Plomberie', experience: 6, description: 'Dépannage fuites' }));
+
+    await w.service.approve(app.id);
+
+    expect(w.profiles.rows.length).toBe(1);
+    const profile = w.profiles.rows[0];
+    expect(profile.userId).toBe(w.users.rows[0].id);
+    expect(profile.verificationStatus).toBe('APPROVED');
+    expect(profile.verifiedAt instanceof Date).toBe(true);
+    expect(profile.isAcceptingJobs).toBe(true);
+    expect(profile.specialty).toBe('Plomberie');
+    expect(profile.specialties).toEqual(['Plomberie']);
+    expect(profile.yearsExperience).toBe(6);
+    expect(profile.bio).toBe('Dépannage fuites');
+    expect(profile.emergencyAvailable).toBe(true); // urgent jobs on, as the admin screen always allowed them
+  });
+
+  it('when the profile cannot be made, no account is left behind and the application stays pending', async () => {
+    const w = makeWorld();
+    const app = w.applications.insert(application());
+    w.profiles.create = async () => {
+      throw new Error('database down');
+    };
+
+    const error = await failure(w.service.approve(app.id));
+
+    expect(error.message).toBe('database down');
+    expect(w.users.rows.length).toBe(0);
+    expect(w.applications.rows[0].status).toBe('PENDING');
+    expect(w.sent.length).toBe(0);
   });
 
   it('a number already on another account blocks the approval, whatever the spelling, and nothing is created', async () => {

@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
 } from 'class-validator';
 
 import { Type } from 'class-transformer';
@@ -44,6 +45,7 @@ export class ScheduleInterventionDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   adminNote?: string;
 }
 
