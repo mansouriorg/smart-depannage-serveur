@@ -17,6 +17,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { canonicalStatus, STATUS_GROUPS } from '../intervention-workflow/intervention-status';
 import { AssignmentService } from '../assignment/assignment.service';
+import { MissionActionsService } from '../mission-actions/mission-actions.service';
 import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
 import { lockArtisanCalendar, lockJob } from '../assignment/artisan-lock';
 import { replaceDefaultReminders } from '../assignment/appointment-reminders';
@@ -55,6 +56,11 @@ export class SchedulingService {
 
     @Optional()
     private readonly realtime?: RealtimeService,
+
+    // What an artisan does with a mission (P1-06). Optional only so that a spec can build the
+    // service without it; the module always provides it.
+    @Optional()
+    private readonly missionActions?: MissionActionsService,
   ) {}
 
   // ==========================================================
@@ -1040,11 +1046,28 @@ export class SchedulingService {
       throw new ForbiddenException('Seul l’artisan assigné peut accepter.');
     }
 
+    // The artisan accepting is the mission service's action (P1-06): the same lock, the same
+    // dates, the same line in the timeline, the client and the back office told, the live event.
+    // Only the visit is confirmed here.
+    if (!this.isStaff(role)) {
+      if (!this.missionActions) {
+        throw new Error('SchedulingService: the mission actions are not available.');
+      }
+
+      await this.missionActions.accept({ userId, interventionId: appointment.interventionId });
+
+      return this.prisma.appointment.update({
+        where: { id: appointmentId },
+        data: { status: AppointmentStatus.CONFIRMED, confirmedAt: new Date() },
+      });
+    }
+
+    // Staff accepting for the artisan: the status table lets them, and the client is told.
     const updated = await this.prisma.$transaction(async (tx) => {
       await transitionStatus(tx, {
         id: appointment.interventionId,
         to: Status.ARTISAN_ACCEPTED,
-        actor: { kind: this.isStaff(role) ? 'staff' : 'artisan', userId },
+        actor: { kind: 'staff', userId },
         dataOnChange: { artisanAcceptedAt: new Date() },
       });
 

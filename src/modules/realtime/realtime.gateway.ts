@@ -454,6 +454,16 @@ export class RealtimeGateway
     this.server.to(this.artisanRoom(artisanId)).to(this.userRoom(artisanId)).emit(event, payload);
   }
 
+  /**
+   * Takes every socket of a user out of the room of a job. The room is joined once, at the
+   * moment the user is allowed in (the artisan of the job), and nothing else checks again:
+   * an artisan who gave the job back, or lost it to a dispatcher, would go on receiving
+   * everything said about the job (the client's phone and address, the next artisan).
+   */
+  removeUserFromIntervention(userId: number, interventionId: number) {
+    this.server.in(this.userRoom(userId)).socketsLeave(this.interventionRoom(interventionId));
+  }
+
   emitToIntervention(interventionId: number, event: string, payload: any) {
     this.server.to(this.interventionRoom(interventionId)).emit(event, payload);
   }

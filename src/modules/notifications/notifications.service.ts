@@ -1298,81 +1298,185 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * The steps an artisan takes on a mission (accepted, on the way, arrived) and the
+   * refusal (P1-06) tell the same two groups: the client, who is waiting for the artisan,
+   * and the back office, who watch the missions. The person who did it is not told.
+   */
+  private async missionStepContext(interventionId: number, artisanId: number) {
+    const intervention = await this.prisma.intervention.findUnique({
+      where: { id: interventionId },
+      select: { id: true, clientId: true },
+    });
+
+    if (!intervention) {
+      return null;
+    }
+
+    const artisan = await this.prisma.user.findUnique({
+      where: { id: artisanId },
+      select: { name: true },
+    });
+
+    const name = String(artisan?.name ?? '').trim();
+
+    return {
+      clientId: intervention.clientId,
+      /** "Karim", or nothing when the artisan has no name on file. */
+      name,
+      /** For a sentence in the middle: "Karim" or "L’artisan". */
+      who: name || 'L’artisan',
+    };
+  }
+
+  private async notifyMissionStep(params: {
+    interventionId: number;
+    artisanId: number;
+    type: NotificationType;
+    staff: { title: string; message: (who: string) => string; priority?: NotificationPriority };
+    client?: {
+      title: string;
+      message: (name: string) => string;
+      channels?: NotificationChannel[];
+      /** The client's copy does not say who the artisan is (no actor, no artisan id): the artisan left the job. */
+      anonymous?: boolean;
+    };
+  }) {
+    const context = await this.missionStepContext(params.interventionId, params.artisanId);
+
+    if (!context) {
+      return null;
+    }
+
+    const base = {
+      actorId: params.artisanId,
+      entityType: 'INTERVENTION',
+      entityId: params.interventionId,
+      data: { interventionId: params.interventionId, artisanId: params.artisanId },
+    };
+
+    // The back office and the client are told one after the other, and a failure of the first
+    // does not keep the second from being tried (a staff list that cannot be read must not leave
+    // the client waiting for an artisan who is not coming). The failure is raised at the end.
+    let staffFailure: { error: unknown } | null = null;
+
+    try {
+      await this.notifyAdmins({
+        ...base,
+        type: params.type,
+        priority: params.staff.priority,
+        title: params.staff.title,
+        message: params.staff.message(context.who),
+        roles: DISPATCH_ROLES,
+      });
+    } catch (error) {
+      staffFailure = { error };
+    }
+
+    let toldClient: unknown = null;
+
+    if (params.client) {
+      const { actorId, data, ...shared } = base;
+
+      toldClient = await this.notify({
+        ...shared,
+        ...(params.client.anonymous ? { data: { interventionId: params.interventionId } } : { actorId, data }),
+        recipientId: context.clientId,
+        type: params.type,
+        title: params.client.title,
+        message: params.client.message(context.name),
+        channels: params.client.channels,
+      });
+    }
+
+    if (staffFailure) {
+      throw staffFailure.error;
+    }
+
+    return toldClient;
+  }
+
   async notifyArtisanAcceptedMission(
     interventionId: number,
     artisanId: number,
   ) {
-    const intervention = await this.prisma.intervention.findUnique({
-      where: {
-        id: interventionId,
+    return this.notifyMissionStep({
+      interventionId,
+      artisanId,
+      type: NotificationType.ARTISAN_ACCEPTED_MISSION,
+      staff: {
+        title: 'Mission acceptée',
+        message: (who) => `${who} a accepté la mission #${interventionId}.`,
       },
-    });
-
-    if (!intervention) {
-      return null;
-    }
-
-    await this.notifyAdmins({
-      actorId: artisanId,
-      type: NotificationType.ARTISAN_ACCEPTED_MISSION,
-      title: 'Mission acceptée',
-      message: `L’artisan a accepté la mission #${interventionId}.`,
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
-    });
-
-    return this.notify({
-      recipientId: intervention.clientId,
-      actorId: artisanId,
-      type: NotificationType.ARTISAN_ACCEPTED_MISSION,
-      title: 'Mission acceptée',
-      message: 'L’artisan a accepté votre intervention.',
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
+      client: {
+        title: 'Mission acceptée',
+        message: (name) => `${name || 'L’artisan'} a accepté votre intervention.`,
+      },
     });
   }
 
   async notifyArtisanOnTheWay(interventionId: number, artisanId: number) {
-    const intervention = await this.prisma.intervention.findUnique({
-      where: {
-        id: interventionId,
-      },
-    });
-
-    if (!intervention) {
-      return null;
-    }
-
-    return this.notify({
-      recipientId: intervention.clientId,
-      actorId: artisanId,
+    return this.notifyMissionStep({
+      interventionId,
+      artisanId,
       type: NotificationType.ARTISAN_ON_THE_WAY,
-      title: 'Artisan en route',
-      message: 'Votre artisan est en route.',
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
+      staff: {
+        title: 'Artisan en route',
+        message: (who) => `${who} est en route pour la mission #${interventionId}.`,
+      },
+      client: {
+        title: 'Artisan en route',
+        message: (name) => `Votre artisan${name ? ` ${name}` : ''} est en route.`,
+      },
     });
   }
 
   async notifyArtisanArrived(interventionId: number, artisanId: number) {
-    const intervention = await this.prisma.intervention.findUnique({
-      where: {
-        id: interventionId,
+    return this.notifyMissionStep({
+      interventionId,
+      artisanId,
+      type: NotificationType.ARTISAN_ARRIVED,
+      staff: {
+        title: 'Artisan arrivé',
+        message: (who) => `${who} est arrivé sur place (mission #${interventionId}).`,
+      },
+      client: {
+        title: 'Artisan arrivé',
+        message: (name) => `Votre artisan${name ? ` ${name}` : ''} est arrivé sur place.`,
       },
     });
+  }
 
-    if (!intervention) {
-      return null;
-    }
-
-    return this.notify({
-      recipientId: intervention.clientId,
-      actorId: artisanId,
-      type: NotificationType.ARTISAN_ARRIVED,
-      title: 'Artisan arrivé',
-      message: 'Votre artisan est arrivé sur place.',
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
+  /**
+   * The artisan gave the mission back and it is waiting for the dispatcher again. The
+   * client, who was told an artisan was coming, is told another one is being found; the
+   * reason the artisan gave is for the back office only.
+   */
+  async notifyArtisanDeclined(
+    interventionId: number,
+    artisanId: number,
+    /** Already written for a person: "Trop loin", with the artisan's note if there is one. */
+    reasonText?: string,
+  ) {
+    return this.notifyMissionStep({
+      interventionId,
+      artisanId,
+      // There is no notification type for a refusal; a new one would need a migration.
+      type: NotificationType.GENERAL,
+      staff: {
+        title: 'Mission refusée',
+        priority: NotificationPriority.HIGH,
+        message: (who) =>
+          `${who} a refusé la mission #${interventionId}${reasonText ? ` (${reasonText})` : ''}. Elle attend un nouvel artisan.`,
+      },
+      client: {
+        title: 'Nouvel artisan en recherche',
+        message: () =>
+          'Votre artisan n’est plus disponible pour cette intervention. Nous en cherchons un autre et revenons vers vous.',
+        channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.SMS],
+        // The client is not given the name or the id of an artisan who is not coming.
+        anonymous: true,
+      },
     });
   }
 

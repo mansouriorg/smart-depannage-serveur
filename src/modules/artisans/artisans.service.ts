@@ -12,8 +12,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { MissionActionsService } from '../mission-actions/mission-actions.service';
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
+import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
+import { forMarketplace, withoutStaffFields } from '../interventions/intervention-redaction';
 import { withAliases } from '../intervention-workflow/intervention-status';
+import { isOpenJob } from '../mission-actions/open-job';
 import {
   transitionStatus,
   transitionStatusDetailed,
@@ -62,6 +66,7 @@ export class ArtisansService {
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
     private readonly rateLimit: RateLimitService,
+    private readonly missionActions: MissionActionsService,
   ) {}
 
   // ==========================================================
@@ -90,20 +95,6 @@ export class ArtisansService {
 
   private normalizePhone(phone?: string): string | undefined {
     return phone?.trim() || undefined;
-  }
-
-  private acceptableMissionStatuses(): Status[] {
-    // Both spellings of the "open" statuses (see intervention-status.ts).
-    return withAliases([
-      'CREATED',
-      'WAITING_ADMIN_REVIEW',
-      'QUOTE_ACCEPTED',
-      'ASSIGNED',
-    ]) as Status[];
-  }
-
-  private canAcceptMissionStatus(status: Status): boolean {
-    return this.acceptableMissionStatuses().includes(status);
   }
 
   private safeUserSelect = {
@@ -250,10 +241,11 @@ export class ArtisansService {
     }
 
     const isAssignedToArtisan = intervention.artisanId === artisanUserId;
-    const isUnassigned = !intervention.artisanId;
+    // Open: nobody has it, or it waits in the queue (an id left on it by the back office does not count).
+    const isOpen = isOpenJob(intervention);
 
     if (!isAssignedToArtisan) {
-      if (!(options?.allowUnassigned && isUnassigned)) {
+      if (!(options?.allowUnassigned && isOpen)) {
         throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
       }
     }
@@ -353,12 +345,12 @@ export class ArtisansService {
       mission.longitude,
     );
 
-    return {
+    return withoutStaffFields({
       ...mission,
       distanceKm,
       etaMinutes: this.estimateEtaMinutes(distanceKm),
       navigationUrl: this.navigationUrl(mission),
-    };
+    });
   }
 
   // ==========================================================
@@ -730,6 +722,8 @@ export class ArtisansService {
           'QUOTE_ACCEPTED',
         ]) as Status[],
       },
+      // A mission this artisan refused (or gave back) is not offered to them again (P1-06).
+      missionRejections: { none: { artisanProfileId: profile.id } },
     };
 
     if (specialties.length) {
@@ -812,10 +806,14 @@ export class ArtisansService {
       }),
     ]);
 
+    // A job with a visit already fixed goes through the dispatcher (taking it is refused with a
+    // 409), so it is not offered here.
+    const takable = await this.withoutFixedVisit(availableJobs);
+
     return {
       availableJobs: await Promise.all(
-        availableJobs.map((job) =>
-          this.decorateMissionWithDistance(userId, job),
+        takable.map((job) =>
+          this.decorateMissionWithDistance(userId, this.asOpenMission(job)),
         ),
       ),
       assignedJobs: await Promise.all(
@@ -833,41 +831,101 @@ export class ArtisansService {
           this.decorateMissionWithDistance(userId, job),
         ),
       ),
-      completedJobs,
-      cancelledJobs,
+      completedJobs: completedJobs.map((job) => withoutStaffFields(job)),
+      cancelledJobs: cancelledJobs.map((job) => withoutStaffFields(job)),
     };
   }
 
+  /** The jobs that have no visit still to come (a fixed time is for the dispatcher to give). */
+  private async withoutFixedVisit<T extends { id: number }>(jobs: T[]): Promise<T[]> {
+    if (!jobs.length) return jobs;
+
+    const fixed = await this.prisma.appointment.findMany({
+      where: {
+        interventionId: { in: jobs.map((job) => job.id) },
+        status: { in: ACTIVE_APPOINTMENT_STATUSES },
+        startsAt: { not: null },
+        endsAt: { gt: new Date() },
+      },
+      select: { interventionId: true },
+    });
+
+    const taken = new Set(fixed.map((visit) => visit.interventionId));
+
+    return jobs.filter((job) => !taken.has(job.id));
+  }
+
   async getMissionDetails(userId: number, interventionId: number) {
-    await this.ensureApprovedArtisan(userId);
+    const profile = await this.ensureApprovedArtisan(userId);
 
     const mission = await this.getMissionForArtisan(userId, interventionId, {
       allowUnassigned: true,
     });
 
+    // Nobody has it, or it waits in the queue (those are the only other cases getMissionForArtisan
+    // lets through; a job of this artisan that is back in the queue is open for them too).
+    const open = isOpenJob(mission);
+
+    if (open) {
+      // An artisan who refused or gave back a mission is not shown it again, with the client's
+      // phone and the messages of the job that go with it.
+      const refused = await this.prisma.artisanMissionRejection.findFirst({
+        where: { artisanProfileId: profile.id, interventionId: mission.id },
+        select: { id: true },
+      });
+
+      if (refused) {
+        throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
+      }
+    }
+
     const fullMission = await this.prisma.intervention.findUnique({
       where: { id: mission.id },
       include: {
         ...this.missionInclude(),
-        events: {
-          orderBy: { createdAt: 'asc' },
-        },
-        messages: {
-          include: {
-            sender: {
-              select: {
-                id: true,
-                name: true,
-                role: true,
+        // The conversation and the timeline of a job belong to the people on it, not to
+        // whoever looks at the board.
+        ...(open
+          ? {}
+          : {
+              events: {
+                orderBy: { createdAt: 'asc' },
               },
-            },
-          },
-          orderBy: { createdAt: 'asc' },
-        },
+              messages: {
+                include: {
+                  sender: {
+                    select: {
+                      id: true,
+                      name: true,
+                      role: true,
+                    },
+                  },
+                },
+                orderBy: { createdAt: 'asc' },
+              },
+            }),
       },
     });
 
-    return this.decorateMissionWithDistance(userId, fullMission);
+    // The same shape for an open mission: the lists are there, and empty.
+    return this.decorateMissionWithDistance(
+      userId,
+      open ? this.asOpenMission({ ...fullMission, events: [], messages: [] }) : fullMission,
+    );
+  }
+
+  /**
+   * An open mission, as every artisan may see it: what the job is and where, never the way to
+   * reach the client (the same rule as the open jobs of the older list), nor the payments of the
+   * job. The distance and the navigation link need the address, so they stay.
+   */
+  private asOpenMission(job: any) {
+    return forMarketplace({
+      ...job,
+      client: job.client ? { name: job.client.name } : job.client,
+      payments: [],
+      invoice: null,
+    });
   }
 
   private missionInclude() {
@@ -912,179 +970,33 @@ export class ArtisansService {
   // 6. MISSION ACTIONS
   // ==========================================================
 
-  async acceptMission(userId: number, interventionId: number) {
-    await this.ensureApprovedArtisan(userId);
+  // Accept, give back, on the way, arrived: one service (P1-06). It checks that the artisan
+  // is approved and that the mission is theirs (or open), changes the status once through the
+  // status table, and tells the client and the back office.
 
-    const intervention = await this.getMissionForArtisan(
-      userId,
-      interventionId,
-      {
-        allowUnassigned: true,
-      },
-    );
-
-    if (!this.canAcceptMissionStatus(intervention.status)) {
-      throw new BadRequestException(
-        'Cette mission ne peut pas être acceptée.',
-      );
-    }
-
-    // P0-10: claim the mission atomically. The check above and the write
-    // below are two separate queries, so two artisans pressing "accept" at the
-    // same moment used to both succeed (last write won, both were told yes).
-    // The WHERE clause makes the database decide: only one UPDATE can match a
-    // mission that is still unassigned (or already theirs) and still open.
-    // transitionStatus does the same compare-and-set in one UPDATE and answers
-    // 409 when somebody else got there first.
-    const updated = await transitionStatus(this.prisma, {
-      id: intervention.id,
-      to: Status.ACCEPTED,
-      actor: { kind: 'artisan', userId },
-      allowedFrom: this.acceptableMissionStatuses(),
-      where: { OR: [{ artisanId: null }, { artisanId: userId }] },
-      data: { artisanId: userId },
-      dataOnChange: { artisanAcceptedAt: new Date() },
-      include: this.missionInclude(),
-      conflictMessage:
-        'Cette mission vient d’être attribuée à un autre artisan ou n’est plus disponible.',
-    });
-
-    await this.createMissionEvent({
-      interventionId: intervention.id,
-      type: InterventionEventType.ARTISAN_ACCEPTED,
-      title: 'Mission acceptée',
-      message: 'L’artisan a accepté la mission.',
-      createdById: userId,
-    });
-
-    if (updated.client?.phone) {
-      await this.notifications.sendSms(
-        updated.client.phone,
-        `Smart Dépannage: votre mission a été acceptée par ${updated.artisan?.name || 'un artisan'}.`,
-      );
-    }
-
-    return updated;
+  acceptMission(userId: number, interventionId: number) {
+    return this.missionActions.accept({ userId, interventionId, include: this.missionInclude() });
   }
 
-  async rejectMission(
+  rejectMission(
     userId: number,
     interventionId: number,
     dto: RejectMissionDto,
   ) {
-    const profile = await this.ensureApprovedArtisan(userId);
-
-    const intervention = await this.getMissionForArtisan(
+    return this.missionActions.decline({
       userId,
       interventionId,
-      {
-        allowUnassigned: true,
-      },
-    );
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.artisanMissionRejection.create({
-        data: {
-          artisanProfileId: profile.id,
-          interventionId: intervention.id,
-          reason: dto.reason,
-          note: dto.note,
-        },
-      });
-
-      if (intervention.artisanId === userId) {
-        // Their own job goes back to the dispatcher queue. Only allowed before
-        // the artisan is on the road (the status table decides).
-        await transitionStatus(tx, {
-          id: intervention.id,
-          to: Status.ADMIN_REVIEW,
-          actor: { kind: 'artisan', userId },
-          data: { artisanRejectedAt: new Date(), artisanId: null },
-        });
-      } else {
-        // Declining an open job nobody owns: remember it, nothing else moves.
-        await tx.intervention.update({
-          where: { id: intervention.id },
-          data: { artisanRejectedAt: new Date() },
-        });
-      }
+      reason: dto.reason,
+      note: dto.note,
     });
-
-    await this.createMissionEvent({
-      interventionId: intervention.id,
-      type: InterventionEventType.CANCELLED,
-      title: 'Mission refusée par artisan',
-      message: dto.note || `Motif: ${dto.reason}`,
-      createdById: userId,
-    });
-
-    return {
-      message: 'Mission refusée.',
-    };
   }
 
-  async markOnTheWay(userId: number, interventionId: number) {
-    await this.ensureApprovedArtisan(userId);
-    await this.getMissionForArtisan(userId, interventionId);
-
-    const { row: updated, changed } = await transitionStatusDetailed(
-      this.prisma,
-      {
-        id: interventionId,
-        to: Status.ON_THE_WAY,
-        actor: { kind: 'artisan', userId },
-        dataOnChange: { artisanOnTheWayAt: new Date() },
-        include: this.missionInclude(),
-      },
-    );
-
-    // Pressed twice: no second timeline entry and no second SMS.
-    if (!changed) return updated;
-
-    await this.createMissionEvent({
-      interventionId,
-      type: InterventionEventType.ARTISAN_ON_THE_WAY,
-      title: 'Artisan en route',
-      message: 'L’artisan est en route vers l’adresse.',
-      createdById: userId,
-    });
-
-    if (updated.client?.phone) {
-      await this.notifications.sendSms(
-        updated.client.phone,
-        'Smart Dépannage: votre artisan est en route.',
-      );
-    }
-
-    return updated;
+  markOnTheWay(userId: number, interventionId: number) {
+    return this.missionActions.onTheWay({ userId, interventionId, include: this.missionInclude() });
   }
 
-  async markArrived(userId: number, interventionId: number) {
-    await this.ensureApprovedArtisan(userId);
-    await this.getMissionForArtisan(userId, interventionId);
-
-    const { row: updated, changed } = await transitionStatusDetailed(
-      this.prisma,
-      {
-        id: interventionId,
-        to: Status.ARRIVED,
-        actor: { kind: 'artisan', userId },
-        dataOnChange: { artisanArrivedAt: new Date() },
-        include: this.missionInclude(),
-      },
-    );
-
-    if (!changed) return updated;
-
-    await this.createMissionEvent({
-      interventionId,
-      type: InterventionEventType.ARTISAN_ARRIVED,
-      title: 'Artisan arrivé',
-      message: 'L’artisan est arrivé sur place.',
-      createdById: userId,
-    });
-
-    return updated;
+  markArrived(userId: number, interventionId: number) {
+    return this.missionActions.arrived({ userId, interventionId, include: this.missionInclude() });
   }
 
   async startIntervention(userId: number, interventionId: number) {
@@ -1102,7 +1014,7 @@ export class ArtisansService {
       },
     );
 
-    if (!changed) return updated;
+    if (!changed) return withoutStaffFields(updated);
 
     await this.createMissionEvent({
       interventionId,
@@ -1112,7 +1024,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async uploadBeforePhoto(
@@ -1142,7 +1054,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async addDiagnostic(
@@ -1153,13 +1065,15 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    return this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        diagnosticNotes: dto.diagnosticNotes,
-      },
-      include: this.missionInclude(),
-    });
+    return withoutStaffFields(
+      await this.prisma.intervention.update({
+        where: { id: interventionId },
+        data: {
+          diagnosticNotes: dto.diagnosticNotes,
+        },
+        include: this.missionInclude(),
+      }),
+    );
   }
 
   async addMaterialUsed(
@@ -1170,13 +1084,15 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    return this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        materialUsed: dto.items as any,
-      },
-      include: this.missionInclude(),
-    });
+    return withoutStaffFields(
+      await this.prisma.intervention.update({
+        where: { id: interventionId },
+        data: {
+          materialUsed: dto.items as any,
+        },
+        include: this.missionInclude(),
+      }),
+    );
   }
 
   async requestExtraQuote(
@@ -1204,7 +1120,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async uploadAfterPhoto(
@@ -1234,7 +1150,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async collectClientSignature(
@@ -1264,7 +1180,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async completeIntervention(userId: number, interventionId: number) {
@@ -1304,7 +1220,7 @@ export class ArtisansService {
       },
     );
 
-    if (!changed) return updated;
+    if (!changed) return withoutStaffFields(updated);
 
     await this.createMissionEvent({
       interventionId,
@@ -1321,7 +1237,7 @@ export class ArtisansService {
       );
     }
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   async reportProblem(
@@ -1353,7 +1269,7 @@ export class ArtisansService {
       createdById: userId,
     });
 
-    return updated;
+    return withoutStaffFields(updated);
   }
 
   // ==========================================================

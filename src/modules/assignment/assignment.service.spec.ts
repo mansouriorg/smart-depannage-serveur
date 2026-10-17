@@ -21,7 +21,7 @@ const monday = (fromHour: number, toHour: number) => ({
   endsAt: new Date(MONDAY_8.getTime() + (toHour - 8) * HOUR),
 });
 
-type Options = { notifyThrows?: boolean; eventsThrow?: boolean; liveThrows?: boolean; remindersThrow?: boolean };
+type Options = { notifyThrows?: boolean; eventsThrow?: boolean; liveThrows?: boolean; remindersThrow?: boolean; leaveThrows?: boolean };
 
 function makeWorld(options: Options = {}) {
   const users = new FakeTable({ defaults: () => ({ role: 'ARTISAN', isActive: true, deletedAt: null }) });
@@ -71,6 +71,8 @@ function makeWorld(options: Options = {}) {
   const notified: any[] = [];
   const others: any[] = [];
   const live: any[] = [];
+  const left: Array<[number, number]> = [];
+  const order: string[] = [];
 
   const eventsService: any = {
     create: async (data: any) => {
@@ -92,6 +94,12 @@ function makeWorld(options: Options = {}) {
     emitStatusChange: async (payload: any) => {
       if (options.liveThrows) throw new Error('socket down');
       live.push(payload);
+      order.push('live');
+    },
+    removeFromJobRoom: (userId: number, interventionId: number) => {
+      if (options.leaveThrows) throw new Error('socket server down');
+      left.push([userId, interventionId]);
+      order.push('leave');
     },
   };
 
@@ -107,7 +115,7 @@ function makeWorld(options: Options = {}) {
   const addJob = (fields: Record<string, unknown> = {}) => interventions.insert({ clientId: client.id, address: 'Rue de Marseille, Tunis', ...fields }).id as number;
 
   return {
-    users, profiles, interventions, appointments, blocks, reminders, requests, locks, lockSql, events, notified, others, live,
+    users, profiles, interventions, appointments, blocks, reminders, requests, locks, lockSql, events, notified, others, live, left, order,
     addArtisan, addJob,
     job: (id: number) => interventions.rows.find((row) => row.id === id)!,
     service: new AssignmentService(prisma, notifications, eventsService, realtime),
@@ -566,6 +574,45 @@ describe('giving a job to an artisan (P1-05)', () => {
       expect(w.others[0].title).toBe('Mission retirée');
       expect(w.events[0].title).toBe('Artisan changé');
       expect(w.events[0].metadata.previousArtisanId).toBe(first);
+    });
+
+    it('the first stops hearing about the job: they leave its live room before the live event goes out', async () => {
+      const w = makeWorld();
+      const first = w.addArtisan();
+      const second = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+
+      await assign(w, id, second);
+
+      expect(w.left).toEqual([[first, id]]);
+      expect(w.order).toEqual(['leave', 'live']);
+    });
+
+    it('nobody leaves when the job was free, when the same artisan is given another time, or when it changes nothing', async () => {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const free = w.addJob({ status: 'ADMIN_REVIEW', artisanId: null });
+      const theirs = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 5 * 24 * 3600_000);
+
+      await assign(w, free, artisan);
+      await assign(w, theirs, artisan, { startsAt: start, endsAt: new Date(start.getTime() + 3600_000) });
+      await assign(w, theirs, artisan);
+
+      expect(w.left).toEqual([]);
+    });
+
+    it('a socket server that is down does not undo the hand-over, and the live event still goes out', async () => {
+      const w = makeWorld({ leaveThrows: true });
+      const first = w.addArtisan();
+      const second = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+
+      await assign(w, id, second);
+
+      expect(w.job(id).artisanId).toBe(second);
+      expect(w.live).toHaveLength(1);
+      expect(w.others).toHaveLength(1);
     });
   });
 

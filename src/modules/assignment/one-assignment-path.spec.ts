@@ -23,8 +23,8 @@ import {
 /** Files that may write an artisan onto a job, and why. */
 const MAY_WRITE_ARTISAN: Record<string, string> = {
   'modules/assignment/assignment.service.ts': 'the assignment itself',
-  'modules/artisans/artisans.service.ts':
-    'an artisan takes an open mission (compare-and-set, approved artisans only) or gives it back',
+  'modules/mission-actions/mission-actions.service.ts':
+    'an artisan takes an open mission (compare-and-set, approved artisans only, the same availability rule) or gives it back (P1-06)',
 };
 
 /** `data` that is a variable, and why it holds no artisan. */
@@ -317,16 +317,23 @@ describe('a rewritten appointment, an answered request, the landing status (P1-0
   });
 
   it('an assignment that rewrites or takes away an appointment closes the pending requests about it, in the same transaction', () => {
-    const closing = assignment.match(/tx\.appointmentRequest\.updateMany\(\{[\s\S]*?\}\);/)?.[0] ?? '';
+    const closing = assignment.match(/await closePendingRequests\(tx,[\s\S]*?\}\);/)?.[0] ?? '';
+    const helper = stripComments(readSource('modules/assignment/appointment-release.ts'));
+    const inHelper = helper.match(/appointmentRequest\.updateMany\(\{[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
-    expect(/status:\s*AppointmentRequestStatus\.PENDING/.test(closing)).toBe(true);
-    expect(/status:\s*AppointmentRequestStatus\.CANCELLED/.test(closing)).toBe(true);
+    expect(/existing\.id/.test(closing)).toBe(true);
     expect(/reviewedById:\s*actorId/.test(closing)).toBe(true);
-    expect(assignment.indexOf('tx.appointmentRequest.updateMany') < assignment.indexOf('return {\n        row,\n        appointment,')).toBe(true);
+    expect(/status:\s*AppointmentRequestStatus\.PENDING/.test(inHelper)).toBe(true);
+    expect(/status:\s*AppointmentRequestStatus\.CANCELLED/.test(inHelper)).toBe(true);
+    expect(assignment.indexOf('await closePendingRequests(tx') < assignment.indexOf('return {\n        row,\n        appointment,')).toBe(true);
   });
 
   it('an old appointment that is not reused is put in nobody\'s name, never in the new artisan\'s', () => {
-    expect(/tx\.appointment\.update\(\{\s*where:\s*\{\s*interventionId\s*\},\s*data:\s*\{\s*artisanId:\s*null\b/.test(assignment)).toBe(true);
+    const helper = stripComments(readSource('modules/assignment/appointment-release.ts'));
+
+    expect(/appointment = await detachAppointment\(tx, existing,/.test(assignment)).toBe(true);
+    expect(/appointment\.update\(\{\s*where:\s*\{\s*interventionId:\s*appointment\.interventionId\s*\},\s*data:\s*\{\s*artisanId:\s*null\b/.test(helper)).toBe(true);
+    expect(/appointment\.update\(\{[^}]*\}?[^}]*data:\s*\{\s*artisanId\s*[,}]/.test(helper)).toBe(false);
     expect(/tx\.appointment\.update\(\{[^}]*\}?[^}]*data:\s*\{\s*artisanId\s*[,}]/.test(assignment)).toBe(false);
   });
 

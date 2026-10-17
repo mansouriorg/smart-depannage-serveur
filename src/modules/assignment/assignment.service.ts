@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 
 import {
-  AppointmentRequestStatus,
   AppointmentStatus,
   ArtisanVerificationStatus,
   InterventionEventType,
@@ -32,7 +31,9 @@ import {
   ACTIVE_JOB_STATUSES,
   MAX_APPOINTMENT_MS,
   artisanAvailabilityIssues,
+  isCurrentVisit,
 } from './artisan-availability';
+import { closePendingRequests, detachAppointment } from './appointment-release';
 import { replaceDefaultReminders } from './appointment-reminders';
 import { lockArtisanCalendar, lockJob } from './artisan-lock';
 
@@ -233,12 +234,7 @@ export class AssignmentService {
       const existing = await tx.appointment.findUnique({ where: { interventionId } });
       // A visit that is over (the artisan did not come, the job is given to someone else
       // days later) is no time to check the new artisan against: only the profile counts.
-      const existingIsCurrent =
-        !!existing &&
-        !!existing.startsAt &&
-        !!existing.endsAt &&
-        ACTIVE_APPOINTMENT_STATUSES.includes(existing.status) &&
-        (existing.endsAt as Date).getTime() > Date.now();
+      const existingIsCurrent = isCurrentVisit(existing);
 
       // The time that counts: the one asked for, else the one already booked for this job.
       const range =
@@ -397,28 +393,16 @@ export class AssignmentService {
         // cancelled): it must not stay in the name of the artisan who lost the job, and it
         // must not be put in the name of the new one, who never agreed to that time.
         // The requests about it are closed below, so the status must stop saying that one is open.
-        const closed =
-          existing.status === AppointmentStatus.CANCEL_REQUESTED
-            ? { status: AppointmentStatus.CANCELLED, cancelledAt: new Date(), cancelReason: 'Mission confiée à un autre artisan.' }
-            : existing.status === AppointmentStatus.RESCHEDULE_REQUESTED
-              ? { status: AppointmentStatus.SCHEDULED }
-              : {};
-
-        appointment = await tx.appointment.update({ where: { interventionId }, data: { artisanId: null, ...closed } });
+        appointment = await detachAppointment(tx, existing, 'Mission confiée à un autre artisan.');
       }
 
       // A request about the appointment (move it, cancel it) is a request about the visit as
       // it was. Once the visit is rewritten or taken away from its artisan, an approval would
       // act on a visit that no longer exists, so the open ones are closed here.
       if (existing && (scheduled || appointment)) {
-        await tx.appointmentRequest.updateMany({
-          where: { appointmentId: existing.id, status: AppointmentRequestStatus.PENDING },
-          data: {
-            status: AppointmentRequestStatus.CANCELLED,
-            adminResponse: 'Demande classée: l’administration a modifié le rendez-vous ou changé d’artisan.',
-            reviewedById: actorId,
-            reviewedAt: new Date(),
-          },
+        await closePendingRequests(tx, existing.id, {
+          response: 'Demande classée: l’administration a modifié le rendez-vous ou changé d’artisan.',
+          reviewedById: actorId,
         });
       }
 
@@ -567,6 +551,14 @@ export class AssignmentService {
           entityType: 'INTERVENTION',
           entityId: interventionId,
         });
+      });
+    }
+
+    // The artisan who lost the job stops receiving what is said about it. Before the live event,
+    // so the next one does not reach them.
+    if (changedHands) {
+      await this.attempt('removal of the previous artisan from the live room', async () => {
+        this.realtime.removeFromJobRoom(previousArtisanId as number, interventionId);
       });
     }
 

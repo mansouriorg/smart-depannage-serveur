@@ -16,7 +16,7 @@ function makeService() {
     $transaction: async (work: any) => work(tx),
   };
 
-  return { service: new ArtisansService(prisma, {} as any, {} as any, {} as any), writes };
+  return { service: new ArtisansService(prisma, {} as any, {} as any, {} as any, {} as any), writes };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {

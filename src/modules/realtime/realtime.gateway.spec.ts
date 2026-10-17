@@ -10,6 +10,20 @@ function fakeServer(sockets: Record<string, string[]>) {
   const received: Record<string, string[]> = {};
 
   const server = {
+    /** `in(room).socketsLeave(other)`: every socket of the room leaves the other one. */
+    in(room: string) {
+      return {
+        socketsLeave(leaving: string) {
+          for (const joined of Object.values(sockets)) {
+            if (joined.includes(room)) {
+              const at = joined.indexOf(leaving);
+
+              if (at >= 0) joined.splice(at, 1);
+            }
+          }
+        },
+      };
+    },
     to(room: string) {
       const rooms = [room];
       const chain = {
@@ -79,5 +93,70 @@ describe('each live event reaches a socket once', () => {
     gateway.emitToUser(1, 'x', {});
 
     expect(received).toEqual({ admin: ['x'] });
+  });
+});
+
+describe('an artisan who no longer has the job stops receiving what is said about it', () => {
+  function withTheJobRoom() {
+    const { gateway, received } = setup();
+    const room = gateway.interventionRoom(5);
+    const sockets: Record<string, string[]> = {
+      admin: ['admins', 'admin-dashboard', gateway.userRoom(1), room],
+      client: [gateway.clientRoom(10), gateway.userRoom(10), room],
+      artisan: [gateway.artisanRoom(20), gateway.userRoom(20), room],
+      // The same artisan on a second device.
+      tablet: [gateway.artisanRoom(20), gateway.userRoom(20), room],
+      next: [gateway.artisanRoom(30), gateway.userRoom(30), room],
+    };
+    const fake = fakeServer(sockets);
+
+    gateway.server = fake.server;
+
+    return { gateway, received: fake.received, sockets, room };
+  }
+
+  it('every socket of that user leaves the room of the job, and only that user', () => {
+    const w = withTheJobRoom();
+
+    w.gateway.removeUserFromIntervention(20, 5);
+
+    expect(w.sockets.artisan).not.toContain(w.room);
+    expect(w.sockets.tablet).not.toContain(w.room);
+    expect(w.sockets.admin).toContain(w.room);
+    expect(w.sockets.client).toContain(w.room);
+    expect(w.sockets.next).toContain(w.room);
+  });
+
+  it('what is sent to the room afterwards does not reach them, and reaches the others once', () => {
+    const w = withTheJobRoom();
+
+    w.gateway.removeUserFromIntervention(20, 5);
+    w.gateway.emitToIntervention(5, 'intervention.status.changed', {});
+
+    expect(w.received.artisan).toBeUndefined();
+    expect(w.received.tablet).toBeUndefined();
+    expect(w.received).toEqual({
+      admin: ['intervention.status.changed'],
+      client: ['intervention.status.changed'],
+      next: ['intervention.status.changed'],
+    });
+  });
+
+  it('their own rooms stay: they still get what is sent to them (the notification of the refusal)', () => {
+    const w = withTheJobRoom();
+
+    w.gateway.removeUserFromIntervention(20, 5);
+    w.gateway.emitToUser(20, 'notification', {});
+
+    expect(w.received).toEqual({ artisan: ['notification'], tablet: ['notification'] });
+  });
+
+  it('another job\'s room is not touched', () => {
+    const w = withTheJobRoom();
+
+    w.sockets.artisan.push(w.gateway.interventionRoom(6));
+    w.gateway.removeUserFromIntervention(20, 5);
+
+    expect(w.sockets.artisan).toContain(w.gateway.interventionRoom(6));
   });
 });

@@ -49,7 +49,7 @@ function makeWorld(assignResult?: () => Promise<any>) {
   };
 
   return {
-    service: new InterventionsService(prisma, gateway, notifications, {} as any, assignment),
+    service: new InterventionsService(prisma, gateway, notifications, {} as any, assignment, {} as any),
     assigned,
     sockets,
     sms,

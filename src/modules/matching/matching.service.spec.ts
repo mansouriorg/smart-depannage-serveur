@@ -406,3 +406,64 @@ describe('MatchingService.assignBestArtisan', () => {
     expect(world.assigned).toEqual([]);
   });
 });
+
+describe('an artisan who refused a job is not proposed for it again (P1-06)', () => {
+  const refused = (id: number) => {
+    const a: any = artisan(id);
+    a.artisanProfile.missionRejections = [{ id: 1 }];
+
+    return a;
+  };
+
+  it('is listed as not available, with the reason, so the automatic choice skips them', async () => {
+    const world = makeWorld([refused(1), artisan(2, { profile: { averageRating: 3 } })], [job()]);
+
+    const result: any = await world.service.findMatchingArtisansForIntervention(1, 'ADMIN' as any, 8, {} as any);
+    const one = result.matches.find((m: any) => m.artisanId === 1);
+    const two = result.matches.find((m: any) => m.artisanId === 2);
+
+    expect(one.isAvailable).toBe(false);
+    expect(one.hardIssues).toContain('A déjà refusé cette mission.');
+    expect(one.reasons).toContain('A déjà refusé cette mission.');
+    expect(two.isAvailable).toBe(true);
+    expect(two.hardIssues).toEqual([]);
+  });
+
+  it('assignBestArtisan gives the job to the next artisan, even when the one who refused scores higher', async () => {
+    const better: any = refused(1);
+    better.artisanProfile.averageRating = 5;
+    const world = makeWorld([better, artisan(2, { profile: { averageRating: 3 } })], [job()]);
+
+    await world.service.assignBestArtisan(1, 'ADMIN' as any, 8, {});
+
+    expect(world.assigned.map((a) => a.artisanId)).toEqual([2]);
+  });
+
+  it('asks the database only for the refusals about the job being matched', async () => {
+    const world = makeWorld([artisan(1)], [job()]);
+
+    await world.service.findMatchingArtisansForIntervention(1, 'ADMIN' as any, 8, {} as any);
+
+    expect(world.queries[0].include.artisanProfile.include.missionRejections).toEqual({
+      where: { interventionId: 8 },
+      select: { id: true },
+      take: 1,
+    });
+  });
+
+  it('a search that is not about one job asks for no refusal at all', async () => {
+    const world = makeWorld([artisan(1)]);
+
+    await list(world, {});
+
+    expect(world.queries[0].include.artisanProfile.include.missionRejections).toBe(false);
+  });
+
+  it('the dispatcher can still give the job to that artisan on purpose', async () => {
+    const world = makeWorld([refused(4)], [job()]);
+
+    await world.service.assignArtisan(1, 'ADMIN' as any, 8, 4, { startsAt: at(MONDAY, '08:00'), endsAt: at(MONDAY, '09:00') });
+
+    expect(world.assigned.map((a) => a.artisanId)).toEqual([4]);
+  });
+});

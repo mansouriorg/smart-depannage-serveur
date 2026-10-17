@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from './realtime.gateway';
 import { chatParties } from '../messages/message-audience';
+import { withoutStaffFields } from '../interventions/intervention-redaction';
 
 import {
   Status,
@@ -115,23 +116,45 @@ export class RealtimeService {
       changedAt: new Date(),
     };
 
-    this.gateway.emitStatusChange(payload);
+    // Only the dashboard gets the whole row. The client and the artisan (who also sit in the
+    // room of the job) get it without the back-office columns (staff notes, the hash of the
+    // tracking link): the same rule as every answer of the API.
+    // The id of whoever made the change goes to the dashboard only: when an artisan gives a job
+    // back, the client who reads this must not learn who it was.
+    const { actorId: _whoActed, ...withoutActor } = payload;
+    const forThePeopleOfTheJob = { ...withoutActor, intervention: withoutStaffFields(intervention) };
+
+    this.gateway.emitToIntervention(
+      params.interventionId,
+      'intervention.status.changed',
+      forThePeopleOfTheJob,
+    );
+    this.gateway.emitToAdmins('admin.intervention.status.changed', payload);
 
     this.gateway.emitToClient(
       intervention.clientId,
       'intervention.status.changed',
-      payload,
+      forThePeopleOfTheJob,
     );
 
     if (intervention.artisanId) {
       this.gateway.emitToArtisan(
         intervention.artisanId,
         'intervention.status.changed',
-        payload,
+        forThePeopleOfTheJob,
       );
     }
 
     return payload;
+  }
+
+  // ==========================================================
+  // 2b. The artisan is no longer on the job
+  // ==========================================================
+
+  /** The artisan stops receiving what is said about the job (it was given back, or given to somebody else). */
+  removeFromJobRoom(userId: number, interventionId: number) {
+    this.gateway.removeUserFromIntervention(userId, interventionId);
   }
 
   // ==========================================================

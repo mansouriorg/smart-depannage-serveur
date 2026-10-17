@@ -9,6 +9,7 @@ type User = { id: number; role: string; isActive: boolean; email?: string; phone
 function makeWorld(extra: Partial<{
   users: User[];
   quotes: any[];
+  interventions: any[];
   payments: any[];
   messages: any[];
   complaints: any[];
@@ -98,6 +99,9 @@ function makeWorld(extra: Partial<{
     pushDeviceToken: { findMany: async () => [] },
     quote: {
       findUnique: async ({ where }: any) => byId(extra.quotes ?? [], where.id),
+    },
+    intervention: {
+      findUnique: async ({ where }: any) => byId(extra.interventions ?? [], where.id),
     },
     payment: {
       findUnique: async ({ where }: any) => byId(extra.payments ?? [], where.id),
@@ -918,5 +922,162 @@ describe('admin delivery checks', () => {
     service.clearTemplateCache();
     await service.sendSms('22123456', 'built-in', { template: { key: 'QUOTE_SENT.SMS' } });
     expect(queued[2].body).toBe('edited by an admin');
+  });
+});
+
+describe('the steps of a mission tell the client and the back office (P1-06)', () => {
+  const job = { id: 100, clientId: 10, artisanId: 20 };
+  const named = (name: string | undefined) => [
+    { id: 1, role: 'ADMIN', isActive: true },
+    { id: 2, role: 'SUPPORT', isActive: true },
+    { id: 3, role: 'ACCOUNTANT', isActive: true },
+    { id: 4, role: 'DISPATCHER', isActive: true },
+    { id: 5, role: 'SUPER_ADMIN', isActive: true },
+    { id: 6, role: 'ADMIN', isActive: false },
+    { id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com', name: 'Sami' },
+    { id: 20, role: 'ARTISAN', isActive: true, email: 'artisan@example.com', name },
+  ];
+
+  const steps = [
+    { call: 'notifyArtisanAcceptedMission', type: 'ARTISAN_ACCEPTED_MISSION', staff: /a accepté la mission #100/, client: /a accepté votre intervention/ },
+    { call: 'notifyArtisanOnTheWay', type: 'ARTISAN_ON_THE_WAY', staff: /est en route pour la mission #100/, client: /Votre artisan .*est en route/ },
+    { call: 'notifyArtisanArrived', type: 'ARTISAN_ARRIVED', staff: /est arrivé sur place \(mission #100\)/, client: /Votre artisan .*est arrivé sur place/ },
+  ] as const;
+
+  it.each(steps.map((step) => step.call))('%s: dispatchers, support and admins, and the client; not the accountant, not the artisan who did it', async (call) => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await (service as any)[call](100, 20);
+
+    expect(recipients(notifications)).toEqual([1, 2, 4, 5, 10]);
+  });
+
+  for (const step of steps) {
+    it(`${step.call}: names the artisan, points at the mission and reaches the client by SMS too`, async () => {
+      const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+      await (service as any)[step.call](100, 20);
+
+      const toClient = notifications.find((n) => n.recipientId === 10);
+      const toStaff = notifications.find((n) => n.recipientId === 1);
+
+      expect(toClient.type).toBe(step.type);
+      expect(toClient.message).toMatch(step.client);
+      expect(toClient.message).toMatch(/Karim/);
+      expect(toClient.channels).toContain('SMS');
+      expect(toClient.entityType).toBe('INTERVENTION');
+      expect(toClient.entityId).toBe(100);
+      expect(toClient.actorId).toBe(20);
+      expect(toStaff.message).toMatch(step.staff);
+      expect(toStaff.message).toMatch(/Karim/);
+      expect(toStaff.channels).toEqual(['IN_APP', 'ADMIN_REAL_TIME']);
+      expect(toStaff.data).toEqual({ interventionId: 100, artisanId: 20 });
+    });
+
+    it(`${step.call}: an artisan with no name is still told about ("L’artisan")`, async () => {
+      const { service, notifications } = makeWorld({ users: named(undefined) as any, interventions: [job] });
+
+      await (service as any)[step.call](100, 20);
+
+      expect(notifications.find((n) => n.recipientId === 1).message).toMatch(/^L’artisan /);
+      expect(notifications.find((n) => n.recipientId === 10).message).not.toMatch(/undefined|null|\s{2}/);
+    });
+
+    it(`${step.call}: a mission that does not exist tells nobody`, async () => {
+      const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [] });
+
+      expect(await (service as any)[step.call](100, 20)).toBe(null);
+      expect(notifications).toHaveLength(0);
+    });
+  }
+
+  it('a refusal: the back office is told at high priority, with the reason; the client is told another artisan is being found, without the reason', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await service.notifyArtisanDeclined(100, 20, 'trop loin: À 80 km');
+
+    expect(recipients(notifications)).toEqual([1, 2, 4, 5, 10]);
+
+    const toStaff = notifications.find((n) => n.recipientId === 1);
+    const toClient = notifications.find((n) => n.recipientId === 10);
+
+    expect(toStaff.type).toBe('GENERAL');
+    expect(toStaff.priority).toBe('HIGH');
+    expect(toStaff.title).toBe('Mission refusée');
+    expect(toStaff.message).toBe('Karim a refusé la mission #100 (trop loin: À 80 km). Elle attend un nouvel artisan.');
+
+    expect(toClient.title).toBe('Nouvel artisan en recherche');
+    expect(toClient.message).toBe('Votre artisan n’est plus disponible pour cette intervention. Nous en cherchons un autre et revenons vers vous.');
+    expect(toClient.channels).toEqual(['IN_APP', 'PUSH', 'SMS']);
+    expect(`${toClient.title} ${toClient.message} ${JSON.stringify(toClient.data)}`).not.toMatch(/loin|80 km|Karim/);
+  });
+
+  it('a refusal without a reason still reads well', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await service.notifyArtisanDeclined(100, 20);
+
+    expect(notifications.find((n) => n.recipientId === 1).message).toBe('Karim a refusé la mission #100. Elle attend un nouvel artisan.');
+  });
+
+  it('an inactive back-office account is not told', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await service.notifyArtisanOnTheWay(100, 20);
+
+    expect(notifications.some((n) => n.recipientId === 6)).toBe(false);
+  });
+
+  it('a refusal: the client\'s copy does not say who the artisan was (no actor, no artisan id); the back office\'s copy does', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await service.notifyArtisanDeclined(100, 20, 'trop loin');
+
+    const toClient = notifications.find((n) => n.recipientId === 10);
+    const toStaff = notifications.find((n) => n.recipientId === 1);
+
+    expect(toClient.actorId).toBeUndefined();
+    expect(toClient.actor).toBeFalsy(); // the row the client reads would carry the artisan's name
+    expect(toClient.data).toEqual({ interventionId: 100 });
+    expect(toClient.entityType).toBe('INTERVENTION');
+    expect(toClient.entityId).toBe(100);
+
+    expect(toStaff.actorId).toBe(20);
+    expect(toStaff.data).toEqual({ interventionId: 100, artisanId: 20 });
+  });
+
+  it.each(steps.map((step) => step.call))('%s: the client\'s copy still names the artisan who is coming', async (call) => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    await (service as any)[call](100, 20);
+
+    expect(notifications.find((n) => n.recipientId === 10).actorId).toBe(20);
+  });
+
+  it('a back office that cannot be told does not keep the client from being told; the failure is still raised', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+
+    (service as any).notifyAdmins = async () => {
+      throw new Error('staff list unreadable');
+    };
+
+    await expect(service.notifyArtisanDeclined(100, 20, 'trop loin')).rejects.toThrow('staff list unreadable');
+
+    expect(recipients(notifications)).toEqual([10]);
+  });
+
+  it('a client who cannot be told does not hide that the back office was told first', async () => {
+    const { service, notifications } = makeWorld({ users: named('Karim') as any, interventions: [job] });
+    const notify = service.notify.bind(service);
+
+    (service as any).notify = async (payload: any) => {
+      if (payload.recipientId === 10) throw new Error('push provider down');
+
+      return notify(payload);
+    };
+
+    await expect(service.notifyArtisanOnTheWay(100, 20)).rejects.toThrow('push provider down');
+
+    expect(recipients(notifications)).toEqual([1, 2, 4, 5]);
   });
 });

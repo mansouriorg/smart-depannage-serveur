@@ -7,11 +7,13 @@ import { InterventionsGateway } from './interventions.gateway';
 import { StaffAlertsService } from './staff-alerts.service';
 import { NotificationsModule } from '../notifications/notifications.module'; // 1. Import the module
 import { AssignmentModule } from '../assignment/assignment.module';
+import { MissionActionsModule } from '../mission-actions/mission-actions.module';
 
 @Module({
   imports: [
     NotificationsModule, // 2. Add it here so the Service can use it
     AssignmentModule, // the one way an artisan is given a job (P1-05)
+    MissionActionsModule, // what an artisan does with a mission (P1-06)
     // The gateway verifies the access token of every socket (P0-05).
     JwtModule.registerAsync({
       useFactory: () => ({ secret: getJwtAccessSecret() }),

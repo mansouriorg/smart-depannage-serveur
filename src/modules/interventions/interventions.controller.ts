@@ -122,7 +122,7 @@ export class InterventionsController {
     }
     // Artisans see "Pending" jobs (Marketplace)
     if (req.user.role === 'ARTISAN') {
-      return this.interventionsService.findAllPending();
+      return this.interventionsService.findAllPending(req.user.id);
     }
     
     // Clients see only their own history

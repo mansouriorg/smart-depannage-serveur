@@ -1,4 +1,12 @@
-import { ACTIVE_APPOINTMENT_STATUSES, ACTIVE_JOB_STATUSES, artisanAvailabilityIssues } from './artisan-availability';
+import {
+  ACTIVE_APPOINTMENT_STATUSES,
+  ACTIVE_JOB_STATUSES,
+  ISSUE_AT_MAXIMUM,
+  ISSUE_NOT_ACCEPTING,
+  ISSUE_NO_EMERGENCY,
+  artisanAvailabilityIssues,
+  isCurrentVisit,
+} from './artisan-availability';
 
 const free = {
   profile: { isAcceptingJobs: true, emergencyAvailable: true, maxActiveJobs: 3, availability: [] as any[] },
@@ -74,5 +82,61 @@ describe('what counts as busy', () => {
     for (const status of ['ASSIGNED', 'ARTISAN_ACCEPTED', 'ACCEPTED', 'IN_PROGRESS', 'ON_THE_WAY']) {
       expect(ACTIVE_JOB_STATUSES.includes(status as any)).toBe(true);
     }
+  });
+});
+
+describe('the words of the reasons that come from the profile', () => {
+  it('are the ones the matching and the assignment have always used', () => {
+    expect(ISSUE_NOT_ACCEPTING).toBe('Artisan ne prend pas de missions.');
+    expect(ISSUE_NO_EMERGENCY).toBe('Artisan non disponible pour urgence.');
+    expect(ISSUE_AT_MAXIMUM).toBe('Artisan au maximum de missions actives.');
+  });
+});
+
+describe('isCurrentVisit: a visit that is a time somebody is expected', () => {
+  const now = new Date('2026-10-20T12:00:00Z');
+  const hour = 3600_000;
+  const visit = (fields: Record<string, unknown> = {}) => ({
+    status: 'SCHEDULED' as any,
+    startsAt: new Date(now.getTime() + 24 * hour),
+    endsAt: new Date(now.getTime() + 25 * hour),
+    ...fields,
+  });
+
+  it('a visit still to come, in any status that holds the time', () => {
+    for (const status of ACTIVE_APPOINTMENT_STATUSES) {
+      expect(isCurrentVisit(visit({ status }), now)).toBe(true);
+    }
+  });
+
+  it('one that is under way counts until it ends', () => {
+    expect(isCurrentVisit(visit({ startsAt: new Date(now.getTime() - hour), endsAt: new Date(now.getTime() + hour) }), now)).toBe(true);
+  });
+
+  it('not one that is over (the end is not in the future)', () => {
+    expect(isCurrentVisit(visit({ startsAt: new Date(now.getTime() - 2 * hour), endsAt: new Date(now.getTime() - hour) }), now)).toBe(false);
+    expect(isCurrentVisit(visit({ endsAt: now }), now)).toBe(false);
+  });
+
+  it('not one that is cancelled, done, only asked for, or missing', () => {
+    for (const status of ['CANCELLED', 'COMPLETED', 'REQUESTED', 'NO_SHOW']) {
+      expect(isCurrentVisit(visit({ status }), now)).toBe(false);
+    }
+
+    expect(isCurrentVisit(null, now)).toBe(false);
+    expect(isCurrentVisit(undefined, now)).toBe(false);
+  });
+
+  it('a time needs both its ends', () => {
+    expect(isCurrentVisit(visit({ startsAt: null }), now)).toBe(false);
+    expect(isCurrentVisit(visit({ endsAt: null }), now)).toBe(false);
+    expect(isCurrentVisit(visit({ startsAt: undefined }), now)).toBe(false);
+  });
+
+  it('uses the clock when no moment is given', () => {
+    const soon = visit({ startsAt: new Date(Date.now() + hour), endsAt: new Date(Date.now() + 2 * hour) });
+
+    expect(isCurrentVisit(soon)).toBe(true);
+    expect(isCurrentVisit(visit({ startsAt: new Date(Date.now() - 3 * hour), endsAt: new Date(Date.now() - 2 * hour) }))).toBe(false);
   });
 });

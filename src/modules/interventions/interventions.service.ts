@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -17,6 +18,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { generateUnusablePassword } from '../auth/password-setup';
 import { StaffAlertsService } from './staff-alerts.service';
 import { AssignmentService } from '../assignment/assignment.service';
+import { MissionActionsService } from '../mission-actions/mission-actions.service';
+import { describeError } from '../notifications/delivery/delivery-error';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto'; 
 
@@ -49,12 +52,15 @@ const LEGACY_GUEST_EMAIL = /^guest_\d+@smart-depannage\.com$/;
 
 @Injectable()
 export class InterventionsService {
+  private readonly logger = new Logger(InterventionsService.name);
+
   constructor(
     private prisma: PrismaService,
     private gateway: InterventionsGateway,
     private notifications: NotificationsService,
     private staffAlerts: StaffAlertsService,
     private assignment: AssignmentService,
+    private missionActions: MissionActionsService,
   ) {}
 
   // ==========================================================
@@ -245,9 +251,17 @@ export class InterventionsService {
   // ==========================================================
   // 4. FIND AVAILABLE JOBS (For Market Place / Job Board)
   // ==========================================================
-  async findAllPending() {
+  async findAllPending(artisanUserId?: number) {
+    // A job this artisan refused is not offered to them again (P1-06).
+    const profile = artisanUserId
+      ? await this.prisma.artisanProfile.findUnique({ where: { userId: artisanUserId }, select: { id: true } })
+      : null;
+
     const rows = await this.prisma.intervention.findMany({
-      where: { status: { in: withAliases(['CREATED']) as Status[] } },
+      where: {
+        status: { in: withAliases(['CREATED']) as Status[] },
+        ...(profile ? { missionRejections: { none: { artisanProfileId: profile.id } } } : {}),
+      },
       include: {
         client: { select: { name: true } },
       },
@@ -360,10 +374,43 @@ export class InterventionsService {
       );
     }
 
+    // On the way and arrived are the steps of the mission service (P1-06): the same lock, the
+    // same dates, the same line in the timeline, the same messages to the client and the back
+    // office as the routes of the artisan app. This route used to change the status alone.
+    const target = canonicalStatus(dto.status);
+
+    if (target === 'ARTISAN_ON_THE_WAY' || target === 'ARTISAN_ARRIVED') {
+      const step = {
+        userId: artisanId,
+        interventionId: id,
+        include: {
+          client: { select: { id: true, name: true, phone: true } },
+          artisan: { select: { id: true, name: true, phone: true } },
+        },
+      };
+
+      const row = await (target === 'ARTISAN_ON_THE_WAY'
+        ? this.missionActions.onTheWay(step)
+        : this.missionActions.arrived(step));
+
+      // The dashboard that still listens on the first socket gets the change as before (the
+      // mission service sends the one of the new socket). The step is made: a socket that
+      // fails must not turn it into an error the artisan answers by pressing again.
+      try {
+        this.gateway.sendInterventionStatus(row);
+      } catch (error) {
+        this.logger.error(`After a step of an artisan, the live event of the first socket failed (${describeError(error)}).`);
+      }
+
+      return row;
+    }
+
     // What the artisan may do from the current status is decided by the status
     // table (intervention-status.ts): a closed, quoted, paid or disputed job
-    // is refused there, with a 409 or 403.
-    return this.update(id, { status: dto.status }, { kind: 'artisan', userId: artisanId });
+    // is refused there, with a 409 or 403. The answer has no column of the back office.
+    return withoutStaffFields(
+      await this.update(id, { status: dto.status }, { kind: 'artisan', userId: artisanId }),
+    );
   }
 
   // ==========================================================

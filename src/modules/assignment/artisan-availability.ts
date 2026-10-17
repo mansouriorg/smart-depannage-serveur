@@ -20,6 +20,24 @@ export const ACTIVE_APPOINTMENT_STATUSES: AppointmentStatus[] = [
   AppointmentStatus.CANCEL_REQUESTED,
 ];
 
+/**
+ * A visit that still counts as a time: it has a start and an end, it is still planned (not
+ * cancelled, not done) and it is not over. A visit that is not current is only a memory, not a
+ * time anybody is expected somewhere.
+ */
+export function isCurrentVisit(
+  visit: { startsAt?: unknown; endsAt?: unknown; status: AppointmentStatus } | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  return (
+    !!visit &&
+    visit.startsAt instanceof Date &&
+    visit.endsAt instanceof Date &&
+    ACTIVE_APPOINTMENT_STATUSES.includes(visit.status) &&
+    visit.endsAt.getTime() > now.getTime()
+  );
+}
+
 /** Jobs that count against the artisan's maximum of active missions (both spellings of the statuses). */
 export const ACTIVE_JOB_STATUSES: Status[] = [
   Status.CREATED,
@@ -67,6 +85,11 @@ export type AvailabilityInput = {
   holdsTheJob?: boolean;
 };
 
+/** The reasons that come from the profile of the artisan, not from a time (the same words everywhere they are matched). */
+export const ISSUE_NOT_ACCEPTING = 'Artisan ne prend pas de missions.';
+export const ISSUE_NO_EMERGENCY = 'Artisan non disponible pour urgence.';
+export const ISSUE_AT_MAXIMUM = 'Artisan au maximum de missions actives.';
+
 export type ScheduleReason = ReturnType<typeof checkWeeklySchedule>;
 
 /**
@@ -91,9 +114,9 @@ export function artisanAvailabilityIssues(input: AvailabilityInput): string[] {
 
   if (input.holdsTheJob) return issues;
 
-  if (!input.profile.isAcceptingJobs) issues.push('Artisan ne prend pas de missions.');
-  if (input.emergency && !input.profile.emergencyAvailable) issues.push('Artisan non disponible pour urgence.');
-  if (input.activeJobsCount >= input.profile.maxActiveJobs) issues.push('Artisan au maximum de missions actives.');
+  if (!input.profile.isAcceptingJobs) issues.push(ISSUE_NOT_ACCEPTING);
+  if (input.emergency && !input.profile.emergencyAvailable) issues.push(ISSUE_NO_EMERGENCY);
+  if (input.activeJobsCount >= input.profile.maxActiveJobs) issues.push(ISSUE_AT_MAXIMUM);
 
   return issues;
 }

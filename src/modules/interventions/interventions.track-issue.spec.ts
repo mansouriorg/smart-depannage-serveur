@@ -18,7 +18,7 @@ function makeWorld() {
   };
   const gateway: any = { sendInterventionIssue: (payload: any) => issues.push(payload) };
 
-  return { service: new InterventionsService(prisma, gateway, {} as any, {} as any, {} as any), row, issues };
+  return { service: new InterventionsService(prisma, gateway, {} as any, {} as any, {} as any, {} as any), row, issues };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {

@@ -705,6 +705,11 @@ export class MatchingService {
           include: {
             serviceZones: true,
             availability: true,
+            // Did this artisan already refuse the job being matched? (P1-06)
+            missionRejections:
+              context.excludeInterventionId !== undefined
+                ? { where: { interventionId: context.excludeInterventionId }, select: { id: true }, take: 1 }
+                : false,
           },
         },
         artisanInterventions: {
@@ -839,6 +844,14 @@ export class MatchingService {
         );
 
         reasons.push(activeJobs.reason);
+
+        // An artisan who refused (or gave back) this job is not proposed for it again: the
+        // automatic choice skips them, and the dispatcher still sees why. Giving them the job
+        // on purpose stays possible (the assignment does not read this).
+        if ((profile as any).missionRejections?.length) {
+          reasons.push('A déjà refusé cette mission.');
+          hardIssues.push('A déjà refusé cette mission.');
+        }
 
         // The same rule as the assignment: what is listed as free can be assigned.
         hardIssues.push(
