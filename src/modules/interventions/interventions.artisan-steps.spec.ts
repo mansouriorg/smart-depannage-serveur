@@ -46,7 +46,7 @@ function makeWorld() {
   const gateway: any = { sendInterventionStatus: (payload: any) => sockets.push(payload) };
 
   return {
-    service: new InterventionsService(prisma, gateway, {} as any, {} as any, {} as any, missionActions),
+    service: new InterventionsService(prisma, gateway, {} as any, {} as any, {} as any, missionActions, {} as any),
     interventions,
     profiles,
     calls,

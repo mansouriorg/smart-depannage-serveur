@@ -101,84 +101,9 @@ export class FilesController {
   }
 
   // ==========================================================
-  // Artisan before photo
+  // Artisan before / after photos: POST /interventions/:id/proofs/:kind (ProofsController).
+  // The photo is checked there (position, time, accuracy, reuse) before it is kept.
   // ==========================================================
-
-  /**
-   * Upload artisan before photo.
-   *
-   * POST /files/interventions/:interventionId/before-photo
-   *
-   * FormData:
-   * file: image
-   */
-  @Roles(
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
-  @Post('interventions/:interventionId/before-photo')
-  @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-      limits: {
-        fileSize: 8 * 1024 * 1024,
-      },
-    }),
-  )
-  uploadArtisanBeforePhoto(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-    @UploadedFile() file: Express.Multer.File,
-  ) {
-    return this.filesService.uploadArtisanBeforePhoto(
-      user,
-      interventionId,
-      file,
-    );
-  }
-
-  // ==========================================================
-  // Artisan after photo
-  // ==========================================================
-
-  /**
-   * Upload artisan after photo.
-   *
-   * POST /files/interventions/:interventionId/after-photo
-   *
-   * FormData:
-   * file: image
-   */
-  @Roles(
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
-  @Post('interventions/:interventionId/after-photo')
-  @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-      limits: {
-        fileSize: 8 * 1024 * 1024,
-      },
-    }),
-  )
-  uploadArtisanAfterPhoto(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-    @UploadedFile() file: Express.Multer.File,
-  ) {
-    return this.filesService.uploadArtisanAfterPhoto(
-      user,
-      interventionId,
-      file,
-    );
-  }
 
   // ==========================================================
   // Artisan documents
@@ -456,6 +381,8 @@ export class FilesController {
       await this.filesService.getDownloadInfo(user, fileId);
 
     res.setHeader('Content-Type', asset.mimeType);
+    // Shown inline from the API's own origin: the browser must use the declared type, never guess one.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader(
       'Content-Disposition',
       `inline; filename="${encodeURIComponent(asset.originalName)}"`,

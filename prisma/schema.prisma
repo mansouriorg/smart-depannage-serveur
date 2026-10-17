@@ -750,6 +750,79 @@ model NotificationOutbox {
 }
 
 // ==========================================================
+// Proof of work (P1-07)
+// Every photo an artisan (or the back office) puts on a job as its "before" or "after"
+// proof goes through ProofsService, which writes one row here per attempt: where the phone
+// said it was and how sure it was, whether it said the position was simulated, when the
+// SERVER received the photo, what the photo is (SHA-256 of its bytes, a "looks like" hash)
+// and the verdict. A refused attempt is kept (without the photo) so the audit shows it.
+// `sha256` is only set for photos that were kept, and is unique: the same photo cannot be
+// the proof of two jobs. The columns afterPhoto* / beforePhoto* of Intervention are the
+// copy of the latest kept proof, written by the same transaction.
+// No relations on purpose, like the outbox: an audit trail that outlives what it describes.
+// ==========================================================
+
+enum ProofKind {
+  BEFORE
+  AFTER
+}
+
+enum ProofSource {
+  ARTISAN
+  STAFF
+}
+
+enum ProofStatus {
+  ACCEPTED
+  NEEDS_REVIEW
+  REJECTED
+}
+
+model ProofCapture {
+  id Int @id @default(autoincrement())
+
+  interventionId Int
+  kind           ProofKind
+  source         ProofSource @default(ARTISAN)
+  submittedById  Int?
+
+  status  ProofStatus
+  reasons String[]
+
+  // What the phone said.
+  latitude         Float?
+  longitude        Float?
+  accuracyM        Float?
+  mocked           Boolean?
+  clientCapturedAt DateTime?
+
+  // What the server worked out. `receivedAt` is the time of the proof.
+  distanceM          Int?
+  clockOffsetSeconds Int?
+  receivedAt         DateTime @default(now())
+
+  // The photo (none when the attempt was refused).
+  fileAssetId Int?
+  photoUrl    String?
+  sha256      String? @unique
+  dhash       String?
+  detail      Float?
+
+  // A person of the back office looked at it.
+  reviewedById Int?
+  reviewedAt   DateTime?
+  reviewNote   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([interventionId, kind])
+  @@index([status, createdAt])
+  @@index([submittedById])
+  @@index([fileAssetId])
+  @@index([createdAt])
+}
+
+// ==========================================================
 // Service Catalog
 // ==========================================================
 

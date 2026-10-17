@@ -32,7 +32,6 @@ import { slotOrderProblem } from './dto/slot-time';
 import { UpdateBankDetailsDto } from './dto/update-bank-details.dto';
 import { UpdateArtisanLocationDto } from './dto/update-artisan-location.dto';
 import { RejectMissionDto } from './dto/reject-mission.dto';
-import { UploadProofPhotoDto } from './dto/upload-proof-photo.dto';
 import { AddDiagnosticDto } from './dto/add-diagnostic.dto';
 import { AddMaterialUsedDto } from './dto/add-material-used.dto';
 import { RequestExtraQuoteDto } from './dto/request-extra-quote.dto';
@@ -1027,36 +1026,6 @@ export class ArtisansService {
     return withoutStaffFields(updated);
   }
 
-  async uploadBeforePhoto(
-    userId: number,
-    interventionId: number,
-    dto: UploadProofPhotoDto,
-  ) {
-    await this.ensureApprovedArtisan(userId);
-    await this.getMissionForArtisan(userId, interventionId);
-
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        beforePhotoUrl: dto.photoUrl,
-        beforePhotoLat: dto.latitude,
-        beforePhotoLng: dto.longitude,
-        beforePhotoAt: dto.timestamp ? new Date(dto.timestamp) : new Date(),
-      },
-      include: this.missionInclude(),
-    });
-
-    await this.createMissionEvent({
-      interventionId,
-      type: InterventionEventType.WORK_STARTED,
-      title: 'Photo avant intervention ajoutée',
-      message: 'Une preuve photo avant intervention a été enregistrée.',
-      createdById: userId,
-    });
-
-    return withoutStaffFields(updated);
-  }
-
   async addDiagnostic(
     userId: number,
     interventionId: number,
@@ -1117,36 +1086,6 @@ export class ArtisansService {
       type: InterventionEventType.QUOTE_MODIFICATION_REQUESTED,
       title: 'Devis complémentaire demandé',
       message: dto.reason,
-      createdById: userId,
-    });
-
-    return withoutStaffFields(updated);
-  }
-
-  async uploadAfterPhoto(
-    userId: number,
-    interventionId: number,
-    dto: UploadProofPhotoDto,
-  ) {
-    await this.ensureApprovedArtisan(userId);
-    await this.getMissionForArtisan(userId, interventionId);
-
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        afterPhotoUrl: dto.photoUrl,
-        afterPhotoLat: dto.latitude,
-        afterPhotoLng: dto.longitude,
-        afterPhotoAt: dto.timestamp ? new Date(dto.timestamp) : new Date(),
-      },
-      include: this.missionInclude(),
-    });
-
-    await this.createMissionEvent({
-      interventionId,
-      type: InterventionEventType.WORK_COMPLETED,
-      title: 'Photo après intervention ajoutée',
-      message: 'Une preuve photo après intervention a été enregistrée.',
       createdById: userId,
     });
 

@@ -14,8 +14,6 @@ import {
   Query 
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { open, unlink } from 'fs/promises';
 
 import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
@@ -27,51 +25,12 @@ import { isTicketStaff } from '../../common/auth/role-policy';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Role } from '../../../generated/prisma/client';
+import { PROOF_UPLOAD } from '../proofs/proof-upload';
+import { AddProofDto } from '../proofs/dto/proofs.dto';
 import {
   RateLimit,
   RateLimitGuard,
 } from '../../common/rate-limit/rate-limit.guard';
-
-// Proof-of-work photos: images only, with the extension chosen by the server
-// from the declared type (never from the client's file name), and a size cap.
-// The folder is served publicly, so an .html or .svg upload would be a
-// stored-XSS vector.
-const PROOF_MAX_BYTES = 10 * 1024 * 1024;
-const PROOF_EXTENSIONS: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'image/heic': '.heic',
-  'image/heif': '.heif',
-};
-
-/**
- * The declared MIME type comes from the client. Before keeping a file in a
- * publicly served folder, check that its first bytes really are those of a
- * JPEG, PNG, WebP or HEIC/HEIF image.
- */
-async function looksLikeImage(path: string): Promise<boolean> {
-  const handle = await open(path, 'r').catch(() => null);
-
-  if (!handle) return false;
-
-  try {
-    const head = Buffer.alloc(12);
-    await handle.read(head, 0, 12, 0);
-
-    const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
-    const isPng =
-      head[0] === 0x89 && head.toString('latin1', 1, 4) === 'PNG';
-    const isWebp =
-      head.toString('latin1', 0, 4) === 'RIFF' &&
-      head.toString('latin1', 8, 12) === 'WEBP';
-    const isHeif = head.toString('latin1', 4, 8) === 'ftyp';
-
-    return isJpeg || isPng || isWebp || isHeif;
-  } finally {
-    await handle.close();
-  }
-}
 
 @Controller('interventions')
 export class InterventionsController {
@@ -186,65 +145,28 @@ export class InterventionsController {
   // ==========================================================
   // 7. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
   // ==========================================================
+  // multipart: photo, latitude, longitude, accuracy (metres), mocked (true/false), timestamp.
+  // The photo is received in memory (never in a folder the web server could serve) and judged by
+  // the proof service (P1-07) before anything is kept.
   @Post(':id/complete-work')
-  // The role is checked BEFORE the interceptor writes the file to disk.
+  // The role is checked BEFORE the interceptor reads the photo.
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(Role.ARTISAN)
-  @UseInterceptors(FileInterceptor('photo', {
-    limits: { fileSize: PROOF_MAX_BYTES, files: 1 },
-    fileFilter: (req, file, cb) => {
-      if (PROOF_EXTENSIONS[file.mimetype]) {
-        cb(null, true);
-      } else {
-        cb(new BadRequestException('La preuve doit être une photo (JPEG, PNG, WebP ou HEIC).'), false);
-      }
-    },
-    storage: diskStorage({
-      destination: './uploads/proofs', // Ensure this folder exists at the root of your project!
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, `proof-${uniqueSuffix}${PROOF_EXTENSIONS[file.mimetype] ?? '.jpg'}`);
-      }
-    })
-  }))
+  @UseInterceptors(FileInterceptor('photo', PROOF_UPLOAD))
   async completeWork(
     @Request() req,
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
-    @Body('latitude') latitude: string,
-    @Body('longitude') longitude: string,
-    @Body('timestamp') timestamp: string,
+    @Body() body: AddProofDto,
   ) {
-    // Basic Security: Only Artisans should be submitting proof of work
-    if (req.user.role !== 'ARTISAN') {
-      throw new ForbiddenException('Seuls les artisans peuvent soumettre une preuve de travail.');
-    }
-
-    if (!file) {
-      throw new BadRequestException('La photo sécurisée est obligatoire.');
-    }
-
-    if (!(await looksLikeImage(file.path))) {
-      await unlink(file.path).catch(() => undefined);
-      throw new BadRequestException("Le fichier envoyé n'est pas une photo valide.");
-    }
-
-    // Convert string inputs from FormData back into proper data types
-    const proofData = {
-      photoUrl: `/uploads/proofs/${file.filename}`,
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      timestamp: new Date(timestamp),
-    };
-
-    try {
-      return await this.interventionsService.completeWork(+id, req.user.id, proofData);
-    } catch (error) {
-      // Rejected (not your mission, already closed...): do not leave the file
-      // in a publicly served folder.
-      await unlink(file.path).catch(() => undefined);
-      throw error;
-    }
+    return this.interventionsService.completeWork(
+      +id,
+      { id: req.user.id, role: req.user.role },
+      {
+        file,
+        capture: { ...body, capturedAt: body?.capturedAt ?? body?.timestamp },
+      },
+    );
   }
 
   // ==========================================================

@@ -31,6 +31,22 @@ type AuthenticatedUser = {
   role: Role;
 };
 
+/**
+ * The purposes of the photos that prove a job (P1-07). Their files are written by ProofsService
+ * after its checks and are never changed or deleted afterwards: a proof that could be replaced
+ * once it was accepted would not prove anything.
+ */
+export const PROOF_PURPOSES: FileAssetPurpose[] = [
+  FileAssetPurpose.ARTISAN_BEFORE_PHOTO,
+  FileAssetPurpose.ARTISAN_AFTER_PHOTO,
+];
+
+/** Largest proof photo, in MB (the app compresses before sending; the server compresses again). */
+export const PROOF_MAX_MB = 10;
+
+/** The most pixels a proof photo may have once decoded. */
+const PROOF_MAX_PIXELS = 100_000_000;
+
 type LocalUploadOptions = {
   purpose: FileAssetPurpose;
   visibility?: FileAssetVisibility;
@@ -47,7 +63,7 @@ type LocalUploadOptions = {
   maxInputPixels?: number;
 };
 
-type StoredLocalFile = {
+export type StoredLocalFile = {
   fileName: string;
   relativePath: string;
   publicUrl?: string;
@@ -318,6 +334,33 @@ export class FilesService {
     return path.join(this.uploadRoot, asset.relativePath);
   }
 
+  private assetData(
+    user: AuthenticatedUser,
+    file: Express.Multer.File,
+    options: LocalUploadOptions,
+    stored: StoredLocalFile,
+  ) {
+    return {
+      uploadedById: user.id,
+      purpose: options.purpose,
+      visibility: options.visibility || FileAssetVisibility.PRIVATE,
+      storageProvider: StorageProvider.LOCAL,
+      entityType: options.entityType,
+      entityId: options.entityId,
+      originalName: file.originalname || stored.fileName,
+      fileName: stored.fileName,
+      relativePath: stored.relativePath,
+      publicUrl: stored.publicUrl,
+      mimeType: stored.mimeType,
+      extension: stored.extension,
+      size: stored.size,
+      checksum: stored.checksum,
+      isImage: stored.isImage,
+      width: stored.width,
+      height: stored.height,
+    };
+  }
+
   private async createFileAsset(
     user: AuthenticatedUser,
     file: Express.Multer.File,
@@ -326,26 +369,76 @@ export class FilesService {
     const stored = await this.storeLocalFile(file, options);
 
     return this.prisma.fileAsset.create({
-      data: {
-        uploadedById: user.id,
-        purpose: options.purpose,
-        visibility: options.visibility || FileAssetVisibility.PRIVATE,
-        storageProvider: StorageProvider.LOCAL,
-        entityType: options.entityType,
-        entityId: options.entityId,
-        originalName: file.originalname || stored.fileName,
-        fileName: stored.fileName,
-        relativePath: stored.relativePath,
-        publicUrl: stored.publicUrl,
-        mimeType: stored.mimeType,
-        extension: stored.extension,
-        size: stored.size,
-        checksum: stored.checksum,
-        isImage: stored.isImage,
-        width: stored.width,
-        height: stored.height,
-      },
+      data: this.assetData(user, file, options, stored),
     });
+  }
+
+  // ==========================================================
+  // Proof photos (P1-07): written in two steps so the caller can put the database row in
+  // its own transaction. The folder is private; the photo is read through the download route.
+  // ==========================================================
+
+  private proofOptions(purpose: FileAssetPurpose, interventionId: number): LocalUploadOptions {
+    return {
+      purpose,
+      visibility: FileAssetVisibility.PRIVATE,
+      entityType: 'INTERVENTION',
+      entityId: interventionId,
+      allowedMimeTypes: this.imageMimeTypes,
+      maxSizeMb: PROOF_MAX_MB,
+      compressImage: true,
+      maxInputPixels: PROOF_MAX_PIXELS,
+    };
+  }
+
+  /**
+   * Refuses what is not a JPEG, PNG or WebP photo before any of it is decoded or kept. HEIC is
+   * named: the phones that produce it can switch to JPEG, and "unsupported" alone leaves the
+   * artisan with no way to go on.
+   */
+  assertProofImage(file: Express.Multer.File | undefined | null) {
+    if (!file) {
+      throw new BadRequestException('La photo est obligatoire.');
+    }
+
+    if (/^image\/(heic|heif)$/i.test(file.mimetype ?? '') || file.buffer?.subarray(4, 8).toString('latin1') === 'ftyp') {
+      throw new BadRequestException('Le format HEIC n’est pas pris en charge. Prenez la photo en JPEG.');
+    }
+
+    this.validateFile(file, this.imageMimeTypes, PROOF_MAX_MB);
+  }
+
+  /** Compresses the photo and writes it to the private folder. No database row yet. */
+  stageProofPhoto(file: Express.Multer.File, purpose: FileAssetPurpose, interventionId: number) {
+    return this.storeLocalFile(file, this.proofOptions(purpose, interventionId));
+  }
+
+  /** The row of a staged photo, written with the `db` (a transaction) of the caller. */
+  recordProofAsset(
+    db: { fileAsset: { create: (args: { data: any }) => Promise<any> } },
+    user: AuthenticatedUser,
+    file: Express.Multer.File,
+    stored: StoredLocalFile,
+    purpose: FileAssetPurpose,
+    interventionId: number,
+  ) {
+    return db.fileAsset.create({
+      data: this.assetData(user, file, this.proofOptions(purpose, interventionId), stored),
+    });
+  }
+
+  /** Takes a staged photo away again (the transaction that should have recorded it failed). */
+  async discardStagedPhoto(stored: { relativePath: string }) {
+    await fs.unlink(this.absolutePathFromAsset(stored)).catch(() => undefined);
+  }
+
+  /** The proof files cannot be changed by the people who may change the other files. */
+  private refuseToTouchProof(asset: { purpose: FileAssetPurpose }) {
+    if (PROOF_PURPOSES.includes(asset.purpose)) {
+      throw new ForbiddenException(
+        'Une photo de preuve ne peut ni être remplacée ni être supprimée. Ajoutez une nouvelle preuve si besoin.',
+      );
+    }
   }
 
   private async getFileAssetOrFail(fileId: number) {
@@ -637,120 +730,6 @@ export class FilesService {
   }
 
   // ==========================================================
-  // Artisan before photo
-  // ==========================================================
-
-  async uploadArtisanBeforePhoto(
-    user: AuthenticatedUser,
-    interventionId: number,
-    file: Express.Multer.File,
-  ) {
-    const intervention = await this.checkInterventionAccess(
-      user,
-      interventionId,
-    );
-
-    const isAssignedArtisan = intervention.artisanId === user.id;
-    const isAdmin = this.isAdminRole(user.role);
-
-    if (!isAssignedArtisan && !isAdmin) {
-      throw new ForbiddenException(
-        'Seul l’artisan assigné ou l’administration peut ajouter la photo avant intervention.',
-      );
-    }
-
-    const asset = await this.createFileAsset(user, file, {
-      purpose: FileAssetPurpose.ARTISAN_BEFORE_PHOTO,
-      visibility: FileAssetVisibility.PRIVATE,
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
-      allowedMimeTypes: this.imageMimeTypes,
-      maxSizeMb: 8,
-      compressImage: true,
-    });
-
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        beforePhotoUrl: asset.publicUrl || `/files/${asset.id}/download`,
-        beforePhotoAt: new Date(),
-      },
-    });
-
-    await this.createEvent({
-      interventionId,
-      type: InterventionEventType.BEFORE_PHOTO_UPLOADED,
-      title: 'Photo avant intervention ajoutée',
-      message: 'L’artisan a ajouté une photo avant intervention.',
-      createdById: user.id,
-      metadata: {
-        fileId: asset.id,
-      },
-    });
-
-    return asset;
-  }
-
-  // ==========================================================
-  // Artisan after photo
-  // ==========================================================
-
-  async uploadArtisanAfterPhoto(
-    user: AuthenticatedUser,
-    interventionId: number,
-    file: Express.Multer.File,
-  ) {
-    const intervention = await this.checkInterventionAccess(
-      user,
-      interventionId,
-    );
-
-    const isAssignedArtisan = intervention.artisanId === user.id;
-    const isAdmin = this.isAdminRole(user.role);
-
-    if (!isAssignedArtisan && !isAdmin) {
-      throw new ForbiddenException(
-        'Seul l’artisan assigné ou l’administration peut ajouter la photo après intervention.',
-      );
-    }
-
-    const asset = await this.createFileAsset(user, file, {
-      purpose: FileAssetPurpose.ARTISAN_AFTER_PHOTO,
-      visibility: FileAssetVisibility.PRIVATE,
-      entityType: 'INTERVENTION',
-      entityId: interventionId,
-      allowedMimeTypes: this.imageMimeTypes,
-      maxSizeMb: 8,
-      compressImage: true,
-    });
-
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        afterPhotoUrl: asset.publicUrl || `/files/${asset.id}/download`,
-        afterPhotoAt: new Date(),
-      },
-    });
-
-    await this.createEvent({
-      interventionId,
-      type: InterventionEventType.AFTER_PHOTO_UPLOADED,
-      title: 'Photo après intervention ajoutée',
-      message: 'L’artisan a ajouté une photo après intervention.',
-      createdById: user.id,
-      metadata: {
-        fileId: asset.id,
-      },
-    });
-
-    return asset;
-  }
-
-  // ==========================================================
   // Artisan documents
   // ==========================================================
 
@@ -1013,6 +992,7 @@ export class FilesService {
     const asset = await this.getFileAssetOrFail(fileId);
 
     await this.checkCanModifyFile(user, asset);
+    this.refuseToTouchProof(asset);
 
     const absolutePath = this.absolutePathFromAsset(asset);
 
@@ -1045,6 +1025,7 @@ export class FilesService {
     const oldAsset = await this.getFileAssetOrFail(fileId);
 
     await this.checkCanModifyFile(user, oldAsset);
+    this.refuseToTouchProof(oldAsset);
 
     const allowedMimeTypes = oldAsset.isImage
       ? this.imageMimeTypes
@@ -1115,27 +1096,8 @@ export class FilesService {
       });
     }
 
-    if (oldAsset.entityType === 'INTERVENTION' && oldAsset.entityId) {
-      await this.prisma.intervention.updateMany({
-        where: {
-          id: oldAsset.entityId,
-          beforePhotoUrl: oldUrl,
-        },
-        data: {
-          beforePhotoUrl: newUrl,
-        },
-      });
-
-      await this.prisma.intervention.updateMany({
-        where: {
-          id: oldAsset.entityId,
-          afterPhotoUrl: oldUrl,
-        },
-        data: {
-          afterPhotoUrl: newUrl,
-        },
-      });
-    }
+    // The photos of an intervention that prove the work are not replaced (see refuseToTouchProof),
+    // so no column of the intervention follows a replacement.
   }
 
   // ==========================================================
@@ -1153,6 +1115,11 @@ export class FilesService {
       throw new ForbiddenException(
         'Seule l’administration peut modifier la visibilité.',
       );
+    }
+
+    // A proof stays behind the login, whoever asks.
+    if (PROOF_PURPOSES.includes(asset.purpose) && visibility !== FileAssetVisibility.PRIVATE) {
+      throw new ForbiddenException('Une photo de preuve reste privée.');
     }
 
     const oldAbsolutePath = this.absolutePathFromAsset(asset);

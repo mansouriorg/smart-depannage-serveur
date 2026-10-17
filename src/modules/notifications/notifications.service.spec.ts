@@ -1081,3 +1081,76 @@ describe('the steps of a mission tell the client and the back office (P1-06)', (
     expect(recipients(notifications)).toEqual([1, 2, 4, 5]);
   });
 });
+
+describe('proofs to look at (P1-07)', () => {
+  const users = [
+    { id: 1, role: 'ADMIN', isActive: true },
+    { id: 2, role: 'SUPPORT', isActive: true },
+    { id: 3, role: 'ACCOUNTANT', isActive: true },
+    { id: 4, role: 'DISPATCHER', isActive: true },
+    { id: 5, role: 'SUPER_ADMIN', isActive: true },
+    { id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com', name: 'Sami' },
+    { id: 20, role: 'ARTISAN', isActive: true, email: 'artisan@example.com', name: 'Karim' },
+  ];
+
+  it('a photo to look at: admins, support and dispatchers, at high priority, with the reasons in words and a way to find the proof', async () => {
+    const { service, notifications } = makeWorld({ users: users as any });
+
+    await service.notifyProofNeedsReview({
+      interventionId: 100,
+      proofId: 31,
+      kind: 'AFTER',
+      artisanId: 20,
+      details: ['Photo prise à 800 m de l’adresse.', 'Signal GPS peu précis (250 m).'],
+    });
+
+    expect(recipients(notifications)).toEqual([1, 2, 4, 5]);
+
+    const first = notifications.find((n) => n.recipientId === 1);
+
+    expect(first.type).toBe('GENERAL');
+    expect(first.priority).toBe('HIGH');
+    expect(first.title).toBe('Preuve à vérifier');
+    expect(first.message).toBe(
+      'Intervention #100: la photo après intervention est à vérifier. Photo prise à 800 m de l’adresse. Signal GPS peu précis (250 m).',
+    );
+    expect(first.entityType).toBe('INTERVENTION');
+    expect(first.entityId).toBe(100);
+    expect(first.data).toEqual({ interventionId: 100, proofId: 31 });
+    expect(first.channels).toEqual(['IN_APP', 'ADMIN_REAL_TIME']);
+  });
+
+  it('the "before" photo is called that, and no reason is fine', async () => {
+    const { service, notifications } = makeWorld({ users: users as any });
+
+    await service.notifyProofNeedsReview({ interventionId: 100, proofId: 31, kind: 'BEFORE', artisanId: 20, details: [] });
+
+    expect(notifications.find((n) => n.recipientId === 1).message).toBe('Intervention #100: la photo avant intervention est à vérifier.');
+  });
+
+  it('nobody outside the back office is told: not the customer, not the accountant', async () => {
+    const { service, notifications } = makeWorld({ users: users as any });
+
+    await service.notifyProofNeedsReview({ interventionId: 100, proofId: 31, kind: 'AFTER', artisanId: 20, details: [] });
+
+    expect(notifications.some((n) => n.recipientId === 10 || n.recipientId === 3 || n.recipientId === 20)).toBe(false);
+  });
+
+  it('a photo refused by the back office: the artisan is told to take it again, and the reviewer is named only as the actor', async () => {
+    const { service, notifications } = makeWorld({ users: users as any });
+
+    await service.notifyProofRefused({ interventionId: 100, proofId: 31, kind: 'AFTER', artisanId: 20, actorId: 4 });
+    await service.notifyProofRefused({ interventionId: 101, proofId: 32, kind: 'AFTER', artisanId: 20, actorId: 4, retake: false });
+
+    expect(recipients(notifications)).toEqual([20, 20]);
+    expect(notifications[0].message).toBe(
+      'La photo après intervention de la mission #100 a été refusée par l’équipe. Reprenez-la sur place.',
+    );
+    // The job is closed: there is nothing to retake, the team will call.
+    expect(notifications[1].message).toBe(
+      'La photo après intervention de la mission #101 a été refusée par l’équipe. L’équipe vous contactera.',
+    );
+    expect(notifications[0].priority).toBe('HIGH');
+    expect(notifications[0].data).toEqual({ interventionId: 100, proofId: 31 });
+  });
+});

@@ -1,6 +1,6 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateInterventionDto } from './create-intervention.dto';
-import { IsEnum, IsNumber, IsOptional, IsString, IsDateString } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional } from 'class-validator';
 
 // ✅ Import 'Status' from your custom generated location
 import { Status } from '../../../../generated/prisma/client'; 
@@ -16,41 +16,6 @@ export class UpdateInterventionDto extends PartialType(CreateInterventionDto) {
   @IsNumber()
   artisanId?: number;
 
-  // ==========================================================
-  // 📸 NEW: Tamper-Proof "Before" Photo Data (Artisan Upload)
-  // ==========================================================
-  @IsOptional()
-  @IsString()
-  beforePhotoUrl?: string;
-
-  @IsOptional()
-  @IsNumber()
-  beforePhotoLat?: number;
-
-  @IsOptional()
-  @IsNumber()
-  beforePhotoLng?: number;
-
-  @IsOptional()
-  @IsDateString()
-  beforePhotoAt?: string | Date;
-
-  // ==========================================================
-  // 📸 NEW: Tamper-Proof "After" Photo Data (Artisan Upload)
-  // ==========================================================
-  @IsOptional()
-  @IsString()
-  afterPhotoUrl?: string;
-
-  @IsOptional()
-  @IsNumber()
-  afterPhotoLat?: number;
-
-  @IsOptional()
-  @IsNumber()
-  afterPhotoLng?: number;
-
-  @IsOptional()
-  @IsDateString()
-  afterPhotoAt?: string | Date;
+  // The before/after photo columns are not here on purpose (P1-07): they are written by the
+  // proof service, from a photo it has judged, and by nothing else. POST /interventions/:id/proofs/:kind.
 }

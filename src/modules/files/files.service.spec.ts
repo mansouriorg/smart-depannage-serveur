@@ -199,3 +199,99 @@ describe('the signature check protects the other uploads too', () => {
     expect((w.service as any).hasImageSignature(Buffer.alloc(0))).toBe(false);
   });
 });
+
+describe('proof photos in the files module (P1-07)', () => {
+  const staff = { id: 20, role: 'ADMIN' as any };
+  const artisan = { id: 7, role: 'ARTISAN' as any };
+
+  function withAsset(purpose: string, visibility = 'PRIVATE') {
+    const asset = { id: 5, uploadedById: 7, purpose, visibility, relativePath: 'private/x/y.webp', isDeleted: false, isImage: true, mimeType: 'image/webp' };
+    const prisma: any = { fileAsset: { findUnique: async () => asset, update: async () => asset } };
+    const service = new FilesService(prisma, { create: async () => undefined } as any);
+
+    return { service, asset };
+  }
+
+  it('a proof cannot be deleted, not even by the artisan who sent it or by the back office', async () => {
+    for (const purpose of ['ARTISAN_BEFORE_PHOTO', 'ARTISAN_AFTER_PHOTO']) {
+      for (const user of [artisan, staff]) {
+        const { service } = withAsset(purpose);
+        const error = await failure(service.deleteFile(user, 5));
+
+        expect(error.getStatus()).toBe(403);
+        expect(String(error.message)).toMatch(/preuve/);
+      }
+    }
+  });
+
+  it('a proof cannot be replaced', async () => {
+    for (const user of [artisan, staff]) {
+      const { service } = withAsset('ARTISAN_AFTER_PHOTO');
+      const error = await failure(service.replaceFile(user, 5, upload(await jpeg())));
+
+      expect(error.getStatus()).toBe(403);
+    }
+  });
+
+  it('a proof cannot be made public', async () => {
+    const { service } = withAsset('ARTISAN_AFTER_PHOTO');
+    const error = await failure(service.setVisibility(staff, 5, 'PUBLIC' as any));
+
+    expect(error.getStatus()).toBe(403);
+    expect(String(error.message)).toMatch(/privée/);
+  });
+
+  it('the other files are deleted by their owner as before', async () => {
+    const { service } = withAsset('CLIENT_DAMAGE_PHOTO');
+    const asset = await service.deleteFile({ id: 7, role: 'CLIENT' as any }, 5);
+
+    expect(asset).toBeDefined();
+  });
+
+  it('assertProofImage takes a JPEG, a PNG and a WebP, and nothing else', async () => {
+    const { service } = withAsset('ARTISAN_AFTER_PHOTO');
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#000' } }).png().toBuffer();
+    const webp = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#000' } }).webp().toBuffer();
+
+    const good = upload(await jpeg());
+
+    expect(() => service.assertProofImage(good)).not.toThrow();
+    expect(() => service.assertProofImage(upload(png, 'image/png'))).not.toThrow();
+    expect(() => service.assertProofImage(upload(webp, 'image/webp'))).not.toThrow();
+
+    expect(() => service.assertProofImage(undefined)).toThrow();
+    expect(() => service.assertProofImage(upload(Buffer.from('<svg onload=alert(1)>'), 'image/svg+xml'))).toThrow();
+    expect(() => service.assertProofImage(upload(Buffer.from('not a jpeg at all'), 'image/jpeg'))).toThrow();
+    expect(() => service.assertProofImage(upload(Buffer.alloc(0), 'image/jpeg'))).toThrow();
+    expect(() => service.assertProofImage(upload(good.buffer, 'application/pdf'))).toThrow();
+  });
+
+  it('assertProofImage refuses a file that is too big', async () => {
+    const { service } = withAsset('ARTISAN_AFTER_PHOTO');
+    const big = upload(await jpeg(), 'image/jpeg', 11 * 1024 * 1024);
+
+    expect(() => service.assertProofImage(big)).toThrow();
+  });
+
+  it('stages a compressed copy in the private folder, records it in the caller\'s transaction, and takes it away on request', async () => {
+    const w = await makeWorld();
+    const file = upload(await jpeg(800, 600));
+    const stored = await w.service.stageProofPhoto(file, 'ARTISAN_AFTER_PHOTO' as any, 7);
+
+    expect(stored.relativePath.startsWith('private/artisan_after_photo/')).toBe(true);
+    expect(stored.publicUrl).toBeUndefined();
+    expect(stored.mimeType).toBe('image/webp');
+    expect((await fs.stat(path.join(w.root, stored.relativePath))).isFile()).toBe(true);
+    // Nothing in the database yet: the caller records it with its own transaction.
+    expect(w.assets.length).toBe(0);
+
+    const tx: any = { fileAsset: { create: async ({ data }: any) => ({ id: 31, ...data }) } };
+    const asset = await w.service.recordProofAsset(tx, { id: 7, role: 'ARTISAN' as any }, file, stored, 'ARTISAN_AFTER_PHOTO' as any, 7);
+
+    expect(asset).toMatchObject({ id: 31, uploadedById: 7, visibility: 'PRIVATE', entityType: 'INTERVENTION', entityId: 7, purpose: 'ARTISAN_AFTER_PHOTO' });
+
+    await w.service.discardStagedPhoto(stored);
+
+    await expect(fs.stat(path.join(w.root, stored.relativePath))).rejects.toBeDefined();
+  });
+});

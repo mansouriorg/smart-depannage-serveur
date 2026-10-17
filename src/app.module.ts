@@ -54,6 +54,7 @@ import { InterventionWorkflowModule } from './modules/intervention-workflow/inte
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { MatchingModule } from './modules/matching/matching.module';
 import { BusinessModule } from './modules/business/business.module';
+import { ProofsModule } from './modules/proofs/proofs.module';
 
 // Uploaded files are user content: the browser must use the declared type and
 // never guess one (a file that "looks like" HTML would then run).
@@ -84,23 +85,16 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     // GET /api/files/:fileId/download, which checks who is asking.
     //
     //   /uploads/public  files explicitly marked PUBLIC (e.g. profile photos)
-    //   /uploads/proofs  legacy proof-of-work photos, kept public until they
-    //                    move behind the files route (P1-07)
+    //
+    // P1-07: the proof-of-work photos are not served any more (`uploads/proofs` was
+    // public). They are private files read through the same authenticated route;
+    // `npm run proofs:migrate` moves the old ones.
     // ======================================================
 
     ServeStaticModule.forRoot(
       {
         rootPath: join(process.cwd(), 'uploads', 'public'),
         serveRoot: '/uploads/public',
-        serveStaticOptions: {
-          index: false,
-          dotfiles: 'deny',
-          setHeaders: noSniff,
-        },
-      },
-      {
-        rootPath: join(process.cwd(), 'uploads', 'proofs'),
-        serveRoot: '/uploads/proofs',
         serveStaticOptions: {
           index: false,
           dotfiles: 'deny',
@@ -153,6 +147,7 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     InterventionWorkflowModule,
     SchedulingModule,
     MatchingModule,
+    ProofsModule,
 
     // ======================================================
     // G. GUEST CLIENT FEATURES

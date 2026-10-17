@@ -26,7 +26,7 @@ function makeWorld() {
   const alerts: any[] = [];
   const staffAlerts: any = { newRequest: async (request: any) => alerts.push(request) };
 
-  return { users, created, alerts, service: new InterventionsService(prisma, gateway, notifications, staffAlerts, {} as any, {} as any) };
+  return { users, created, alerts, service: new InterventionsService(prisma, gateway, notifications, staffAlerts, {} as any, {} as any, {} as any) };
 }
 
 const form = (contactPhone: string, extra: Record<string, unknown> = {}) =>

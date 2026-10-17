@@ -21,7 +21,6 @@ import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateBankDetailsDto } from './dto/update-bank-details.dto';
 import { UpdateArtisanLocationDto } from './dto/update-artisan-location.dto';
 import { RejectMissionDto } from './dto/reject-mission.dto';
-import { UploadProofPhotoDto } from './dto/upload-proof-photo.dto';
 import { AddDiagnosticDto } from './dto/add-diagnostic.dto';
 import { AddMaterialUsedDto } from './dto/add-material-used.dto';
 import { RequestExtraQuoteDto } from './dto/request-extra-quote.dto';
@@ -235,21 +234,6 @@ export class ArtisansController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ARTISAN)
-  @Post('me/missions/:interventionId/before-photo')
-  uploadBeforePhoto(
-    @CurrentUser('id') userId: number,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-    @Body() dto: UploadProofPhotoDto,
-  ) {
-    return this.artisansService.uploadBeforePhoto(
-      userId,
-      interventionId,
-      dto,
-    );
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
   @Patch('me/missions/:interventionId/diagnostic')
   addDiagnostic(
     @CurrentUser('id') userId: number,
@@ -279,21 +263,6 @@ export class ArtisansController {
     @Body() dto: RequestExtraQuoteDto,
   ) {
     return this.artisansService.requestExtraQuote(
-      userId,
-      interventionId,
-      dto,
-    );
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
-  @Post('me/missions/:interventionId/after-photo')
-  uploadAfterPhoto(
-    @CurrentUser('id') userId: number,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-    @Body() dto: UploadProofPhotoDto,
-  ) {
-    return this.artisansService.uploadAfterPhoto(
       userId,
       interventionId,
       dto,

@@ -1480,6 +1480,61 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * A proof photo was kept but a person must look at it (P1-07): the back office is told, with
+   * the reasons in words. No customer, no artisan: the artisan was told their photo was kept.
+   * There is no notification type for it (a new one would need a migration), so GENERAL.
+   */
+  async notifyProofNeedsReview(params: {
+    interventionId: number;
+    proofId: number;
+    kind: 'BEFORE' | 'AFTER';
+    artisanId?: number | null;
+    /** One sentence per reason, already written for the back office. */
+    details: string[];
+  }) {
+    const what = params.kind === 'BEFORE' ? 'avant' : 'après';
+    const why = params.details.length ? ` ${params.details.join(' ')}` : '';
+
+    return this.notifyAdmins({
+      actorId: params.artisanId ?? undefined,
+      type: NotificationType.GENERAL,
+      priority: NotificationPriority.HIGH,
+      title: 'Preuve à vérifier',
+      message: `Intervention #${params.interventionId}: la photo ${what} intervention est à vérifier.${why}`,
+      entityType: 'INTERVENTION',
+      entityId: params.interventionId,
+      data: { interventionId: params.interventionId, proofId: params.proofId },
+      roles: DISPATCH_ROLES,
+    });
+  }
+
+  /** The back office refused a proof the artisan thought was kept: they must take it again. */
+  async notifyProofRefused(params: {
+    interventionId: number;
+    proofId: number;
+    kind: 'BEFORE' | 'AFTER';
+    artisanId: number;
+    actorId?: number;
+    /** The photo came off the job and can be taken again; false: the job is closed, the team will be in touch. */
+    retake?: boolean;
+  }) {
+    const what = params.kind === 'BEFORE' ? 'avant' : 'après';
+    const next = params.retake === false ? 'L’équipe vous contactera.' : 'Reprenez-la sur place.';
+
+    return this.notify({
+      recipientId: params.artisanId,
+      actorId: params.actorId,
+      type: NotificationType.GENERAL,
+      priority: NotificationPriority.HIGH,
+      title: 'Photo refusée',
+      message: `La photo ${what} intervention de la mission #${params.interventionId} a été refusée par l’équipe. ${next}`,
+      entityType: 'INTERVENTION',
+      entityId: params.interventionId,
+      data: { interventionId: params.interventionId, proofId: params.proofId },
+    });
+  }
+
   async notifyWorkStarted(interventionId: number, artisanId: number) {
     const intervention = await this.prisma.intervention.findUnique({
       where: {

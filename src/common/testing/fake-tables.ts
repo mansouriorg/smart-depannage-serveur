@@ -1,7 +1,7 @@
 /**
  * An in-memory stand-in for the few Prisma calls the account specs make, with
  * the behaviours that matter for them: UNIQUE columns that raise P2002, `where`
- * with in / gt / lt / not / OR / AND / NOT, and a $transaction that rolls back.
+ * with in / gt / gte / lt / lte / not / OR / AND / NOT, and a $transaction that rolls back.
  * Test support only: nothing in the application imports it.
  */
 
@@ -35,6 +35,8 @@ export function matchesWhere(row: Row, where: any): boolean {
       if ('not' in cond && value === cond.not) return false;
       if ('gt' in cond && !(value !== null && value > cond.gt)) return false;
       if ('lt' in cond && !(value !== null && value < cond.lt)) return false;
+      if ('gte' in cond && !(value !== null && value >= cond.gte)) return false;
+      if ('lte' in cond && !(value !== null && value <= cond.lte)) return false;
       if ('equals' in cond && value !== cond.equals) return false;
       continue;
     }
@@ -116,9 +118,9 @@ export class FakeTable {
     return this.copy(found, args);
   };
 
-  findMany = async ({ where, orderBy, take }: any = {}) =>
+  findMany = async ({ where, orderBy, take, skip }: any = {}) =>
     this.sorted(this.rows.filter((row) => matchesWhere(row, where)), orderBy)
-      .slice(0, take ?? 1000)
+      .slice(skip ?? 0, (skip ?? 0) + (take ?? 1000))
       .map((row) => ({ ...row }));
 
   count = async ({ where }: any = {}) => this.rows.filter((row) => matchesWhere(row, where)).length;

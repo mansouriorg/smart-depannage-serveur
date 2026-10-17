@@ -19,6 +19,7 @@ import { generateUnusablePassword } from '../auth/password-setup';
 import { StaffAlertsService } from './staff-alerts.service';
 import { AssignmentService } from '../assignment/assignment.service';
 import { MissionActionsService } from '../mission-actions/mission-actions.service';
+import { ProofsService } from '../proofs/proofs.service';
 import { describeError } from '../notifications/delivery/delivery-error';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto'; 
@@ -61,6 +62,7 @@ export class InterventionsService {
     private staffAlerts: StaffAlertsService,
     private assignment: AssignmentService,
     private missionActions: MissionActionsService,
+    private proofs: ProofsService,
   ) {}
 
   // ==========================================================
@@ -548,64 +550,63 @@ export class InterventionsService {
   // ==========================================================
   // 8. 📸 SECURE WORK COMPLETION (Tamper-Proof Photo Upload)
   // ==========================================================
+  /**
+   * The artisan closes the job with the "after" photo. The photo is not trusted: it goes through
+   * the proof service (P1-07), which judges it on what the server knows (where the job is, how
+   * sure the phone is of its position, whether it says the position was simulated, whether the
+   * photo was used before), stamps the time itself, keeps the picture behind the login and closes
+   * the job in the same transaction. A photo that fails is refused with the reason in words, and
+   * the job stays in progress.
+   */
   async completeWork(
-    id: number, 
-    artisanId: number,
-    proofData: { photoUrl: string; latitude: number; longitude: number; timestamp: Date }
+    id: number,
+    artisan: { id: number; role: Role },
+    upload: { file: Express.Multer.File | undefined; capture: Record<string, unknown> },
   ) {
-    // 1. Verify intervention exists AND is assigned to the artisan who calls (P0-16).
-    // Before, any artisan could complete any ticket.
-    const intervention = await this.prisma.intervention.findUnique({ where: { id } });
-    if (!intervention || intervention.artisanId !== artisanId) {
-      throw new NotFoundException(`Intervention #${id} introuvable.`);
-    }
+    const include = {
+      client: { select: { id: true, name: true, phone: true } },
+    };
 
-    if (
-      !Number.isFinite(proofData.latitude) ||
-      !Number.isFinite(proofData.longitude) ||
-      Number.isNaN(proofData.timestamp.getTime())
-    ) {
-      throw new BadRequestException(
-        'Position GPS et horodatage valides obligatoires pour la preuve.',
-      );
-    }
-
-    // 2. Update database with "After" photo metadata and update status
-    // Proof of work only closes a job that is in progress (the status table
-    // refuses every other status). The proof is written together with the status
-    // and never replaced afterwards.
-    const { row: updatedIntervention, changed } = await transitionStatusDetailed(this.prisma, {
-      id,
-      to: Status.COMPLETED,
-      actor: { kind: 'artisan', userId: artisanId },
-      dataOnChange: {
-        workCompletedAt: new Date(),
-        afterPhotoUrl: proofData.photoUrl,
-        afterPhotoLat: proofData.latitude,
-        afterPhotoLng: proofData.longitude,
-        afterPhotoAt: proofData.timestamp,
-      },
-      include: {
-        client: { select: { id: true, name: true, phone: true } },
-      },
+    const result = await this.proofs.submit({
+      interventionId: id,
+      kind: 'AFTER',
+      actor: artisan,
+      file: upload.file,
+      capture: upload.capture,
+      completeJob: true,
+      include,
     });
 
-    if (!changed) {
+    if (!result.completed) {
+      // The same photo sent again after a reply that got lost: the job is closed already.
       throw new ConflictException('Cette mission est déjà clôturée.');
     }
 
+    const updatedIntervention = result.intervention;
+
+    // The job is closed and the proof is kept: a live event or a text message that fails must not
+    // turn that into an error (the artisan would send the photo again and be told "already closed").
+
     // 3. 🔔 Real-Time Notification to Admin/Client
-    this.gateway.sendInterventionStatus(updatedIntervention);
+    try {
+      this.gateway.sendInterventionStatus(updatedIntervention);
+    } catch (error) {
+      this.logger.error(`After a job was closed, the live event failed (${describeError(error)}).`);
+    }
 
     // 4. 📱 SMS Notification to Client
     if (updatedIntervention.client?.phone) {
-      await this.notifications.sendSms(
-        updatedIntervention.client.phone,
-        `Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.`
-      );
+      try {
+        await this.notifications.sendSms(
+          updatedIntervention.client.phone,
+          `Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.`
+        );
+      } catch (error) {
+        this.logger.error(`After a job was closed, the text message to the client failed (${describeError(error)}).`);
+      }
     }
 
-    return withoutStaffFields(updatedIntervention);
+    return { ...withoutStaffFields(updatedIntervention), proof: result.view };
   }
 
   // ==========================================================
