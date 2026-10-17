@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 
 import {
   InterventionEventType,
@@ -361,15 +362,14 @@ export class PaymentsService {
       include: this.paymentInclude,
     });
 
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.PAYMENT_PENDING,
-        paymentPendingAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    // The payment request is recorded whatever the job status is; the job only
+    // moves to PAYMENT_PENDING when the work is done (never while it is in progress).
+    await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.PAYMENT_PENDING,
+      actor: { kind: 'client', userId: clientId },
+      data: { paymentPendingAt: new Date() },
+      soft: true,
     });
 
     await this.createEvent({
@@ -503,15 +503,12 @@ export class PaymentsService {
         include: this.paymentInclude,
       });
 
-      await tx.intervention.update({
-        where: {
-          id: payment.interventionId,
-        },
-        data: {
-          status: Status.PAID,
-          paidAt: new Date(),
-          lastStatusChangedAt: new Date(),
-        },
+      await transitionStatus(tx, {
+        id: payment.interventionId,
+        to: Status.PAID,
+        actor: { kind: 'staff', userId: adminId },
+        data: { paidAt: new Date() },
+        soft: true,
       });
 
       if (payment.invoiceId) {

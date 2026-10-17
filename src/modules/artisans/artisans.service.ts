@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -13,6 +12,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { withAliases } from '../intervention-workflow/intervention-status';
+import {
+  transitionStatus,
+  transitionStatusDetailed,
+} from '../intervention-workflow/transition-status';
 
 import { ApplyArtisanDto } from './dto/apply-artisan.dto';
 import { UpdateArtisanProfileDto } from './dto/update-artisan-profile.dto';
@@ -81,12 +85,13 @@ export class ArtisansService {
   }
 
   private acceptableMissionStatuses(): Status[] {
-    return [
-      Status.PENDING,
-      Status.ADMIN_REVIEW,
-      Status.QUOTE_ACCEPTED,
-      Status.ASSIGNED,
-    ];
+    // Both spellings of the "open" statuses (see intervention-status.ts).
+    return withAliases([
+      'CREATED',
+      'WAITING_ADMIN_REVIEW',
+      'QUOTE_ACCEPTED',
+      'ASSIGNED',
+    ]) as Status[];
   }
 
   private canAcceptMissionStatus(status: Status): boolean {
@@ -690,11 +695,11 @@ export class ArtisansService {
     const availableWhere: Prisma.InterventionWhereInput = {
       artisanId: null,
       status: {
-        in: [
-          Status.PENDING,
-          Status.ADMIN_REVIEW,
-          Status.QUOTE_ACCEPTED,
-        ],
+        in: withAliases([
+          'CREATED',
+          'WAITING_ADMIN_REVIEW',
+          'QUOTE_ACCEPTED',
+        ]) as Status[],
       },
     };
 
@@ -730,7 +735,7 @@ export class ArtisansService {
       this.prisma.intervention.findMany({
         where: {
           artisanId: userId,
-          status: Status.ACCEPTED,
+          status: { in: withAliases(['ARTISAN_ACCEPTED']) as Status[] },
         },
         include: this.missionInclude(),
         orderBy: { createdAt: 'desc' },
@@ -740,7 +745,12 @@ export class ArtisansService {
         where: {
           artisanId: userId,
           status: {
-            in: [Status.ON_THE_WAY, Status.ARRIVED, Status.IN_PROGRESS],
+            in: withAliases([
+              'ARTISAN_ON_THE_WAY',
+              'ARTISAN_ARRIVED',
+              'IN_PROGRESS',
+              'WAITING_CLIENT_VALIDATION',
+            ]) as Status[],
           },
         },
         include: this.missionInclude(),
@@ -751,7 +761,12 @@ export class ArtisansService {
         where: {
           artisanId: userId,
           status: {
-            in: [Status.COMPLETED, Status.PAID, Status.INVOICE_READY],
+            in: withAliases([
+              'COMPLETED',
+              'PAYMENT_PENDING',
+              'PAID',
+              'INVOICE_SENT',
+            ]) as Status[],
           },
         },
         include: this.missionInclude(),
@@ -890,29 +905,19 @@ export class ArtisansService {
     // same moment used to both succeed (last write won, both were told yes).
     // The WHERE clause makes the database decide: only one UPDATE can match a
     // mission that is still unassigned (or already theirs) and still open.
-    const claimed = await this.prisma.intervention.updateMany({
-      where: {
-        id: intervention.id,
-        status: { in: this.acceptableMissionStatuses() },
-        OR: [{ artisanId: null }, { artisanId: userId }],
-      },
-      data: {
-        artisanId: userId,
-        status: Status.ACCEPTED,
-        artisanAcceptedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
-    });
-
-    if (claimed.count === 0) {
-      throw new ConflictException(
-        'Cette mission vient d’être attribuée à un autre artisan ou n’est plus disponible.',
-      );
-    }
-
-    const updated = await this.prisma.intervention.findUniqueOrThrow({
-      where: { id: intervention.id },
+    // transitionStatus does the same compare-and-set in one UPDATE and answers
+    // 409 when somebody else got there first.
+    const updated = await transitionStatus(this.prisma, {
+      id: intervention.id,
+      to: Status.ACCEPTED,
+      actor: { kind: 'artisan', userId },
+      allowedFrom: this.acceptableMissionStatuses(),
+      where: { OR: [{ artisanId: null }, { artisanId: userId }] },
+      data: { artisanId: userId },
+      dataOnChange: { artisanAcceptedAt: new Date() },
       include: this.missionInclude(),
+      conflictMessage:
+        'Cette mission vient d’être attribuée à un autre artisan ou n’est plus disponible.',
     });
 
     await this.createMissionEvent({
@@ -948,30 +953,33 @@ export class ArtisansService {
       },
     );
 
-    await this.prisma.$transaction([
-      this.prisma.artisanMissionRejection.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.artisanMissionRejection.create({
         data: {
           artisanProfileId: profile.id,
           interventionId: intervention.id,
           reason: dto.reason,
           note: dto.note,
         },
-      }),
+      });
 
-      this.prisma.intervention.update({
-        where: { id: intervention.id },
-        data: {
-          artisanRejectedAt: new Date(),
-          artisanId:
-            intervention.artisanId === userId ? null : intervention.artisanId,
-          status:
-            intervention.artisanId === userId
-              ? Status.ADMIN_REVIEW
-              : intervention.status,
-          lastStatusChangedAt: new Date(),
-        },
-      }),
-    ]);
+      if (intervention.artisanId === userId) {
+        // Their own job goes back to the dispatcher queue. Only allowed before
+        // the artisan is on the road (the status table decides).
+        await transitionStatus(tx, {
+          id: intervention.id,
+          to: Status.ADMIN_REVIEW,
+          actor: { kind: 'artisan', userId },
+          data: { artisanRejectedAt: new Date(), artisanId: null },
+        });
+      } else {
+        // Declining an open job nobody owns: remember it, nothing else moves.
+        await tx.intervention.update({
+          where: { id: intervention.id },
+          data: { artisanRejectedAt: new Date() },
+        });
+      }
+    });
 
     await this.createMissionEvent({
       interventionId: intervention.id,
@@ -990,15 +998,19 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: Status.ON_THE_WAY,
-        artisanOnTheWayAt: new Date(),
-        lastStatusChangedAt: new Date(),
+    const { row: updated, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to: Status.ON_THE_WAY,
+        actor: { kind: 'artisan', userId },
+        dataOnChange: { artisanOnTheWayAt: new Date() },
+        include: this.missionInclude(),
       },
-      include: this.missionInclude(),
-    });
+    );
+
+    // Pressed twice: no second timeline entry and no second SMS.
+    if (!changed) return updated;
 
     await this.createMissionEvent({
       interventionId,
@@ -1022,15 +1034,18 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: Status.ARRIVED,
-        artisanArrivedAt: new Date(),
-        lastStatusChangedAt: new Date(),
+    const { row: updated, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to: Status.ARRIVED,
+        actor: { kind: 'artisan', userId },
+        dataOnChange: { artisanArrivedAt: new Date() },
+        include: this.missionInclude(),
       },
-      include: this.missionInclude(),
-    });
+    );
+
+    if (!changed) return updated;
 
     await this.createMissionEvent({
       interventionId,
@@ -1047,15 +1062,18 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: Status.IN_PROGRESS,
-        workStartedAt: new Date(),
-        lastStatusChangedAt: new Date(),
+    const { row: updated, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to: Status.IN_PROGRESS,
+        actor: { kind: 'artisan', userId },
+        dataOnChange: { workStartedAt: new Date() },
+        include: this.missionInclude(),
       },
-      include: this.missionInclude(),
-    });
+    );
+
+    if (!changed) return updated;
 
     await this.createMissionEvent({
       interventionId,
@@ -1230,29 +1248,34 @@ export class ArtisansService {
       );
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const completed = await tx.intervention.update({
-        where: { id: interventionId },
-        data: {
-          status: Status.COMPLETED,
-          workCompletedAt: new Date(),
-          lastStatusChangedAt: new Date(),
-        },
-        include: this.missionInclude(),
-      });
+    const { row: updated, changed } = await this.prisma.$transaction(
+      async (tx) => {
+        const result = await transitionStatusDetailed(tx, {
+          id: interventionId,
+          to: Status.COMPLETED,
+          actor: { kind: 'artisan', userId },
+          dataOnChange: { workCompletedAt: new Date() },
+          include: this.missionInclude(),
+        });
 
-      await tx.artisanProfile.update({
-        where: { id: profile.id },
-        data: {
-          completedJobsCount: {
-            increment: 1,
-          },
-          availabilityStatus: ArtisanAvailabilityStatus.ONLINE,
-        },
-      });
+        // Counted once: a second call on a finished job changes nothing.
+        if (result.changed) {
+          await tx.artisanProfile.update({
+            where: { id: profile.id },
+            data: {
+              completedJobsCount: {
+                increment: 1,
+              },
+              availabilityStatus: ArtisanAvailabilityStatus.ONLINE,
+            },
+          });
+        }
 
-      return completed;
-    });
+        return result;
+      },
+    );
+
+    if (!changed) return updated;
 
     await this.createMissionEvent({
       interventionId,
@@ -1280,15 +1303,15 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
+    const updated = await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.DISPUTED,
+      actor: { kind: 'artisan', userId },
       data: {
         problemReported: true,
         problemType: dto.problemType,
         problemNotes: dto.notes,
         hasIssue: true,
-        status: Status.DISPUTED,
-        lastStatusChangedAt: new Date(),
       },
       include: this.missionInclude(),
     });

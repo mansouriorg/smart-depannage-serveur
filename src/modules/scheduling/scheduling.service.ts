@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 
 import {
   AppointmentReminderStatus,
@@ -665,42 +666,45 @@ export class SchedulingService {
       });
     }
 
-    const appointment = await this.prisma.appointment.upsert({
-      where: {
-        interventionId,
-      },
-      update: {
-        artisanId: dto.artisanId,
-        startsAt,
-        endsAt,
-        adminNote: dto.adminNote,
-        scheduledById: userId,
-        status: AppointmentStatus.SCHEDULED,
-      },
-      create: {
-        interventionId,
-        clientId: intervention.clientId,
-        artisanId: dto.artisanId,
-        startsAt,
-        endsAt,
-        adminNote: dto.adminNote,
-        scheduledById: userId,
-        status: AppointmentStatus.SCHEDULED,
-      },
-    });
-
-    await this.prisma.intervention.update({
-      where: {
+    // Status and appointment change together: if the job cannot be assigned
+    // from where it is (already started, cancelled...), no appointment is kept.
+    const appointment = await this.prisma.$transaction(async (tx) => {
+      await transitionStatus(tx, {
         id: interventionId,
-      },
-      data: {
-        artisanId: dto.artisanId,
-        status: Status.ASSIGNED,
-        assignedAt: new Date(),
-        preferredDate: startsAt,
-        preferredStartTime: startsAt.toISOString().slice(11, 16),
-        preferredEndTime: endsAt.toISOString().slice(11, 16),
-      },
+        to: Status.ASSIGNED,
+        actor: { kind: 'staff', userId },
+        data: {
+          artisanId: dto.artisanId,
+          assignedAt: new Date(),
+          preferredDate: startsAt,
+          preferredStartTime: startsAt.toISOString().slice(11, 16),
+          preferredEndTime: endsAt.toISOString().slice(11, 16),
+        },
+      });
+
+      return tx.appointment.upsert({
+        where: {
+          interventionId,
+        },
+        update: {
+          artisanId: dto.artisanId,
+          startsAt,
+          endsAt,
+          adminNote: dto.adminNote,
+          scheduledById: userId,
+          status: AppointmentStatus.SCHEDULED,
+        },
+        create: {
+          interventionId,
+          clientId: intervention.clientId,
+          artisanId: dto.artisanId,
+          startsAt,
+          endsAt,
+          adminNote: dto.adminNote,
+          scheduledById: userId,
+          status: AppointmentStatus.SCHEDULED,
+        },
+      });
     });
 
     await this.createDefaultReminders(appointment.id);
@@ -937,26 +941,27 @@ export class SchedulingService {
     }
 
     if (request.type === AppointmentRequestType.CANCEL) {
-      await this.prisma.appointment.update({
-        where: {
-          id: request.appointmentId,
-        },
-        data: {
-          status: AppointmentStatus.CANCELLED,
-          cancelledAt: new Date(),
-          cancelReason: request.reason,
-        },
-      });
-
-      await this.prisma.intervention.update({
-        where: {
+      await this.prisma.$transaction(async (tx) => {
+        await transitionStatus(tx, {
           id: request.appointment.interventionId,
-        },
-        data: {
-          status: Status.CANCELLED,
-          cancelledAt: new Date(),
-          cancelledReason: request.reason,
-        },
+          to: Status.CANCELLED,
+          actor: { kind: 'staff', userId },
+          dataOnChange: {
+            cancelledAt: new Date(),
+            cancelledReason: request.reason,
+          },
+        });
+
+        await tx.appointment.update({
+          where: {
+            id: request.appointmentId,
+          },
+          data: {
+            status: AppointmentStatus.CANCELLED,
+            cancelledAt: new Date(),
+            cancelReason: request.reason,
+          },
+        });
       });
     }
 
@@ -1097,24 +1102,23 @@ export class SchedulingService {
       throw new ForbiddenException('Seul l’artisan assigné peut accepter.');
     }
 
-    const updated = await this.prisma.appointment.update({
-      where: {
-        id: appointmentId,
-      },
-      data: {
-        status: AppointmentStatus.CONFIRMED,
-        confirmedAt: new Date(),
-      },
-    });
-
-    await this.prisma.intervention.update({
-      where: {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await transitionStatus(tx, {
         id: appointment.interventionId,
-      },
-      data: {
-        status: Status.ARTISAN_ACCEPTED,
-        artisanAcceptedAt: new Date(),
-      },
+        to: Status.ARTISAN_ACCEPTED,
+        actor: { kind: this.isStaff(role) ? 'staff' : 'artisan', userId },
+        dataOnChange: { artisanAcceptedAt: new Date() },
+      });
+
+      return tx.appointment.update({
+        where: {
+          id: appointmentId,
+        },
+        data: {
+          status: AppointmentStatus.CONFIRMED,
+          confirmedAt: new Date(),
+        },
+      });
     });
 
     await this.notifyUser({

@@ -19,6 +19,14 @@ import * as crypto from 'crypto';
 import { Role, Status } from '../../../generated/prisma/client';
 import { isTicketStaff } from '../../common/auth/role-policy';
 import { forMarketplace, withoutStaffFields } from './intervention-redaction';
+import {
+  StatusActor,
+  canonicalStatus,
+  initialStatus,
+  statusesInGroup,
+  withAliases,
+} from '../intervention-workflow/intervention-status';
+import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 
 // guest_<timestamp>@smart-depannage.com: guests created by the old public form.
 const LEGACY_GUEST_EMAIL = /^guest_\d+@smart-depannage\.com$/;
@@ -118,7 +126,7 @@ export class InterventionsService {
           connect: { id: finalClientId },
         },
         trackingToken: trackingTokenHash, // Store only the hash
-        status: 'PENDING',
+        status: initialStatus() as Status,
       },
       include: {
         client: { select: { id: true, name: true, phone: true } },
@@ -181,7 +189,7 @@ export class InterventionsService {
   // ==========================================================
   async findAllPending() {
     const rows = await this.prisma.intervention.findMany({
-      where: { status: 'PENDING' },
+      where: { status: { in: withAliases(['CREATED']) as Status[] } },
       include: {
         client: { select: { name: true } },
       },
@@ -238,7 +246,7 @@ export class InterventionsService {
         return withoutStaffFields(intervention);
       }
 
-      if (intervention.artisanId === null && intervention.status === Status.PENDING) {
+      if (intervention.artisanId === null && canonicalStatus(intervention.status) === 'CREATED') {
         return {
           ...forMarketplace(intervention),
           client: intervention.client
@@ -263,21 +271,6 @@ export class InterventionsService {
     Status.ARTISAN_ON_THE_WAY,
     Status.ARTISAN_ARRIVED,
     Status.IN_PROGRESS,
-  ];
-
-  // The artisan cannot move a ticket out of these: the quote, the payment and
-  // the dispute steps belong to the client and the back office. The complete
-  // transition table replaces this list in P1-01.
-  private static readonly ARTISAN_LOCKED_STATUSES: Status[] = [
-    Status.COMPLETED,
-    Status.CANCELLED,
-    Status.QUOTE_SENT,
-    Status.WAITING_CLIENT_VALIDATION,
-    Status.PAYMENT_PENDING,
-    Status.PAID,
-    Status.INVOICE_READY,
-    Status.INVOICE_SENT,
-    Status.DISPUTED,
   ];
 
   async updateAsArtisan(
@@ -309,53 +302,68 @@ export class InterventionsService {
       );
     }
 
-    if (InterventionsService.ARTISAN_LOCKED_STATUSES.includes(intervention.status)) {
-      throw new BadRequestException(
-        "Cette mission ne peut plus être modifiée depuis l'application (clôturée, devis, paiement ou litige en cours).",
-      );
-    }
-
-    return this.update(id, { status: dto.status });
+    // What the artisan may do from the current status is decided by the status
+    // table (intervention-status.ts): a closed, quoted, paid or disputed job
+    // is refused there, with a 409 or 403.
+    return this.update(id, { status: dto.status }, { kind: 'artisan', userId: artisanId });
   }
 
   // ==========================================================
   // 6. UPDATE (Assign Artisan / Change Status)
   // ==========================================================
-  async update(id: number, updateInterventionDto: UpdateInterventionDto) {
-    // 1. Separate artisanId from the rest of the data
-    const { artisanId, ...rest } = updateInterventionDto;
-    
-    // 2. Prepare the object for Prisma
-    const dataToUpdate: any = { ...rest };
+  async update(
+    id: number,
+    updateInterventionDto: UpdateInterventionDto,
+    actor: StatusActor = { kind: 'staff' },
+  ) {
+    // 1. Separate the status and the artisan from the rest of the data
+    const { artisanId, status, ...rest } = updateInterventionDto;
 
-    // 🛠️ LOGIC: If we are assigning an Artisan
+    // 2. Prepare the columns for Prisma
+    const data: Record<string, unknown> = { ...rest };
+
     if (artisanId) {
-      // Connect the relation to the User table
-      dataToUpdate.artisan = { connect: { id: artisanId } };
-      
-      // Auto-set status to ACCEPTED if not specified
-      if (!dataToUpdate.status) {
-        dataToUpdate.status = 'ACCEPTED';
-      }
+      data.artisanId = artisanId;
     }
 
-    // 3. Save to Database
-    const updatedIntervention = await this.prisma.intervention.update({
-      where: { id },
-      data: dataToUpdate,
-      include: {
-        client: { select: { id: true, name: true, phone: true } },
-        artisan: { select: { id: true, name: true, phone: true } },
-      },
-    });
+    // Assigning an artisan without saying which status keeps the old behaviour: ACCEPTED.
+    const target = status ?? (artisanId ? Status.ACCEPTED : undefined);
+
+    const include = {
+      client: { select: { id: true, name: true, phone: true } },
+      artisan: { select: { id: true, name: true, phone: true } },
+    };
+
+    // 3. Save to Database. A status change goes through the status table.
+    let statusChanged = false;
+    let updatedIntervention: any;
+
+    if (target) {
+      const result = await transitionStatusDetailed(this.prisma, {
+        id,
+        to: target,
+        actor,
+        data,
+        include,
+      });
+
+      updatedIntervention = result.row;
+      statusChanged = result.changed;
+    } else {
+      updatedIntervention = await this.prisma.intervention.update({
+        where: { id },
+        data: data as any,
+        include,
+      });
+    }
 
     // 4. 🔔 Real-Time Notification
     this.gateway.sendInterventionStatus(updatedIntervention);
 
     // 5. 📱 SMS Notification Logic
     
-    // Case A: Client Notification (Accepted)
-    if (updatedIntervention.status === 'ACCEPTED' && updatedIntervention.client.phone) {
+    // Case A: Client Notification (Accepted, or handed to another artisan)
+    if ((statusChanged || !!artisanId) && canonicalStatus(updatedIntervention.status) === 'ARTISAN_ACCEPTED' && updatedIntervention.client.phone) {
       const artisanName = updatedIntervention.artisan?.name || 'Un artisan';
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
@@ -364,7 +372,7 @@ export class InterventionsService {
     }
 
     // Case B: Client Notification (Completed)
-    if (updatedIntervention.status === 'COMPLETED' && updatedIntervention.client.phone) {
+    if (statusChanged && updatedIntervention.status === 'COMPLETED' && updatedIntervention.client.phone) {
       await this.notifications.sendSms(
         updatedIntervention.client.phone,
         `Intervention terminée. Merci de votre confiance !`
@@ -421,14 +429,6 @@ export class InterventionsService {
       throw new NotFoundException(`Intervention #${id} introuvable.`);
     }
 
-    // Same lock as updateAsArtisan: proof of work cannot skip the quote, the
-    // payment or the dispute steps.
-    if (InterventionsService.ARTISAN_LOCKED_STATUSES.includes(intervention.status)) {
-      throw new BadRequestException(
-        "Cette mission ne peut plus être clôturée depuis l'application (déjà clôturée, devis, paiement ou litige en cours).",
-      );
-    }
-
     if (
       !Number.isFinite(proofData.latitude) ||
       !Number.isFinite(proofData.longitude) ||
@@ -440,10 +440,15 @@ export class InterventionsService {
     }
 
     // 2. Update database with "After" photo metadata and update status
-    const updatedIntervention = await this.prisma.intervention.update({
-      where: { id },
-      data: {
-        status: 'COMPLETED',
+    // Proof of work only closes a job that is in progress (the status table
+    // refuses every other status). The proof is written together with the status
+    // and never replaced afterwards.
+    const { row: updatedIntervention, changed } = await transitionStatusDetailed(this.prisma, {
+      id,
+      to: Status.COMPLETED,
+      actor: { kind: 'artisan', userId: artisanId },
+      dataOnChange: {
+        workCompletedAt: new Date(),
         afterPhotoUrl: proofData.photoUrl,
         afterPhotoLat: proofData.latitude,
         afterPhotoLng: proofData.longitude,
@@ -453,6 +458,10 @@ export class InterventionsService {
         client: { select: { id: true, name: true, phone: true } },
       },
     });
+
+    if (!changed) {
+      throw new ConflictException('Cette mission est déjà clôturée.');
+    }
 
     // 3. 🔔 Real-Time Notification to Admin/Client
     this.gateway.sendInterventionStatus(updatedIntervention);
@@ -501,9 +510,14 @@ export class InterventionsService {
   async submitFeedback(id: number, rawToken: string, dto: SubmitFeedbackDto) {
     const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
 
-    // Verify token matches AND the job is actually finished
+    // Verify token matches AND the job is actually finished (completed, being
+    // paid or invoiced: the customer can still rate it after the payment).
     const intervention = await this.prisma.intervention.findFirst({
-      where: { id, trackingToken: hashedToken, status: 'COMPLETED' }
+      where: {
+        id,
+        trackingToken: hashedToken,
+        status: { in: statusesInGroup('completed') as Status[] },
+      },
     });
 
     if (!intervention) {
@@ -532,7 +546,7 @@ export class InterventionsService {
       where: { 
         id, 
         trackingToken: hashedToken, 
-        status: { in: ['ACCEPTED', 'IN_PROGRESS'] } // Only allow during these states
+        status: { in: withAliases(['ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS']) as Status[] } // Only allow while the artisan is on the job
       }
     });
 
@@ -572,15 +586,15 @@ export class InterventionsService {
     const total = await this.prisma.intervention.count();
     
     const pending = await this.prisma.intervention.count({ 
-      where: { status: 'PENDING' } 
+      where: { status: { in: statusesInGroup('waiting') as Status[] } } 
     });
     
     const active = await this.prisma.intervention.count({ 
-      where: { status: { in: ['ACCEPTED', 'IN_PROGRESS'] } } 
+      where: { status: { in: statusesInGroup('active') as Status[] } } 
     });
     
     const completed = await this.prisma.intervention.count({ 
-      where: { status: 'COMPLETED' } 
+      where: { status: { in: statusesInGroup('completed') as Status[] } } 
     });
 
     const resolutionRate = total > 0 ? Math.round((completed / total) * 100) : 0;

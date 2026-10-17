@@ -7,6 +7,8 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateClientInterventionDto } from './dto/create-client-intervention.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { initialStatus } from '../intervention-workflow/intervention-status';
+import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
   InterventionEventType,
   Status,
@@ -69,7 +71,7 @@ export class ClientInterventionsService {
         buildingInfo: dto.buildingInfo,
         floor: dto.floor,
         apartmentCode: dto.apartmentCode,
-        status: Status.PENDING,
+        status: initialStatus() as Status,
         trackingToken: hashedToken,
       },
       include: {
@@ -240,21 +242,25 @@ export class ClientInterventionsService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id },
-      data: {
-        status: Status.CANCELLED,
-      },
+    // Only a job that has not started can be cancelled by the customer
+    // (the table in intervention-status.ts says which statuses those are).
+    const { row, changed } = await transitionStatusDetailed(this.prisma, {
+      id,
+      to: Status.CANCELLED,
+      actor: { kind: 'client', userId: clientId },
+      dataOnChange: { cancelledAt: new Date() },
     });
 
-    await this.events.create({
-      interventionId: id,
-      type: InterventionEventType.CANCELLED,
-      title: 'Demande annulée',
-      message: 'La demande a été annulée par le client.',
-      createdById: clientId,
-    });
+    if (changed) {
+      await this.events.create({
+        interventionId: id,
+        type: InterventionEventType.CANCELLED,
+        title: 'Demande annulée',
+        message: 'La demande a été annulée par le client.',
+        createdById: clientId,
+      });
+    }
 
-    return updated;
+    return row;
   }
 }

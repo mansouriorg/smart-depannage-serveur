@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -11,6 +10,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 
 import { ChangeWorkflowStatusDto } from './dto/change-workflow-status.dto';
 import { CreateTimelineEventDto } from './dto/create-timeline-event.dto';
+
+import {
+  StatusActor,
+  actorKindFor,
+  allowedNextStatuses,
+} from './intervention-status';
+import { transitionStatusDetailed } from './transition-status';
 
 import {
   InterventionEventType,
@@ -264,148 +270,6 @@ export class InterventionWorkflowService {
     }
   }
 
-  private getAllowedNextStatuses(currentStatus: Status): Status[] {
-    const map: Partial<Record<Status, Status[]>> = {
-      [Status.CREATED]: [
-        Status.WAITING_ADMIN_REVIEW,
-        Status.ADMIN_REVIEW,
-        Status.CANCELLED,
-      ],
-
-      [Status.PENDING]: [
-        Status.WAITING_ADMIN_REVIEW,
-        Status.ADMIN_REVIEW,
-        Status.QUOTE_SENT,
-        Status.CANCELLED,
-      ],
-
-      [Status.WAITING_ADMIN_REVIEW]: [
-        Status.QUOTE_SENT,
-        Status.ASSIGNED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ADMIN_REVIEW]: [
-        Status.QUOTE_SENT,
-        Status.ASSIGNED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.QUOTE_SENT]: [
-        Status.QUOTE_ACCEPTED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.QUOTE_ACCEPTED]: [
-        Status.ASSIGNED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ASSIGNED]: [
-        Status.ARTISAN_ACCEPTED,
-        Status.ACCEPTED,
-        Status.CANCELLED,
-      ],
-
-      [Status.ARTISAN_ACCEPTED]: [
-        Status.ARTISAN_ON_THE_WAY,
-        Status.ON_THE_WAY,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ACCEPTED]: [
-        Status.ARTISAN_ON_THE_WAY,
-        Status.ON_THE_WAY,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ARTISAN_ON_THE_WAY]: [
-        Status.ARTISAN_ARRIVED,
-        Status.ARRIVED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ON_THE_WAY]: [
-        Status.ARTISAN_ARRIVED,
-        Status.ARRIVED,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ARTISAN_ARRIVED]: [
-        Status.IN_PROGRESS,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.ARRIVED]: [
-        Status.IN_PROGRESS,
-        Status.CANCELLED,
-        Status.DISPUTED,
-      ],
-
-      [Status.IN_PROGRESS]: [
-        Status.WAITING_CLIENT_VALIDATION,
-        Status.COMPLETED,
-        Status.DISPUTED,
-      ],
-
-      [Status.WAITING_CLIENT_VALIDATION]: [
-        Status.COMPLETED,
-        Status.DISPUTED,
-      ],
-
-      [Status.COMPLETED]: [
-        Status.PAYMENT_PENDING,
-        Status.PAID,
-        Status.DISPUTED,
-      ],
-
-      [Status.PAYMENT_PENDING]: [
-        Status.PAID,
-        Status.DISPUTED,
-      ],
-
-      [Status.PAID]: [
-        Status.INVOICE_SENT,
-        Status.INVOICE_READY,
-        Status.DISPUTED,
-      ],
-
-      [Status.INVOICE_SENT]: [],
-      [Status.INVOICE_READY]: [],
-      [Status.CANCELLED]: [],
-      [Status.DISPUTED]: [
-        Status.WAITING_ADMIN_REVIEW,
-        Status.ADMIN_REVIEW,
-        Status.CANCELLED,
-      ],
-    };
-
-    return map[currentStatus] || [];
-  }
-
-  private assertTransitionAllowed(currentStatus: Status, nextStatus: Status) {
-    if (currentStatus === nextStatus) {
-      return;
-    }
-
-    const allowedStatuses = this.getAllowedNextStatuses(currentStatus);
-
-    if (!allowedStatuses.includes(nextStatus)) {
-      throw new BadRequestException(
-        `Transition non autorisée: ${currentStatus} -> ${nextStatus}.`,
-      );
-    }
-  }
-
   private async enrichEventsWithActors(events: any[]) {
     const actorIds = [
       ...new Set(
@@ -598,53 +462,107 @@ export class InterventionWorkflowService {
   ) {
     await this.checkAdminAccess(user);
 
-    const intervention = await this.getInterventionOrFail(interventionId);
-
-    this.assertTransitionAllowed(intervention.status, dto.status);
-
-    const updated = await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: dto.status,
-        lastStatusChangedAt: new Date(),
-        ...this.statusTimestampData(dto.status),
-      },
-      include: {
-        client: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-          },
-        },
-        artisan: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-          },
-        },
-        subService: true,
-      },
-    });
-
-    await this.createTimelineEvent({
+    return this.transition(
       interventionId,
-      type: this.eventTypeForStatus(dto.status),
-      title: this.eventTitleForStatus(dto.status),
-      message: dto.note || `Statut modifié: ${intervention.status} -> ${dto.status}`,
-      createdById: user.id,
-      metadata: {
-        previousStatus: intervention.status,
-        newStatus: dto.status,
-      },
-    });
+      dto.status,
+      { kind: 'staff', userId: user.id },
+      { note: dto.note },
+    );
+  }
 
-    return updated;
+  /**
+   * The workflow's front door for a status change (P1-01): checks the move
+   * against the table, writes it with the matching timestamp, and adds the
+   * timeline entry. Everything that moves a job goes through
+   * `transitionStatus` (see transition-status.ts); this is the version for
+   * callers that also want the timeline event.
+   */
+  async transition(
+    interventionId: number,
+    to: Status,
+    actor: StatusActor,
+    options: { note?: string; data?: Prisma.InterventionUpdateInput } = {},
+  ) {
+    const { row, previousStatus, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to,
+        actor,
+        data: (options.data ?? {}) as Record<string, unknown>,
+        dataOnChange: this.statusTimestampData(to) as Record<string, unknown>,
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          artisan: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          subService: true,
+        },
+      },
+    );
+
+    if (changed) {
+      await this.createTimelineEvent({
+        interventionId,
+        type: this.eventTypeForStatus(to),
+        title: this.eventTitleForStatus(to),
+        message:
+          options.note || `Statut modifié: ${previousStatus} -> ${to}`,
+        createdById: actor.userId,
+        metadata: {
+          previousStatus,
+          newStatus: to,
+        },
+      });
+    }
+
+    return row;
+  }
+
+  /** Statuses the caller may move this job to right now (for buttons and dropdowns). */
+  async getNextStatuses(user: AuthenticatedUser, interventionId: number) {
+    const intervention = await this.getInterventionOrFail(interventionId);
+    const kind = actorKindFor(user, intervention);
+
+    if (!kind) {
+      throw new ForbiddenException('Accès refusé à cette intervention.');
+    }
+
+    return {
+      interventionId,
+      status: intervention.status,
+      allowedNextStatuses: allowedNextStatuses(intervention.status, kind, {
+        hasArtisan: intervention.artisanId !== null && intervention.artisanId !== undefined,
+      }),
+    };
+  }
+
+  private async applyTransition(
+    interventionId: number,
+    to: Status,
+    createdById?: number,
+    data: Record<string, unknown> = {},
+  ) {
+    // Internal helpers: the calling service already knows who the user is, the
+    // table still decides which move is legal. They act as the back office.
+    return transitionStatusDetailed(this.prisma, {
+      id: interventionId,
+      to,
+      actor: { kind: 'staff', userId: createdById },
+      data,
+    });
   }
 
   // ==========================================================
@@ -658,7 +576,6 @@ export class InterventionWorkflowService {
         id: interventionId,
       },
       data: {
-        status: Status.CREATED,
         requestCreatedAt: new Date(),
         lastStatusChangedAt: new Date(),
       },
@@ -674,15 +591,8 @@ export class InterventionWorkflowService {
   }
 
   async markWaitingAdminReview(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.WAITING_ADMIN_REVIEW,
-        adminReviewStartedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.WAITING_ADMIN_REVIEW, createdById, {
+      adminReviewStartedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -699,15 +609,8 @@ export class InterventionWorkflowService {
     createdById?: number,
     amountTTC?: number,
   ) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.QUOTE_SENT,
-        quoteSentAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.QUOTE_SENT, createdById, {
+      quoteSentAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -729,15 +632,8 @@ export class InterventionWorkflowService {
   }
 
   async markQuoteAccepted(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.QUOTE_ACCEPTED,
-        quoteAcceptedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.QUOTE_ACCEPTED, createdById, {
+      quoteAcceptedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -754,16 +650,9 @@ export class InterventionWorkflowService {
     artisanId: number,
     createdById?: number,
   ) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        artisanId,
-        status: Status.ASSIGNED,
-        assignedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.ASSIGNED, createdById, {
+      artisanId,
+      assignedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -779,15 +668,8 @@ export class InterventionWorkflowService {
   }
 
   async markArtisanAccepted(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.ARTISAN_ACCEPTED,
-        artisanAcceptedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.ARTISAN_ACCEPTED, createdById, {
+      artisanAcceptedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -800,15 +682,8 @@ export class InterventionWorkflowService {
   }
 
   async markArtisanOnTheWay(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.ARTISAN_ON_THE_WAY,
-        artisanOnTheWayAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.ARTISAN_ON_THE_WAY, createdById, {
+      artisanOnTheWayAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -821,15 +696,8 @@ export class InterventionWorkflowService {
   }
 
   async markArtisanArrived(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.ARTISAN_ARRIVED,
-        artisanArrivedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.ARTISAN_ARRIVED, createdById, {
+      artisanArrivedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -861,15 +729,8 @@ export class InterventionWorkflowService {
   }
 
   async markWorkStarted(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.IN_PROGRESS,
-        workStartedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.IN_PROGRESS, createdById, {
+      workStartedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -904,15 +765,8 @@ export class InterventionWorkflowService {
     interventionId: number,
     createdById?: number,
   ) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.WAITING_CLIENT_VALIDATION,
-        waitingClientValidationAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.WAITING_CLIENT_VALIDATION, createdById, {
+      waitingClientValidationAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -925,16 +779,9 @@ export class InterventionWorkflowService {
   }
 
   async markWorkCompleted(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.COMPLETED,
-        workCompletedAt: new Date(),
-        clientValidatedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.COMPLETED, createdById, {
+      workCompletedAt: new Date(),
+      clientValidatedAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -947,15 +794,8 @@ export class InterventionWorkflowService {
   }
 
   async markPaymentPending(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.PAYMENT_PENDING,
-        paymentPendingAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.PAYMENT_PENDING, createdById, {
+      paymentPendingAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -972,15 +812,8 @@ export class InterventionWorkflowService {
     createdById?: number,
     amount?: number,
   ) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.PAID,
-        paidAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.PAID, createdById, {
+      paidAt: new Date(),
     });
 
     return this.createTimelineEvent({
@@ -1002,15 +835,8 @@ export class InterventionWorkflowService {
   }
 
   async markInvoiceSent(interventionId: number, createdById?: number) {
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.INVOICE_SENT,
-        invoiceSentAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await this.applyTransition(interventionId, Status.INVOICE_SENT, createdById, {
+      invoiceSentAt: new Date(),
     });
 
     return this.createTimelineEvent({

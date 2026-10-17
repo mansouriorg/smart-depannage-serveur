@@ -84,6 +84,23 @@ describe('validateEnv', () => {
   });
 });
 
+describe('STATUS_STORAGE', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    JWT_ACCESS_SECRET: 'a'.repeat(40),
+    JWT_REFRESH_SECRET: 'b'.repeat(40),
+    FRONTEND_URL: 'https://www.example.tn',
+  };
+
+  it.each([undefined, '', 'legacy', 'canonical', 'CANONICAL'])('accepts %p', (value) => {
+    expect(() => validateEnv({ ...base, STATUS_STORAGE: value })).not.toThrow();
+  });
+
+  it('refuses anything else, so a typo cannot silently keep the old names', () => {
+    expect(() => validateEnv({ ...base, STATUS_STORAGE: 'cannonical' })).toThrow(/STATUS_STORAGE/);
+  });
+});
+
 describe('parseTrustProxy', () => {
   it.each([undefined, '', '  ', 'false', 'FALSE', '0'])(
     'does not trust any proxy for %p',

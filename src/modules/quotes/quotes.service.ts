@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 
 import {
   InterventionEventType,
@@ -303,15 +304,12 @@ export class QuotesService {
       include: this.quoteInclude,
     });
 
-    await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        status: Status.QUOTE_SENT,
-        quoteSentAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.QUOTE_SENT,
+      actor: { kind: 'system' },
+      data: { quoteSentAt: new Date() },
+      soft: true,
     });
 
     await this.createEvent({
@@ -479,15 +477,12 @@ export class QuotesService {
         include: this.quoteInclude,
       });
 
-      await tx.intervention.update({
-        where: {
-          id: quote.interventionId,
-        },
-        data: {
-          status: Status.QUOTE_SENT,
-          quoteSentAt: new Date(),
-          lastStatusChangedAt: new Date(),
-        },
+      await transitionStatus(tx, {
+        id: quote.interventionId,
+        to: Status.QUOTE_SENT,
+        actor: { kind: 'system' },
+        data: { quoteSentAt: new Date() },
+        soft: true,
       });
 
       return sentQuote;
@@ -614,15 +609,12 @@ export class QuotesService {
         include: this.quoteInclude,
       });
 
-      await tx.intervention.update({
-        where: {
-          id: quote.interventionId,
-        },
-        data: {
-          status: Status.QUOTE_ACCEPTED,
-          quoteAcceptedAt: new Date(),
-          lastStatusChangedAt: new Date(),
-        },
+      await transitionStatus(tx, {
+        id: quote.interventionId,
+        to: Status.QUOTE_ACCEPTED,
+        actor: { kind: 'client', userId: clientId },
+        data: { quoteAcceptedAt: new Date() },
+        soft: true,
       });
 
       return acceptedQuote;

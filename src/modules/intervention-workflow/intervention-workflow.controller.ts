@@ -67,6 +67,29 @@ export class InterventionWorkflowController {
   }
 
   // ==========================================================
+  // WHAT CAN HAPPEN NEXT
+  // The statuses the caller may move this job to right now. Buttons and
+  // dropdowns in the apps offer exactly these (P1-01).
+  // ==========================================================
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    Role.CLIENT,
+    Role.ARTISAN,
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+  )
+  @Get(':id/workflow/next-statuses')
+  getNextStatuses(
+    @CurrentUser() user: { id: number; role: Role },
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.workflowService.getNextStatuses(user, id);
+  }
+
+  // ==========================================================
   // ADMIN STATUS TRANSITION
   // ==========================================================
 

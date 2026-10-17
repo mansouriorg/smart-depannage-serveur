@@ -8,6 +8,7 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 
 import {
   AppointmentStatus,
@@ -1157,16 +1158,11 @@ export class MatchingService {
       }
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: {
-        id: interventionId,
-      },
-      data: {
-        artisanId,
-        status: Status.ASSIGNED,
-        assignedAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    const updated = await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.ASSIGNED,
+      actor: { kind: 'staff', userId },
+      data: { artisanId, assignedAt: new Date() },
       include: {
         client: {
           select: {

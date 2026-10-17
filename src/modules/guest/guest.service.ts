@@ -17,6 +17,8 @@ import {
   RateLimitService,
 } from '../../common/rate-limit/rate-limit.service';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { initialStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
@@ -270,7 +272,7 @@ export class GuestService {
         floor: dto.floor,
         apartmentCode: dto.apartmentCode,
 
-        status: Status.PENDING,
+        status: initialStatus() as Status,
         trackingToken: trackingTokenHash,
       },
       include: {
@@ -389,11 +391,14 @@ export class GuestService {
       },
     });
 
-    await this.prisma.intervention.update({
-      where: { id: intervention.id },
-      data: {
-        status: Status.QUOTE_ACCEPTED,
-      },
+    // The customer accepted a quote: the job moves on if it is waiting for it.
+    // If it is somewhere else (already assigned, say) the status is left alone.
+    await transitionStatus(this.prisma, {
+      id: intervention.id,
+      to: Status.QUOTE_ACCEPTED,
+      actor: { kind: 'client', userId: intervention.clientId },
+      data: { quoteAcceptedAt: new Date() },
+      soft: true,
     });
 
     await this.events.create({
@@ -532,11 +537,14 @@ export class GuestService {
       },
     });
 
-    await this.prisma.intervention.update({
-      where: { id: intervention.id },
-      data: {
-        status: Status.PAYMENT_PENDING,
-      },
+    // A payment request must not overwrite a job that is still being worked on:
+    // soft, so the payment is recorded and the status only moves when it should.
+    await transitionStatus(this.prisma, {
+      id: intervention.id,
+      to: Status.PAYMENT_PENDING,
+      actor: { kind: 'client', userId: intervention.clientId },
+      data: { paymentPendingAt: new Date() },
+      soft: true,
     });
 
     await this.events.create({
@@ -575,11 +583,9 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    if (
-      intervention.status !== Status.COMPLETED &&
-      intervention.status !== Status.PAID &&
-      intervention.status !== Status.INVOICE_READY
-    ) {
+    // Finished jobs, whichever spelling of the status the row uses (an invoiced
+    // job is INVOICE_SENT, which the old check did not know about).
+    if (!statusesInGroup('completed').includes(intervention.status)) {
       throw new BadRequestException(
         'Vous pouvez laisser un avis uniquement après la fin de l’intervention.',
       );

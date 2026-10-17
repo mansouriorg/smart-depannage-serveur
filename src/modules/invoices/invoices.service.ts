@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 
 import {
@@ -455,15 +456,12 @@ export class InvoicesService {
         });
       }
 
-      await tx.intervention.update({
-        where: {
-          id: interventionId,
-        },
-        data: {
-          status: Status.INVOICE_SENT,
-          invoiceSentAt: new Date(),
-          lastStatusChangedAt: new Date(),
-        },
+      await transitionStatus(tx, {
+        id: interventionId,
+        to: Status.INVOICE_SENT,
+        actor: { kind: 'system' },
+        data: { invoiceSentAt: new Date() },
+        soft: true,
       });
 
       return created;
@@ -720,15 +718,12 @@ Cordialement.`;
       include: this.invoiceInclude,
     });
 
-    await this.prisma.intervention.update({
-      where: {
-        id: invoice.interventionId,
-      },
-      data: {
-        status: Status.INVOICE_SENT,
-        invoiceSentAt: new Date(),
-        lastStatusChangedAt: new Date(),
-      },
+    await transitionStatus(this.prisma, {
+      id: invoice.interventionId,
+      to: Status.INVOICE_SENT,
+      actor: { kind: 'system', userId: user.id },
+      data: { invoiceSentAt: new Date() },
+      soft: true,
     });
 
     await this.createEvent({

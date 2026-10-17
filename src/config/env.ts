@@ -16,6 +16,10 @@
  *                       (admin dashboard, ...)
  *   JWT_ACCESS_EXPIRES_IN / JWT_REFRESH_EXPIRES_IN
  *   NODE_ENV            "production" enables the stricter checks below
+ *   STATUS_STORAGE      "legacy" (default) or "canonical": which spelling of the
+ *                       intervention statuses is written to the database (P1-01).
+ *                       Keep "legacy" until the admin, mobile and website apps use
+ *                       the new names; see scripts/migrate-status-vocabulary.ts.
  */
 
 export const REQUIRED_ENV_VARS = [
@@ -105,6 +109,12 @@ export function validateEnv(
         'FRONTEND_URL is not a valid URL (example: https://www.example.tn).',
       );
     }
+  }
+
+  const statusStorage = readString(rawEnv, 'STATUS_STORAGE').toLowerCase();
+
+  if (statusStorage && statusStorage !== 'legacy' && statusStorage !== 'canonical') {
+    errors.push('STATUS_STORAGE must be "legacy" or "canonical" (or empty).');
   }
 
   if (errors.length > 0) {

@@ -11,6 +11,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { statusesInGroup } from '../intervention-workflow/intervention-status';
+import {
+  transitionStatus,
+  transitionStatusDetailed,
+} from '../intervention-workflow/transition-status';
 
 import {
   AdminContactDto,
@@ -324,7 +329,7 @@ export class AdminService {
         where: {
           ...baseWhere,
           status: {
-            in: [Status.PENDING, Status.ADMIN_REVIEW, Status.QUOTE_SENT],
+            in: statusesInGroup('waiting') as Status[],
           },
         },
       }),
@@ -333,14 +338,7 @@ export class AdminService {
         where: {
           ...baseWhere,
           status: {
-            in: [
-              Status.ASSIGNED,
-              Status.ACCEPTED,
-              Status.ON_THE_WAY,
-              Status.ARRIVED,
-              Status.IN_PROGRESS,
-              Status.PAYMENT_PENDING,
-            ],
+            in: statusesInGroup('active') as Status[],
           },
         },
       }),
@@ -349,7 +347,7 @@ export class AdminService {
         where: {
           ...baseWhere,
           status: {
-            in: [Status.COMPLETED, Status.PAID, Status.INVOICE_READY],
+            in: statusesInGroup('completed') as Status[],
           },
         },
       }),
@@ -644,13 +642,13 @@ export class AdminService {
       throw new BadRequestException('Cet artisan n’est pas encore approuvé.');
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        artisanId: dto.artisanId,
-        status: Status.ASSIGNED,
-        lastStatusChangedAt: new Date(),
-      },
+    // Allowed from the dispatcher queue and for re-assigning a job that has not
+    // started; the status table in intervention-status.ts decides.
+    const updated = await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.ASSIGNED,
+      actor: { kind: 'staff', userId: adminId },
+      data: { artisanId: dto.artisanId, assignedAt: new Date() },
       include: this.interventionInclude,
     });
 
@@ -691,22 +689,25 @@ export class AdminService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: dto.status,
-        lastStatusChangedAt: new Date(),
+    const { row: updated, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to: dto.status,
+        actor: { kind: 'staff', userId: adminId },
+        include: this.interventionInclude,
       },
-      include: this.interventionInclude,
-    });
+    );
 
-    await this.createInterventionEvent({
-      interventionId,
-      type: InterventionEventType.ADMIN_REVIEWING,
-      title: 'Statut modifié par admin',
-      message: dto.note || `Nouveau statut: ${dto.status}`,
-      createdById: adminId,
-    });
+    if (changed) {
+      await this.createInterventionEvent({
+        interventionId,
+        type: InterventionEventType.ADMIN_REVIEWING,
+        title: 'Statut modifié par admin',
+        message: dto.note || `Nouveau statut: ${dto.status}`,
+        createdById: adminId,
+      });
+    }
 
     return updated;
   }
@@ -724,25 +725,30 @@ export class AdminService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: Status.CANCELLED,
-        cancelledReason: dto.reason,
-        cancelledById: adminId,
-        cancelledAt: new Date(),
-        lastStatusChangedAt: new Date(),
+    const { row: updated, changed } = await transitionStatusDetailed(
+      this.prisma,
+      {
+        id: interventionId,
+        to: Status.CANCELLED,
+        actor: { kind: 'staff', userId: adminId },
+        dataOnChange: {
+          cancelledReason: dto.reason,
+          cancelledById: adminId,
+          cancelledAt: new Date(),
+        },
+        include: this.interventionInclude,
       },
-      include: this.interventionInclude,
-    });
+    );
 
-    await this.createInterventionEvent({
-      interventionId,
-      type: InterventionEventType.CANCELLED,
-      title: 'Intervention annulée',
-      message: dto.reason,
-      createdById: adminId,
-    });
+    if (changed) {
+      await this.createInterventionEvent({
+        interventionId,
+        type: InterventionEventType.CANCELLED,
+        title: 'Intervention annulée',
+        message: dto.reason,
+        createdById: adminId,
+      });
+    }
 
     return updated;
   }
@@ -813,12 +819,12 @@ export class AdminService {
       },
     });
 
-    await this.prisma.intervention.update({
-      where: { id: interventionId },
-      data: {
-        status: Status.QUOTE_SENT,
-        lastStatusChangedAt: new Date(),
-      },
+    await transitionStatus(this.prisma, {
+      id: interventionId,
+      to: Status.QUOTE_SENT,
+      actor: { kind: 'staff', userId: adminId },
+      data: { quoteSentAt: new Date() },
+      soft: true,
     });
 
     await this.createInterventionEvent({
