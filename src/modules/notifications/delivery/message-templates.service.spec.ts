@@ -84,6 +84,31 @@ describe('MessageTemplatesService', () => {
     expect((await service.render('guest.activation_email', 'EMAIL', {}, fallback)).fromTemplate).toBe(false);
   });
 
+  it('the tracking messages must keep the link (P1-04); a text with it is used with the request number', async () => {
+    const { service } = make({
+      'guest.tracking_sms': { key: 'guest.tracking_sms', type: 'SMS', isActive: true, content: 'Merci de patienter.' },
+      'guest.tracking_email': {
+        key: 'guest.tracking_email',
+        type: 'EMAIL',
+        isActive: true,
+        subject: 'Demande n°{{reference}}',
+        content: 'Bonjour {{name}}, suivez ici: {{link}}',
+      },
+    });
+
+    const sms = await service.render('guest.tracking_sms', 'SMS', { link: 'https://t.tn/x' }, { content: 'Texte' });
+    const email = await service.render(
+      'guest.tracking_email',
+      'EMAIL',
+      { name: 'Sami', link: 'https://t.tn/x', reference: 12 },
+      fallback,
+    );
+
+    expect(sms).toEqual({ subject: undefined, content: 'Texte', fromTemplate: false });
+    expect(email.content).toBe('Bonjour Sami, suivez ici: https://t.tn/x');
+    expect(email.subject).toBe('Demande n°12');
+  });
+
   it('other templates may leave placeholders out', async () => {
     const { service } = make({ 'QUOTE_SENT.EMAIL': { key: 'QUOTE_SENT.EMAIL', type: 'EMAIL', isActive: true, content: 'Nouveau devis.' } });
 

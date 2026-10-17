@@ -1,4 +1,4 @@
-import { IsInt, Min, Max, IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsInt, Min, Max, IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class SubmitFeedbackDto {
   @IsInt({ message: 'La note doit être un nombre entier.' })
@@ -15,5 +15,6 @@ export class SubmitFeedbackDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   feedbackNotes?: string;
 }

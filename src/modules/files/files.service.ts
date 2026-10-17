@@ -13,6 +13,7 @@ import sharp from 'sharp';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { Semaphore } from '../../common/concurrency/limits';
 
 import {
   ArtisanDocumentStatus,
@@ -38,6 +39,12 @@ type LocalUploadOptions = {
   allowedMimeTypes: string[];
   maxSizeMb: number;
   compressImage?: boolean;
+  /**
+   * Most pixels an image may have once decoded. A small file can unpack to an
+   * enormous picture and use up the server's memory; the default of the image
+   * library is far above any phone photo, so a public upload sets its own.
+   */
+  maxInputPixels?: number;
 };
 
 type StoredLocalFile = {
@@ -56,6 +63,14 @@ type StoredLocalFile = {
 @Injectable()
 export class FilesService {
   private readonly uploadRoot = path.join(process.cwd(), 'uploads');
+
+  /**
+   * Decoding a large picture takes a second and a few hundred MB. Pictures from
+   * visitors with no account are decoded two at a time, whatever the number of
+   * calls, so a handful of links cannot slow the whole server (logins hash on the
+   * same worker threads).
+   */
+  private readonly guestDecodeSlots = new Semaphore(2);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -148,6 +163,24 @@ export class FilesService {
     return crypto.createHash('sha256').update(buffer).digest('hex');
   }
 
+  /**
+   * What the first bytes of the file say it is. The type a browser or an app
+   * declares is only a claim: an upload that says "image/jpeg" and carries
+   * something else must not reach the image decoder.
+   */
+  private hasImageSignature(buffer: Buffer): boolean {
+    const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    const isPng =
+      buffer.length > 8 &&
+      buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const isWebp =
+      buffer.length > 12 &&
+      buffer.subarray(0, 4).toString('latin1') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('latin1') === 'WEBP';
+
+    return isJpeg || isPng || isWebp;
+  }
+
   private validateFile(
     file: Express.Multer.File,
     allowedMimeTypes: string[],
@@ -174,11 +207,16 @@ export class FilesService {
     if (!file.buffer?.length) {
       throw new BadRequestException('Le fichier est vide ou invalide.');
     }
+
+    if (this.isImage(file.mimetype) && !this.hasImageSignature(file.buffer)) {
+      throw new BadRequestException("Le fichier n'est pas une image valide (JPEG, PNG ou WebP).");
+    }
   }
 
   private async processImageIfNeeded(
     file: Express.Multer.File,
     compressImage: boolean,
+    maxInputPixels?: number,
   ): Promise<{
     buffer: Buffer;
     mimeType: string;
@@ -192,36 +230,43 @@ export class FilesService {
       };
     }
 
-    const metadata = await sharp(file.buffer).metadata();
+    const input = maxInputPixels ? { limitInputPixels: maxInputPixels } : {};
 
-    if (!compressImage) {
+    try {
+      const metadata = await sharp(file.buffer, input).metadata();
+
+      if (!compressImage) {
+        return {
+          buffer: file.buffer,
+          mimeType: file.mimetype,
+          width: metadata.width,
+          height: metadata.height,
+        };
+      }
+
+      const compressed = await sharp(file.buffer, input)
+        .rotate()
+        .resize({
+          width: 1600,
+          withoutEnlargement: true,
+        })
+        .webp({
+          quality: 82,
+        })
+        .toBuffer();
+
+      const compressedMetadata = await sharp(compressed).metadata();
+
       return {
-        buffer: file.buffer,
-        mimeType: file.mimetype,
-        width: metadata.width,
-        height: metadata.height,
+        buffer: compressed,
+        mimeType: 'image/webp',
+        width: compressedMetadata.width,
+        height: compressedMetadata.height,
       };
+    } catch {
+      // A damaged picture, or one with more pixels than allowed: a refusal, not a server error.
+      throw new BadRequestException('Image illisible, corrompue ou trop grande.');
     }
-
-    const compressed = await sharp(file.buffer)
-      .rotate()
-      .resize({
-        width: 1600,
-        withoutEnlargement: true,
-      })
-      .webp({
-        quality: 82,
-      })
-      .toBuffer();
-
-    const compressedMetadata = await sharp(compressed).metadata();
-
-    return {
-      buffer: compressed,
-      mimeType: 'image/webp',
-      width: compressedMetadata.width,
-      height: compressedMetadata.height,
-    };
   }
 
   private async storeLocalFile(
@@ -238,6 +283,7 @@ export class FilesService {
     const processed = await this.processImageIfNeeded(
       file,
       options.compressImage ?? true,
+      options.maxInputPixels,
     );
 
     const fileName = this.generateSecureFileName(processed.mimeType);
@@ -527,6 +573,60 @@ export class FilesService {
       title: 'Photo client ajoutée',
       message: 'Une photo du problème a été ajoutée.',
       createdById: user.id,
+      metadata: {
+        fileId: asset.id,
+        purpose: asset.purpose,
+      },
+    });
+
+    return asset;
+  }
+
+  // ==========================================================
+  // Photo from the holder of a tracking link (request made without an account)
+  // ==========================================================
+
+  /**
+   * The caller (GuestService) has already checked the tracking link, the status
+   * of the request and how many photos it holds; this stores one picture.
+   * The picture is re-encoded (which drops its metadata, GPS position included)
+   * and kept private: staff read it through /files/:id/download.
+   */
+  async uploadGuestDamagePhoto(
+    intervention: { id: number; clientId: number },
+    file: Express.Multer.File,
+  ) {
+    const asset = await this.guestDecodeSlots.run(() =>
+      this.createFileAsset({ id: intervention.clientId, role: Role.CLIENT }, file, {
+        purpose: FileAssetPurpose.CLIENT_DAMAGE_PHOTO,
+        visibility: FileAssetVisibility.PRIVATE,
+        entityType: 'INTERVENTION',
+        entityId: intervention.id,
+        allowedMimeTypes: this.imageMimeTypes,
+        maxSizeMb: 5,
+        compressImage: true,
+        // 30 million pixels: a 24 megapixel camera is fine, a 50 megapixel decode is not worth the memory.
+        maxInputPixels: 30_000_000,
+      }),
+    );
+
+    await this.prisma.intervention.update({
+      where: {
+        id: intervention.id,
+      },
+      data: {
+        photos: {
+          push: asset.publicUrl || `/files/${asset.id}/download`,
+        },
+      },
+    });
+
+    await this.createEvent({
+      interventionId: intervention.id,
+      type: InterventionEventType.STATUS_CHANGED,
+      title: 'Photo client ajoutée',
+      message: 'Une photo du problème a été ajoutée.',
+      createdById: intervention.clientId,
       metadata: {
         fileId: asset.id,
         purpose: asset.purpose,

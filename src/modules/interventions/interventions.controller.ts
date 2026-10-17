@@ -264,6 +264,8 @@ export class InterventionsController {
   // ==========================================================
   // No @UseGuards here! The token provides the security.
   @Patch('track/:id/feedback')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'track-feedback', limit: 20, windowMs: 60 * 60_000 })
   async submitFeedback(
     @Param('id') id: string,
     @Query('token') token: string,
@@ -279,6 +281,8 @@ export class InterventionsController {
   // 10. 🚨 PUBLIC SECURE TRACKING: Report an active issue
   // ==========================================================
   @Post('track/:id/issue')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'track-issue', limit: 10, windowMs: 60 * 60_000 })
   async reportActiveIssue(
     @Param('id') id: string,
     @Query('token') token: string,

@@ -32,6 +32,9 @@ const MUST_CONTAIN_ONE_OF: Record<string, string[]> = {
   // "you own this e-mail" must not also travel by SMS (P1-03, step 4).
   'guest.activation_sms': ['code'],
   'auth.email_change': ['link'],
+  // The whole point of these two is the customer's link to follow the request (P1-04).
+  'guest.tracking_sms': ['link'],
+  'guest.tracking_email': ['link'],
 };
 
 function mentions(text: string, placeholder: string): boolean {
@@ -46,6 +49,7 @@ function mentions(text: string, placeholder: string): boolean {
  *   auth.password_setup  guest.activation_email  guest.activation_sms
  *   auth.email_change (link to the NEW address)  auth.email_changed_notice (to the OLD one)
  *   auth.phone_changed_notice  auth.phone_released_notice
+ *   guest.tracking_sms  guest.tracking_email  (the link to follow a request made with no account)
  * A key with no active template of the right type uses the built-in text, so
  * an empty table changes nothing.
  */

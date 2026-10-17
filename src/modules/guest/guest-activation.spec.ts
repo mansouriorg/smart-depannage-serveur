@@ -41,7 +41,7 @@ async function makeWorld() {
     },
   };
 
-  const service = new GuestService(prisma, notifications, { create: async () => ({}) } as any, new RateLimitService());
+  const service = new GuestService(prisma, notifications, { create: async () => ({}) } as any, new RateLimitService(), {} as any, {} as any, {} as any);
   const password = await argon2.hash('Unusable-Guest-Secret');
 
   return { users, authToken, service, sentEmails, sentSms, password };

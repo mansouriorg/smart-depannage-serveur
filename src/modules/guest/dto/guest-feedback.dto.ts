@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -23,5 +24,6 @@ export class GuestFeedbackDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   feedbackNotes?: string;
 }

@@ -16,12 +16,18 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../../generated/prisma/client';
+import {
+  RateLimit,
+  RateLimitGuard,
+} from '../../common/rate-limit/rate-limit.guard';
 
 @Controller()
 export class ClientInterventionsController {
   constructor(private readonly service: ClientInterventionsService) {}
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  // Every request alerts the whole back office (P1-04): not unlimited.
+  @UseGuards(JwtAuthGuard, RolesGuard, RateLimitGuard)
+  @RateLimit({ name: 'client-create', limit: 60, windowMs: 60 * 60_000 })
   @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
   @Post('client/interventions')
   create(

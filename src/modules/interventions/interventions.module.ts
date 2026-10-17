@@ -4,6 +4,7 @@ import { getJwtAccessSecret } from '../../config/env';
 import { InterventionsService } from './interventions.service';
 import { InterventionsController } from './interventions.controller';
 import { InterventionsGateway } from './interventions.gateway';
+import { StaffAlertsService } from './staff-alerts.service';
 import { NotificationsModule } from '../notifications/notifications.module'; // 1. Import the module
 
 @Module({
@@ -17,8 +18,11 @@ import { NotificationsModule } from '../notifications/notifications.module'; // 
   controllers: [InterventionsController],
   providers: [
     InterventionsService, 
-    InterventionsGateway
+    InterventionsGateway,
+    StaffAlertsService,
   ],
-  exports: [InterventionsService], 
+  // StaffAlertsService is what every route that makes a request calls (P1-04),
+  // including the ones that live in other modules (guest, client-interventions).
+  exports: [InterventionsService, StaffAlertsService], 
 })
 export class InterventionsModule {}

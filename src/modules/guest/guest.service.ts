@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -34,6 +36,14 @@ import {
 import { isDeliverableEmail, isMadeUpGuestEmail } from '../notifications/delivery/contact';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { StaffAlertsService } from '../interventions/staff-alerts.service';
+import { withoutStaffFields } from '../interventions/intervention-redaction';
+import { FilesService } from '../files/files.service';
+import { ComplaintsService } from '../complaints/complaints.service';
+import { buildTrackingUrl } from '../../common/links/tracking-url';
+import { notesAfterReview } from '../interventions/feedback-notes';
+import { greetingName } from './greeting-name';
+import { KeyedLock } from '../../common/concurrency/limits';
 import { initialStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 
@@ -41,6 +51,7 @@ import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto'
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
 import { GuestPaymentDto } from './dto/guest-payment.dto';
 import { GuestFeedbackDto } from './dto/guest-feedback.dto';
+import { GuestProblemReportDto } from './dto/guest-problem-report.dto';
 import { RequestGuestActivationDto } from './dto/request-guest-activation.dto';
 import { ActivateGuestAccountDto } from './dto/activate-guest-account.dto';
 
@@ -76,11 +87,17 @@ function guestAgreesWithForm(
 export class GuestService {
   private readonly logger = new Logger(GuestService.name);
 
+  /** Photos of one request are added one call at a time (the cap is read, then used). */
+  private readonly photoLock = new KeyedLock();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
     private readonly rateLimit: RateLimitService,
+    private readonly staffAlerts: StaffAlertsService,
+    private readonly files: FilesService,
+    private readonly complaints: ComplaintsService,
   ) {}
 
   // ==========================================================
@@ -322,8 +339,6 @@ export class GuestService {
         latitude: dto.latitude,
         longitude: dto.longitude,
 
-        photos: dto.photos || [],
-
         preferredDate: dto.preferredDate
           ? new Date(dto.preferredDate)
           : undefined,
@@ -355,7 +370,9 @@ export class GuestService {
       },
     });
 
-    await this.events.create({
+    // The request exists: a timeline line that cannot be written must not stop the
+    // alert and the customer's link (the visitor would submit it a second time).
+    await this.recordEvent({
       interventionId: intervention.id,
       type: InterventionEventType.REQUEST_CREATED,
       title: 'Demande créée',
@@ -363,41 +380,104 @@ export class GuestService {
       createdById: guestUser.id,
     });
 
-    await this.events.create({
+    await this.recordEvent({
       interventionId: intervention.id,
       type: InterventionEventType.ADMIN_REVIEWING,
       title: 'Analyse par notre équipe',
       message: 'Un administrateur va examiner votre demande.',
     });
 
-    const trackingUrl = `${this.getFrontendUrl()}/guest/tracking/${intervention.id}?token=${rawTrackingToken}`;
+    // The back office hears about it at once: the open dashboards, each staff
+    // member's notifications and, when ADMIN_ALERT_PHONE is set, a text. Never throws.
+    await this.staffAlerts.newRequest(intervention);
 
-    // Anyone can type any number or address here: each destination gets a few
-    // messages per hour at most, whatever the visitor does.
-    if (dto.contactPhone && this.rateLimit.allowSendTo('sms', dto.contactPhone)) {
-      await this.notifications.sendSms(
-        dto.contactPhone,
-        `Smart Dépannage: votre demande est créée. Suivi sécurisé: ${trackingUrl}`,
-        { userId: guestUser.id },
-      );
-    }
+    const trackingUrl = buildTrackingUrl(intervention.id, rawTrackingToken);
 
-    if (dto.contactEmail && this.rateLimit.allowSendTo('email', dto.contactEmail)) {
-      await this.notifications.sendEmail(
-        dto.contactEmail,
-        'Votre demande Smart Dépannage',
-        `Votre demande a été créée. Suivi sécurisé: ${trackingUrl}`,
-        { userId: guestUser.id },
-      );
-    }
+    await this.sendTrackingLink(guestUser.id, intervention.id, dto, trackingUrl);
+
+    // Without the staff columns (internal notes, hash of the tracking token) and
+    // without the profile or its id: a visitor who types somebody else's number
+    // must not be told whose profile it is (name, e-mail, id), nor whether one exists.
+    const { client: _profile, clientId: _owner, ...publicRequest } = withoutStaffFields(intervention);
 
     return {
-      intervention,
+      intervention: publicRequest,
       trackingUrl,
       rawTrackingToken,
-      message:
-        'Demande créée avec succès. Le lien de suivi a été envoyé au client.',
+      // The link is also sent by SMS and e-mail when that is possible, but the
+      // visitor is not told whether it was: this answer carries it either way.
+      message: 'Demande créée avec succès. Conservez le lien de suivi.',
     };
+  }
+
+  /** A timeline line is nice to have: failing to write one is logged, never thrown. */
+  private async recordEvent(event: Parameters<InterventionEventsService['create']>[0]) {
+    try {
+      await this.events.create(event);
+    } catch (error: any) {
+      this.logger.warn(`Timeline line not written (${describeError(error)})`);
+    }
+  }
+
+  /**
+   * The customer's link, by SMS and by e-mail when an address was given.
+   *
+   * Anyone can type any number or address here: each destination gets a few
+   * messages per hour at most, whatever the visitor does, and a destination that
+   * is over its share is skipped without a word (the answer to the request
+   * carries the link anyway). An address that cannot receive mail (made up) is
+   * skipped. Nothing here may fail the request: it already exists, and an error
+   * now would send the customer to submit it a second time.
+   */
+  private async sendTrackingLink(
+    guestUserId: number,
+    interventionId: number,
+    dto: { contactName?: string; contactPhone?: string; contactEmail?: string },
+    trackingUrl: string,
+  ) {
+    // The name is typed by the visitor and ends up in an e-mail sent to somebody else's
+    // mailbox (and in the editable templates): a name or nothing (see greetingName).
+    const name = greetingName(dto.contactName);
+    const greeting = name ? `Bonjour ${name},` : 'Bonjour,';
+    const vars = { name, link: trackingUrl, reference: interventionId };
+
+    // A link that is still unsent after a day is no use to somebody who was told to wait.
+    const lifetime = 24 * 60 * 60 * 1000;
+
+    // One channel failing must not keep the other from going out.
+    try {
+      if (dto.contactPhone && this.rateLimit.allowSendTo('sms', dto.contactPhone)) {
+        // "#" and not "n°": a character outside the basic SMS alphabet turns the whole
+        // message into the 70-character kind, and the bill goes from 2 messages to 3.
+        await this.notifications.sendSms(
+          dto.contactPhone,
+          `Smart Dépannage: votre demande #${interventionId} est enregistrée. Suivez-la ici: ${trackingUrl}`,
+          { userId: guestUserId, validForMs: lifetime, template: { key: 'guest.tracking_sms', vars } },
+        );
+      }
+    } catch (error: any) {
+      // Kind of error only: the arguments are a phone number and the link.
+      this.logger.error(`Tracking link not sent by SMS (${describeError(error)})`);
+    }
+
+    try {
+      if (
+        dto.contactEmail &&
+        isDeliverableEmail(dto.contactEmail) &&
+        this.rateLimit.allowSendTo('email', dto.contactEmail)
+      ) {
+        await this.notifications.sendEmail(
+          dto.contactEmail,
+          'Votre demande Smart Dépannage',
+          `${greeting}\n\nVotre demande n°${interventionId} est enregistrée. ` +
+            `Suivez son avancement avec ce lien personnel (ne le partagez pas) :\n${trackingUrl}\n\n` +
+            `L'équipe Smart Dépannage`,
+          { userId: guestUserId, validForMs: lifetime, template: { key: 'guest.tracking_email', vars } },
+        );
+      }
+    } catch (error: any) {
+      this.logger.error(`Tracking link not sent by e-mail (${describeError(error)})`);
+    }
   }
 
   // ==========================================================
@@ -409,6 +489,198 @@ export class GuestService {
       interventionId,
       rawTrackingToken,
     );
+  }
+
+  // ==========================================================
+  // 4b. PHOTOS FROM THE TRACKING LINK (P1-04)
+  // ==========================================================
+
+  /** Photos one request may hold in all, the ones sent before included. */
+  static readonly MAX_PHOTOS = 6;
+
+  /** Photos one call may carry (the controller's upload limit says the same). */
+  static readonly MAX_PHOTOS_PER_CALL = 5;
+
+  /**
+   * The request that goes with this link, without the heavy tracking answer
+   * (events, quotes, payments...): only what a photo or a report needs.
+   */
+  private async findForLink(interventionId: number, rawTrackingToken: string) {
+    const intervention = await this.prisma.intervention.findFirst({
+      where: {
+        id: interventionId,
+        trackingToken: this.hashToken(String(rawTrackingToken ?? '')),
+      },
+      select: { id: true, clientId: true, status: true, photos: true },
+    });
+
+    if (!intervention) {
+      throw new NotFoundException('Lien de suivi invalide ou expiré.');
+    }
+
+    return intervention;
+  }
+
+  /**
+   * Pictures of the problem, added after the request was made. The link is the
+   * only proof of who is asking, so before anything is stored: the link is
+   * checked, the request must still be open (a finished or cancelled one takes no
+   * more photos), the number of photos is capped, and the calls are counted per
+   * request on top of the limit per visitor address.
+   */
+  async uploadPhotos(
+    interventionId: number,
+    rawTrackingToken: string,
+    uploads: Express.Multer.File[] | undefined,
+  ) {
+    // One call at a time per request: the room left is read and then used, and two
+    // calls at once would both see it empty (10 calls of 5 pictures made 50 photos).
+    return this.photoLock.run(`guest-photos:${interventionId}`, async () => {
+      const intervention = await this.findForLink(interventionId, rawTrackingToken);
+
+      this.rateLimit.assertWithin(`guest-photos:${intervention.id}`, RATE_RULES.guestPhotoUploads);
+
+      if (!uploads?.length) {
+        throw new BadRequestException('Aucune photo envoyée.');
+      }
+
+      if (uploads.length > GuestService.MAX_PHOTOS_PER_CALL) {
+        throw new BadRequestException(
+          `Maximum ${GuestService.MAX_PHOTOS_PER_CALL} photos par envoi.`,
+        );
+      }
+
+      const open = [...statusesInGroup('waiting'), ...statusesInGroup('active')];
+
+      if (!open.includes(intervention.status)) {
+        throw new ForbiddenException("Cette demande est clôturée: il n'est plus possible d'ajouter des photos.");
+      }
+
+      const room = GuestService.MAX_PHOTOS - (intervention.photos?.length ?? 0);
+
+      if (uploads.length > room) {
+        throw new BadRequestException(
+          room > 0
+            ? `Cette demande peut encore recevoir ${room} photo(s) (maximum ${GuestService.MAX_PHOTOS}).`
+            : `Cette demande a déjà ${GuestService.MAX_PHOTOS} photos (maximum).`,
+        );
+      }
+
+      const stored: Array<{ id: number }> = [];
+      const refused: Array<{ position: number; reason: string }> = [];
+      let firstRefusal: HttpException | undefined;
+
+      // One after the other. A picture that is refused (not an image, too big, damaged)
+      // does not undo the ones that were fine: the answer says which were kept and which not.
+      for (const [index, upload] of uploads.entries()) {
+        try {
+          const asset = await this.files.uploadGuestDamagePhoto(
+            { id: intervention.id, clientId: intervention.clientId },
+            upload,
+          );
+
+          stored.push({ id: asset.id });
+        } catch (error) {
+          // Anything that is not a refusal of this picture (disk, database) is a real failure.
+          if (!(error instanceof HttpException) || error.getStatus() >= 500) throw error;
+
+          firstRefusal ??= error;
+          refused.push({ position: index + 1, reason: error.message });
+        }
+      }
+
+      // Nothing was kept: the same refusal as a single upload would give.
+      if (stored.length === 0 && firstRefusal) throw firstRefusal;
+
+      return {
+        added: stored.length,
+        photos: stored,
+        refused,
+        message: stored.length > 1 ? 'Photos ajoutées à votre demande.' : 'Photo ajoutée à votre demande.',
+      };
+    });
+  }
+
+  // ==========================================================
+  // 4c. PROBLEM REPORTED FROM THE TRACKING LINK (P1-04)
+  // ==========================================================
+
+  /**
+   * Complaints that may be opened from the link of ONE request, in all. The
+   * hourly counter forgets when the server restarts; this one is in the database.
+   * Beyond it the customer is sent to support, who can still reach them.
+   */
+  static readonly GUEST_COMPLAINT_CEILING = 5;
+
+  /**
+   * A problem reported by the holder of a tracking link. It opens a complaint on
+   * the request (so the support staff see it in their notifications and in the
+   * complaint list, like any other), adds a line to the timeline and lights up
+   * the dashboard that is open.
+   *
+   * Abuse limits: the texts are capped by the DTO; at most 3 reports a day per
+   * request (every attempt counts) and 5 complaints in all per request.
+   */
+  async reportProblem(interventionId: number, rawTrackingToken: string, dto: GuestProblemReportDto) {
+    const intervention = await this.findForLink(interventionId, rawTrackingToken);
+
+    this.rateLimit.assertWithin(`guest-problems:${intervention.id}`, RATE_RULES.guestProblemReports);
+
+    const opened = await this.prisma.complaint.count({
+      where: { interventionId: intervention.id, userId: intervention.clientId },
+    });
+
+    if (opened >= GuestService.GUEST_COMPLAINT_CEILING) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: 'Too Many Requests',
+          message:
+            'Vous avez déjà signalé plusieurs problèmes sur cette demande. Notre équipe les traite: contactez le support pour la suite.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const description = dto.description.trim();
+    const title = (dto.title?.trim() || description).slice(0, 120);
+
+    // The complaint belongs to the guest profile of the request: the same
+    // person, the same rights as a customer who is signed in.
+    const complaint = await this.complaints.createComplaint(
+      intervention.clientId,
+      Role.CLIENT,
+      intervention.id,
+      { title, description },
+      // The complaint thread keeps the details. The request's own notes (a review the
+      // customer wrote, the log of reports on the older route) are not replaced by
+      // the title of an anonymous report.
+      { keepFeedbackNotes: true },
+    );
+
+    await this.events
+      .create({
+        interventionId: intervention.id,
+        type: InterventionEventType.COMPLAINT_OPENED,
+        title: 'Problème signalé',
+        message: 'Votre signalement a été transmis à notre équipe.',
+        createdById: intervention.clientId,
+      })
+      .catch((error: any) => {
+        this.logger.warn(`Timeline line for a reported problem not written (${describeError(error)})`);
+      });
+
+    await this.staffAlerts.problemReported({
+      interventionId: intervention.id,
+      complaintId: complaint.id,
+      issue: description,
+    });
+
+    return {
+      id: complaint.id,
+      status: complaint.status,
+      message: 'Votre signalement a été transmis à notre équipe.',
+    };
   }
 
   // ==========================================================
@@ -669,8 +941,12 @@ export class GuestService {
       data: {
         rating: dto.rating,
         isOnTime: dto.isOnTime,
-        hasIssue: dto.hasIssue ?? false,
-        feedbackNotes: dto.feedbackNotes,
+        hasIssue: dto.hasIssue ?? intervention.hasIssue ?? false,
+        feedbackNotes: notesAfterReview(
+          intervention.feedbackNotes,
+          dto.feedbackNotes,
+          Boolean(intervention.hasIssue),
+        ),
       },
     });
 

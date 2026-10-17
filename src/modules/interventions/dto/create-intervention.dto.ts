@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsString, IsOptional, IsArray } from 'class-validator';
+import { ArrayMaxSize, IsEnum, IsNotEmpty, IsString, IsOptional, IsArray, MaxLength } from 'class-validator';
 
 // ✅ Import from your custom generated location
 // Adjust the number of '../' if your file is located deeper or shallower
@@ -14,17 +14,23 @@ export class CreateInterventionDto {
   // 2. Description: The problem details
   @IsString()
   @IsNotEmpty()
+  @MaxLength(2000)
   description: string;
 
   // 3. Address: Where the artisan needs to go
   @IsString()
   @IsNotEmpty()
+  @MaxLength(300)
   address: string;
 
-  // 4. Photos: Optional array of URLs uploaded by the client
+  // 4. Photos: Optional array of URLs uploaded by the client.
+  // Only used for a signed-in client: on the public route the service ignores it
+  // (a link typed by a visitor would be shown to staff as a photo).
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(6)
   @IsString({ each: true })
+  @MaxLength(300, { each: true })
   photos?: string[];
 
   // ==========================================================
@@ -35,9 +41,11 @@ export class CreateInterventionDto {
   
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   contactName?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(30)
   contactPhone?: string;
 }

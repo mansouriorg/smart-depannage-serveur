@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,8 +15,7 @@ import { InterventionsGateway } from './interventions.gateway';
 import { isMadeUpGuestEmail } from '../notifications/delivery/contact';
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateUnusablePassword } from '../auth/password-setup';
-import { adminAlertPhone } from '../../config/delivery';
-import { RATE_RULES, RateLimitService } from '../../common/rate-limit/rate-limit.service';
+import { StaffAlertsService } from './staff-alerts.service';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto'; 
 
@@ -37,6 +38,11 @@ import {
   rethrowContactConflict,
 } from '../../common/contact/phone';
 
+import { MAX_ISSUE_NOTES_LENGTH, notesAfterReview } from './feedback-notes';
+
+/** Most characters the notes of a request may reach through the public "report an issue" route. */
+export { MAX_ISSUE_NOTES_LENGTH };
+
 // guest_<timestamp>@smart-depannage.com: guests created by the old public form.
 const LEGACY_GUEST_EMAIL = /^guest_\d+@smart-depannage\.com$/;
 
@@ -46,7 +52,7 @@ export class InterventionsService {
     private prisma: PrismaService,
     private gateway: InterventionsGateway,
     private notifications: NotificationsService,
-    private rateLimit: RateLimitService,
+    private staffAlerts: StaffAlertsService,
   ) {}
 
   // ==========================================================
@@ -157,7 +163,12 @@ export class InterventionsService {
       guestWithoutNumber = !user.phone;
     }
 
-    const { contactName, contactPhone, ...interventionData } = createInterventionDto;
+    const { contactName, contactPhone, photos: sentPhotos, ...interventionData } = createInterventionDto;
+
+    // A visitor with no account cannot upload here, so a "photo" they send is only a link
+    // they typed, and staff would see it as a photo. Pictures come through
+    // POST /guest/interventions/:id/photos. A signed-in client keeps what the app sent.
+    const photos = userId ? sentPhotos : undefined;
 
     // B. 🔒 NEW: Generate Tracking Token
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -167,6 +178,7 @@ export class InterventionsService {
     const newIntervention = await this.prisma.intervention.create({
       data: {
         ...interventionData,
+        ...(photos ? { photos } : {}),
         // A guest profile that could not keep the number (a deleted account still holds
         // it) must not lose the way to call this person back: it stays on the request.
         ...(guestRequest && guestWithoutNumber ? { contactPhone, contactName } : {}),
@@ -181,20 +193,10 @@ export class InterventionsService {
       },
     });
 
-    // D. 🔔 Real-Time Notification
-    this.gateway.sendNewIntervention(newIntervention);
-
-    // E. 📱 SMS to the person in charge, only when ADMIN_ALERT_PHONE is set.
-    // (A number written in the code used to receive this for every request.)
-    const alertPhone = adminAlertPhone();
-
-    // At most 20 an hour for the whole server: a loop of requests must not turn into a loop of paid SMS.
-    if (alertPhone && this.rateLimit.tryConsume('admin-alert-sms', RATE_RULES.adminAlertSms)) {
-      await this.notifications.sendSms(
-        alertPhone,
-        `Alerte: Nouvelle demande (${newIntervention.serviceType}) à ${newIntervention.address}`,
-      );
-    }
+    // D. 🔔 The back office hears about it: live event, staff notifications and, when
+    // ADMIN_ALERT_PHONE is set, a text (capped per hour). Same code for every way of
+    // making a request (StaffAlertsService); it never throws.
+    await this.staffAlerts.newRequest(newIntervention);
 
     // F. ✅ NEW: Return the raw token ONLY ONCE so the controller can set the cookie
     //
@@ -583,8 +585,13 @@ export class InterventionsService {
       data: {
         rating: dto.rating,
         isOnTime: dto.isOnTime,
-        hasIssue: dto.hasIssue ?? false,
-        feedbackNotes: dto.feedbackNotes,
+        // A form that posts every field must not wipe a problem that was reported.
+        hasIssue: dto.hasIssue ?? intervention.hasIssue ?? false,
+        feedbackNotes: notesAfterReview(
+          intervention.feedbackNotes,
+          dto.feedbackNotes,
+          Boolean(intervention.hasIssue),
+        ),
       }
     });
   }
@@ -614,6 +621,20 @@ export class InterventionsService {
     const updatedNotes = intervention.feedbackNotes 
       ? `${intervention.feedbackNotes}\n${newNote}` 
       : newNote;
+
+    // The notes grow with every report and this route is public: past a few thousand
+    // characters, the support staff already have more than they can read. The limit
+    // is on the row itself, so it holds whatever the address or the server restarts.
+    if (updatedNotes.length > MAX_ISSUE_NOTES_LENGTH) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: 'Too Many Requests',
+          message: 'Vous avez déjà signalé plusieurs problèmes sur cette demande. Contactez le support.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
 
     const updatedIntervention = await this.prisma.intervention.update({
       where: { id },

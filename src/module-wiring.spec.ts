@@ -139,7 +139,8 @@ describe('what keeps the delivery safe (P1-03 review)', () => {
     const at = controller.indexOf("@Post('secure')");
 
     expect(controller.slice(at, at + 200).includes('RateLimitGuard')).toBe(true);
-    expect(read('modules/interventions/interventions.service.ts').includes("'admin-alert-sms'")).toBe(true);
+    // P1-04: the alert text moved to the service every way of making a request calls.
+    expect(read('modules/interventions/staff-alerts.service.ts').includes("'admin-alert-sms'")).toBe(true);
   });
 
   it('no phone number is written in the code', () => {

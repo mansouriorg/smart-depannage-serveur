@@ -1,7 +1,6 @@
 import * as argon2 from 'argon2';
 
 import { FakeTable, withTransactions } from '../../common/testing/fake-tables';
-import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { InterventionsService } from './interventions.service';
 
 function makeWorld() {
@@ -24,8 +23,10 @@ function makeWorld() {
   const prisma: any = withTransactions({ user: users, intervention }, [users]);
   const gateway: any = { sendNewIntervention: () => undefined };
   const notifications: any = { sendSms: async () => ({ queued: true }) };
+  const alerts: any[] = [];
+  const staffAlerts: any = { newRequest: async (request: any) => alerts.push(request) };
 
-  return { users, created, service: new InterventionsService(prisma, gateway, notifications, new RateLimitService()) };
+  return { users, created, alerts, service: new InterventionsService(prisma, gateway, notifications, staffAlerts) };
 }
 
 const form = (contactPhone: string, extra: Record<string, unknown> = {}) =>
@@ -65,6 +66,45 @@ function raceAgainst(w: ReturnType<typeof makeWorld>, winner: { email: string; i
     return 0;
   };
 }
+
+describe('legacy request: the back office is alerted, and a visitor cannot pass links off as photos (P1-04)', () => {
+  it('the alert service is called once with the request that was created', async () => {
+    const w = makeWorld();
+
+    await w.service.create(null, form('55 111 222'));
+
+    expect(w.alerts.length).toBe(1);
+    expect(w.alerts[0].id).toBe(w.created[0].id);
+    expect(w.alerts[0].serviceType).toBe('PLOMBIER');
+  });
+
+  it('a request is alerted after the row exists, also for a signed-in client', async () => {
+    const w = makeWorld();
+    const owner = w.users.insert({ email: 'real@mail.tn', password: 'x', role: 'CLIENT' });
+
+    await w.service.create(owner.id, form('55 111 222'));
+
+    expect(w.alerts.length).toBe(1);
+    expect(w.created.length).toBe(1);
+  });
+
+  it('photos sent by a visitor with no account are ignored', async () => {
+    const w = makeWorld();
+
+    await w.service.create(null, form('55 111 222', { photos: ['https://evil.example/pixel.png'] }));
+
+    expect(w.created[0].photos).toBe(undefined);
+  });
+
+  it('a signed-in client keeps the photos the app sent', async () => {
+    const w = makeWorld();
+    const owner = w.users.insert({ email: 'real@mail.tn', password: 'x', role: 'CLIENT' });
+
+    await w.service.create(owner.id, form('55 111 222', { photos: ['/files/3/download'] }));
+
+    expect(w.created[0].photos).toEqual(['/files/3/download']);
+  });
+});
 
 describe('legacy public request (POST /interventions without a session): phone numbers', () => {
   it('a new number makes a guest profile with the number and its key; the answer carries no profile', async () => {

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,10 +8,15 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { GuestService } from './guest.service';
+import { GuestTrackingLinkGuard } from './guest-tracking-link.guard';
 import {
   RateLimit,
   RateLimitGuard,
@@ -20,6 +26,7 @@ import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto'
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
 import { GuestPaymentDto } from './dto/guest-payment.dto';
 import { GuestFeedbackDto } from './dto/guest-feedback.dto';
+import { GuestProblemReportDto } from './dto/guest-problem-report.dto';
 import { RequestGuestActivationDto } from './dto/request-guest-activation.dto';
 import { ActivateGuestAccountDto } from './dto/activate-guest-account.dto';
 
@@ -141,6 +148,68 @@ export class GuestController {
     @Body() dto: GuestFeedbackDto,
   ) {
     return this.guestService.submitFeedback(id, token, dto);
+  }
+
+  // ==========================================================
+  // 8b. ADD PHOTOS (P1-04)
+  // POST /guest/interventions/:id/photos?token=RAW_TOKEN
+  // multipart/form-data, field "photos", up to 5 pictures of 5 MB
+  // (JPEG, PNG or WebP), 6 photos in all per request.
+  // ==========================================================
+
+  // The guards run before the upload is read: the visitor's address is counted first,
+  // then the link is checked, so a made-up link costs the server no memory.
+  @UseGuards(RateLimitGuard, GuestTrackingLinkGuard)
+  @RateLimit({ name: 'guest-photos', limit: 30, windowMs: 60 * 60_000 })
+  @Post('interventions/:id/photos')
+  @UseInterceptors(
+    FilesInterceptor('photos', GuestService.MAX_PHOTOS_PER_CALL, {
+      // In memory, then checked and re-encoded by the files service: nothing a
+      // visitor sends is written to disk as it came.
+      storage: memoryStorage(),
+      // Nothing but the pictures: no text fields (they would be buffered too),
+      // no more parts than pictures, small headers.
+      limits: {
+        fileSize: 5 * 1024 * 1024,
+        files: GuestService.MAX_PHOTOS_PER_CALL,
+        fields: 0,
+        parts: GuestService.MAX_PHOTOS_PER_CALL + 1,
+        fieldSize: 1024,
+        headerPairs: 20,
+      },
+      fileFilter: (_request, file, done) => {
+        if (['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+          done(null, true);
+          return;
+        }
+
+        done(new BadRequestException('Seules les images JPEG, PNG ou WebP sont acceptées.'), false);
+      },
+    }),
+  )
+  uploadPhotos(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('token') token: string,
+    @UploadedFiles() files: Express.Multer.File[],
+  ) {
+    return this.guestService.uploadPhotos(id, token, files);
+  }
+
+  // ==========================================================
+  // 8c. REPORT A PROBLEM (P1-04)
+  // POST /guest/interventions/:id/problems?token=RAW_TOKEN
+  // Opens a complaint. Texts are capped; 3 a day and 5 in all per request.
+  // ==========================================================
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-problems', limit: 10, windowMs: 60 * 60_000 })
+  @Post('interventions/:id/problems')
+  reportProblem(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('token') token: string,
+    @Body() dto: GuestProblemReportDto,
+  ) {
+    return this.guestService.reportProblem(id, token, dto);
   }
 
   // ==========================================================

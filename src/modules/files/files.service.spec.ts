@@ -1,0 +1,201 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import sharp from 'sharp';
+
+import { FilesService } from './files.service';
+
+async function makeWorld() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'uploads-spec-'));
+  const assets: any[] = [];
+  const interventions: any[] = [{ id: 7, clientId: 70, photos: [] as string[] }];
+  const events: any[] = [];
+
+  const prisma: any = {
+    fileAsset: {
+      create: async ({ data }: any) => {
+        const row = { id: assets.length + 1, ...data };
+        assets.push(row);
+
+        return row;
+      },
+    },
+    intervention: {
+      update: async ({ where, data }: any) => {
+        const row = interventions.find((item) => item.id === where.id)!;
+        if (data.photos?.push) row.photos.push(data.photos.push);
+
+        return row;
+      },
+    },
+  };
+
+  const service = new FilesService(prisma, { create: async (event: any) => events.push(event) } as any);
+  (service as any).uploadRoot = root;
+
+  return { service, root, assets, interventions, events };
+}
+
+const upload = (buffer: Buffer, mimetype = 'image/jpeg', size = buffer.length) =>
+  ({ originalname: 'photo', mimetype, size, buffer }) as any;
+
+async function jpeg(width = 40, height = 30) {
+  return sharp({ create: { width, height, channels: 3, background: '#cc3333' } })
+    .jpeg()
+    .toBuffer();
+}
+
+async function failure(promise: Promise<unknown>): Promise<any> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+
+  throw new Error('expected a failure');
+}
+
+describe('a photo from the holder of a tracking link (P1-04)', () => {
+  it('is stored private, re-encoded, for the guest profile, and added to the request', async () => {
+    const w = await makeWorld();
+
+    const asset = await w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(await jpeg()));
+
+    expect(asset.uploadedById).toBe(70);
+    expect(asset.visibility).toBe('PRIVATE');
+    expect(asset.publicUrl).toBe(undefined);
+    expect(asset.purpose).toBe('CLIENT_DAMAGE_PHOTO');
+    expect(asset.entityType).toBe('INTERVENTION');
+    expect(asset.entityId).toBe(7);
+    expect(asset.mimeType).toBe('image/webp');
+    expect(w.interventions[0].photos).toEqual([`/files/${asset.id}/download`]);
+    expect(w.events.length).toBe(1);
+    expect(w.events[0].createdById).toBe(70);
+
+    const onDisk = await fs.readFile(path.join(w.root, asset.relativePath));
+    expect((await sharp(onDisk).metadata()).format).toBe('webp');
+  });
+
+  it('keeps no metadata of the original (a phone photo carries the GPS position)', async () => {
+    const w = await makeWorld();
+    const withExif = await sharp(await jpeg())
+      .withExif({ IFD0: { Copyright: 'Somebody' } })
+      .jpeg()
+      .toBuffer();
+
+    expect((await sharp(withExif).metadata()).exif !== undefined).toBe(true);
+
+    const asset = await w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(withExif));
+    const stored = await sharp(await fs.readFile(path.join(w.root, asset.relativePath))).metadata();
+
+    expect(stored.exif).toBe(undefined);
+  });
+
+  it('refuses a file that says it is an image and is not one (text, SVG, a script)', async () => {
+    const w = await makeWorld();
+
+    // The image library would happily decode an SVG or a GIF whatever the declared
+    // type says (checked), so only the first bytes keep them out.
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(1)</script><rect width="10" height="10"/></svg>',
+    );
+    const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+
+    expect((await sharp(svg).webp().toBuffer()).length > 0).toBe(true);
+    expect((await sharp(gif).webp().toBuffer()).length > 0).toBe(true);
+
+    for (const body of [svg, gif, Buffer.from('<?php system($_GET["c"]); ?>'), Buffer.from('just text')]) {
+      const error = await failure(w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(body, 'image/png')));
+
+      expect(error.status).toBe(400);
+    }
+
+    expect(w.assets.length).toBe(0);
+    expect(w.interventions[0].photos).toEqual([]);
+  });
+
+  it('refuses an empty file and a type that is not JPEG, PNG or WebP', async () => {
+    const w = await makeWorld();
+
+    expect((await failure(w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(Buffer.alloc(0))))).status).toBe(400);
+    expect(
+      (await failure(w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(await jpeg(), 'image/gif')))).status,
+    ).toBe(400);
+    expect(
+      (await failure(w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(await jpeg(), 'application/pdf')))).status,
+    ).toBe(400);
+  });
+
+  it('refuses more than 5 MB', async () => {
+    const w = await makeWorld();
+
+    const error = await failure(
+      w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(await jpeg(), 'image/jpeg', 5 * 1024 * 1024 + 1)),
+    );
+
+    expect(error.status).toBe(400);
+  });
+
+  it('a damaged picture is a 400, not a server error', async () => {
+    const w = await makeWorld();
+    const damaged = Buffer.concat([(await jpeg()).subarray(0, 30), Buffer.alloc(50, 7)]);
+
+    const error = await failure(w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(damaged)));
+
+    expect(error.status).toBe(400);
+    expect(w.assets.length).toBe(0);
+  });
+
+  it('a picture with more pixels than allowed is refused before it is decoded', async () => {
+    const w = await makeWorld();
+
+    const error = await failure(
+      (w.service as any).processImageIfNeeded(upload(await jpeg(200, 100)), true, 1000),
+    );
+
+    expect(error.status).toBe(400);
+    // and the same picture is fine with the usual ceiling
+    expect(((await (w.service as any).processImageIfNeeded(upload(await jpeg(200, 100)), true, 50_000_000)) as any).width).toBe(200);
+  });
+});
+
+describe('pictures from visitors are decoded two at a time, within a pixel ceiling (P1-04 review)', () => {
+  it('never more than two decodes at once, however many calls arrive', async () => {
+    const w = await makeWorld();
+    let running = 0;
+    let peak = 0;
+    let ceiling: number | undefined;
+
+    (w.service as any).createFileAsset = async (_user: any, _file: any, options: any) => {
+      ceiling = options.maxInputPixels;
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running--;
+
+      return { id: 1, publicUrl: undefined, purpose: 'CLIENT_DAMAGE_PHOTO' };
+    };
+
+    await Promise.all(
+      Array.from({ length: 8 }, () => w.service.uploadGuestDamagePhoto({ id: 7, clientId: 70 }, upload(Buffer.from('x')))),
+    );
+
+    expect(peak).toBe(2);
+    expect(ceiling).toBe(30_000_000);
+  });
+});
+
+describe('the signature check protects the other uploads too', () => {
+  it('a real PNG and a real WebP pass, whatever type was declared', async () => {
+    const w = await makeWorld();
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00f' } }).png().toBuffer();
+    const webp = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00f' } }).webp().toBuffer();
+
+    expect((w.service as any).hasImageSignature(png)).toBe(true);
+    expect((w.service as any).hasImageSignature(webp)).toBe(true);
+    expect((w.service as any).hasImageSignature(await jpeg())).toBe(true);
+    expect((w.service as any).hasImageSignature(Buffer.from('GIF89a......'))).toBe(false);
+    expect((w.service as any).hasImageSignature(Buffer.from('RIFF....WAVE'))).toBe(false);
+    expect((w.service as any).hasImageSignature(Buffer.alloc(0))).toBe(false);
+  });
+});

@@ -311,6 +311,14 @@ export class ComplaintsService {
     role: Role,
     interventionId: number,
     dto: CreateComplaintDto,
+    options: {
+      /**
+       * Leave `Intervention.feedbackNotes` alone. By default it is replaced by the
+       * complaint's title; a report from a tracking link (no account) must not
+       * overwrite what the request already holds.
+       */
+      keepFeedbackNotes?: boolean;
+    } = {},
   ) {
     const intervention = await this.checkInterventionAccess(
       userId,
@@ -359,10 +367,12 @@ export class ComplaintsService {
         where: {
           id: intervention.id,
         },
-        data: {
-          hasIssue: true,
-          feedbackNotes: dto.title.trim(),
-        },
+        data: options.keepFeedbackNotes
+          ? { hasIssue: true }
+          : {
+              hasIssue: true,
+              feedbackNotes: dto.title.trim(),
+            },
       })
       .catch(() => null);
 

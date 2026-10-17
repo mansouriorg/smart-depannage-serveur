@@ -50,6 +50,11 @@ export function matchesWhere(row: Row, where: any): boolean {
   return true;
 }
 
+/** Prisma leaves a column alone when its value in `data` is undefined; so do the fakes. */
+function withoutUndefined(data: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(data ?? {}).filter(([, value]) => value !== undefined));
+}
+
 export class FakeTable {
   rows: Row[] = [];
   private nextId = 1;
@@ -123,8 +128,10 @@ export class FakeTable {
 
     if (!row) throw Object.assign(new Error('Record to update not found.'), { code: 'P2025' });
 
-    this.assertUnique({ ...row, ...data }, row.id);
-    Object.assign(row, data);
+    const changes = withoutUndefined(data);
+
+    this.assertUnique({ ...row, ...changes }, row.id);
+    Object.assign(row, changes);
 
     return { ...row };
   };
@@ -132,9 +139,11 @@ export class FakeTable {
   updateMany = async ({ where, data }: any) => {
     const hit = this.rows.filter((row) => matchesWhere(row, where));
 
+    const changes = withoutUndefined(data);
+
     for (const row of hit) {
-      this.assertUnique({ ...row, ...data }, row.id);
-      Object.assign(row, data);
+      this.assertUnique({ ...row, ...changes }, row.id);
+      Object.assign(row, changes);
     }
 
     return { count: hit.length };

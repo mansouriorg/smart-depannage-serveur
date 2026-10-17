@@ -103,6 +103,26 @@ export const RATE_RULES = {
     limit: 3,
     windowMs: 60 * 60_000,
   } satisfies WindowRule,
+
+  /**
+   * Photo uploads through the tracking link of one request (a call may carry
+   * several pictures). Counted per request, on top of the limit per visitor
+   * address: a link shared around cannot fill the disk.
+   */
+  guestPhotoUploads: {
+    limit: 10,
+    windowMs: 60 * 60_000,
+  } satisfies WindowRule,
+
+  /**
+   * Problems reported through the tracking link of one request. Each one opens a
+   * complaint that staff must read, so a few a day are plenty; the durable cap
+   * (GUEST_COMPLAINT_CEILING in the guest service) is counted in the database.
+   */
+  guestProblemReports: {
+    limit: 3,
+    windowMs: 24 * 60 * 60_000,
+  } satisfies WindowRule,
 } as const;
 
 /**

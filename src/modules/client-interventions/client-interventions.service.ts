@@ -1,12 +1,16 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateClientInterventionDto } from './dto/create-client-intervention.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { StaffAlertsService } from '../interventions/staff-alerts.service';
+import { buildTrackingUrl } from '../../common/links/tracking-url';
+import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
@@ -17,9 +21,12 @@ import {
 
 @Injectable()
 export class ClientInterventionsService {
+  private readonly logger = new Logger(ClientInterventionsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: InterventionEventsService,
+    private readonly staffAlerts: StaffAlertsService,
   ) {}
 
   private hashToken(token: string): string {
@@ -33,6 +40,14 @@ export class ClientInterventionsService {
       rawToken,
       hashedToken: this.hashToken(rawToken),
     };
+  }
+
+  private async recordEvent(event: Parameters<InterventionEventsService['create']>[0]) {
+    try {
+      await this.events.create(event);
+    } catch (error: any) {
+      this.logger.warn(`Timeline line not written (${describeError(error)})`);
+    }
   }
 
   async create(clientId: number, dto: CreateClientInterventionDto) {
@@ -87,7 +102,8 @@ export class ClientInterventionsService {
       },
     });
 
-    await this.events.create({
+    // The request exists: a timeline line that cannot be written must not stop the alert.
+    await this.recordEvent({
       interventionId: intervention.id,
       type: InterventionEventType.REQUEST_CREATED,
       title: 'Demande créée',
@@ -95,17 +111,20 @@ export class ClientInterventionsService {
       createdById: clientId,
     });
 
-    await this.events.create({
+    await this.recordEvent({
       interventionId: intervention.id,
       type: InterventionEventType.ADMIN_REVIEWING,
       title: 'En attente de validation',
       message: 'Notre équipe va examiner votre demande.',
     });
 
+    // The back office hears about it (live event, notifications, alert text). Never throws.
+    await this.staffAlerts.newRequest(intervention);
+
     return {
       ...intervention,
       rawTrackingToken: rawToken,
-      trackingUrl: `/tracking/${intervention.id}?token=${rawToken}`,
+      trackingUrl: buildTrackingUrl(intervention.id, rawToken),
     };
   }
 
