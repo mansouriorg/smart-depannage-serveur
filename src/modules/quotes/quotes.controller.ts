@@ -193,10 +193,11 @@ export class QuotesController {
   )
   @Patch(':quoteId/pdf')
   setPdfUrl(
+    @CurrentUser('id') userId: number,
     @Param('quoteId', ParseIntPipe) quoteId: number,
     @Body('pdfUrl') pdfUrl: string,
   ) {
-    return this.service.setPdfUrl(quoteId, pdfUrl);
+    return this.service.setPdfUrl(quoteId, pdfUrl, userId);
   }
 
   // ==========================================================
@@ -309,7 +310,10 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Get(':quoteId')
-  findOne(@Param('quoteId', ParseIntPipe) quoteId: number) {
-    return this.service.findOne(quoteId);
+  findOne(
+    @CurrentUser() user: { id: number; role: Role },
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+  ) {
+    return this.service.findOne(quoteId, user);
   }
 }

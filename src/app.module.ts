@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
+
+import { validateEnv } from './config/env';
 
 // ==========================================================
 // 1. CORE MODULES
@@ -10,6 +13,8 @@ import { join } from 'path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
+import { RateLimitModule } from './common/rate-limit/rate-limit.module';
+import { StripStaffFieldsInterceptor } from './common/interceptors/strip-staff-fields.interceptor';
 
 // ==========================================================
 // 2. EXISTING FEATURE MODULES
@@ -50,6 +55,12 @@ import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { MatchingModule } from './modules/matching/matching.module';
 import { BusinessModule } from './modules/business/business.module';
 
+// Uploaded files are user content: the browser must use the declared type and
+// never guess one (a file that "looks like" HTML would then run).
+const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+};
+
 @Module({
   imports: [
     // ======================================================
@@ -60,24 +71,52 @@ import { BusinessModule } from './modules/business/business.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      // P0-01: refuse to boot when a required variable is missing.
+      validate: validateEnv,
     }),
 
     // ======================================================
     // B. STATIC FILE SERVING
-    // Allows frontend to access files using:
-    // http://localhost:3000/uploads/...
+    //
+    // P0-11: only the folders listed here are public. `uploads/private`
+    // (identity documents, invoices, quotes, receipts, damage photos...) is
+    // NOT served: those files are downloaded through the authenticated route
+    // GET /api/files/:fileId/download, which checks who is asking.
+    //
+    //   /uploads/public  files explicitly marked PUBLIC (e.g. profile photos)
+    //   /uploads/proofs  legacy proof-of-work photos, kept public until they
+    //                    move behind the files route (P1-07)
     // ======================================================
 
-    ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'uploads'),
-      serveRoot: '/uploads',
-    }),
+    ServeStaticModule.forRoot(
+      {
+        rootPath: join(process.cwd(), 'uploads', 'public'),
+        serveRoot: '/uploads/public',
+        serveStaticOptions: {
+          index: false,
+          dotfiles: 'deny',
+          setHeaders: noSniff,
+        },
+      },
+      {
+        rootPath: join(process.cwd(), 'uploads', 'proofs'),
+        serveRoot: '/uploads/proofs',
+        serveStaticOptions: {
+          index: false,
+          dotfiles: 'deny',
+          setHeaders: noSniff,
+        },
+      },
+    ),
 
     // ======================================================
     // C. DATABASE
     // ======================================================
 
     PrismaModule,
+
+    // Shared in-memory counters for login / OTP / reset limits (P0-07)
+    RateLimitModule,
 
     // ======================================================
     // D. AUTH / USERS / CORE FEATURES
@@ -126,6 +165,11 @@ import { BusinessModule } from './modules/business/business.module';
 
   controllers: [AppController],
 
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Responses to non-staff callers never carry staff-only columns
+    // (internal notes, tracking token hash).
+    { provide: APP_INTERCEPTOR, useClass: StripStaffFieldsInterceptor },
+  ],
 })
 export class AppModule {}

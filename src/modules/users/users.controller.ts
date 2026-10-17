@@ -24,10 +24,30 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { canManage } from '../../common/auth/role-policy';
 
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+
+  /**
+   * P0-08: hierarchy check for every admin action on another account.
+   * An ADMIN cannot touch a SUPER_ADMIN (or another ADMIN), and cannot give
+   * out a role equal to or above their own. SUPER_ADMIN can manage everyone.
+   */
+  private async assertCanManageUser(
+    actorRole: Role,
+    targetId: number,
+    newRole?: Role,
+  ): Promise<void> {
+    const target = await this.usersService.findOne(targetId); // 404 if unknown
+
+    if (!canManage(actorRole, target.role, newRole)) {
+      throw new ForbiddenException(
+        'Vous n’avez pas les droits nécessaires sur ce compte ou sur ce rôle.',
+      );
+    }
+  }
 
   // ==========================================================
   // 1. CURRENT USER PROFILE
@@ -194,7 +214,18 @@ export class UsersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post()
-  create(@Body() createUserDto: CreateUserDto) {
+  create(
+    @CurrentUser('role') currentUserRole: Role,
+    @Body() createUserDto: CreateUserDto,
+  ) {
+    // P0-08: the role of the new account must be below the creator's own.
+    // (default role is CLIENT when none is given)
+    if (!canManage(currentUserRole, createUserDto.role ?? Role.CLIENT)) {
+      throw new ForbiddenException(
+        'Vous ne pouvez pas créer un compte avec ce rôle.',
+      );
+    }
+
     return this.usersService.createByAdmin(createUserDto);
   }
 
@@ -258,31 +289,23 @@ export class UsersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch(':id')
-  update(
+  async update(
     @CurrentUser('id') currentUserId: number,
     @CurrentUser('role') currentUserRole: Role,
     @Param('id', ParseIntPipe) id: number,
     @Body() updateUserDto: UpdateUserAdminDto,
   ) {
-    // Security: ADMIN cannot edit SUPER_ADMIN.
-    // Only SUPER_ADMIN can manage SUPER_ADMIN accounts.
-    if (
-      updateUserDto.role === Role.SUPER_ADMIN &&
-      currentUserRole !== Role.SUPER_ADMIN
-    ) {
-      throw new ForbiddenException(
-        'Seul un SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN.',
-      );
-    }
+    // P0-08: hierarchy check on the target account AND on the role given.
+    await this.assertCanManageUser(currentUserRole, id, updateUserDto.role);
 
-    // Security: normal ADMIN should not edit themselves into SUPER_ADMIN.
+    // Nobody locks themselves out through the admin route (use /users/me).
     if (
       id === currentUserId &&
-      updateUserDto.role === Role.SUPER_ADMIN &&
-      currentUserRole !== Role.SUPER_ADMIN
+      ((updateUserDto.role && updateUserDto.role !== currentUserRole) ||
+        updateUserDto.isActive === false)
     ) {
       throw new ForbiddenException(
-        'Vous ne pouvez pas vous attribuer ce rôle.',
+        'Vous ne pouvez pas modifier votre propre rôle ou désactiver votre propre compte.',
       );
     }
 
@@ -306,14 +329,45 @@ export class UsersController {
       );
     }
 
-    return this.usersService.remove(id);
+    return this.assertCanManageUser(currentUserRole, id).then(() =>
+      this.usersService.remove(id),
+    );
+  }
+
+  // POST /users/:id/password-setup-link
+  // New one-time link to choose a password. While e-mail delivery is simulated
+  // the link is returned here so the admin can hand it over.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Post(':id/password-setup-link')
+  async reissuePasswordSetupLink(
+    @CurrentUser('id') currentUserId: number,
+    @CurrentUser('role') currentUserRole: Role,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    // Same hierarchy as editing the account: whoever holds the link can set the
+    // password, so an ADMIN must not get one for an ADMIN or a SUPER_ADMIN.
+    if (id !== currentUserId) {
+      await this.assertCanManageUser(currentUserRole, id);
+    } else {
+      throw new ForbiddenException(
+        'Utilisez « Mot de passe oublié » ou « Changer le mot de passe » pour votre propre compte.',
+      );
+    }
+
+    return this.usersService.reissuePasswordSetupLink(id);
   }
 
   // PATCH /users/:id/reactivate
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch(':id/reactivate')
-  reactivateUser(@Param('id', ParseIntPipe) id: number) {
+  async reactivateUser(
+    @CurrentUser('role') currentUserRole: Role,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    await this.assertCanManageUser(currentUserRole, id);
+
     return this.usersService.reactivateUser(id);
   }
 }

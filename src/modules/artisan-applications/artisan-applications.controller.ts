@@ -1,7 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, UseGuards, Request, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, ParseIntPipe, UseGuards } from '@nestjs/common';
 import { ArtisanApplicationsService } from './artisan-applications.service';
 import { CreateArtisanApplicationDto } from './dto/create-artisan-application.dto';
-import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../../generated/prisma/client';
 
 @Controller('artisan-applications')
 export class ArtisanApplicationsController {
@@ -13,27 +16,27 @@ export class ArtisanApplicationsController {
     return this.service.create(dto);
   }
 
-  // 🔒 ADMIN ONLY: List Applications
+  // 🔒 STAFF ONLY: List Applications
   @Get()
-  @UseGuards(AuthGuard('jwt'))
-  findAll(@Request() req) {
-    if (req.user.role !== 'ADMIN') throw new ForbiddenException('Accès réservé aux admins.');
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  findAll() {
     return this.service.findAll();
   }
 
-  // 🔒 ADMIN ONLY: Approve
+  // 🔒 STAFF ONLY: Approve
   @Patch(':id/approve')
-  @UseGuards(AuthGuard('jwt'))
-  approve(@Request() req, @Param('id') id: string) {
-    if (req.user.role !== 'ADMIN') throw new ForbiddenException('Accès réservé aux admins.');
-    return this.service.approve(+id);
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  approve(@Param('id', ParseIntPipe) id: number) {
+    return this.service.approve(id);
   }
 
-  // 🔒 ADMIN ONLY: Reject
+  // 🔒 STAFF ONLY: Reject
   @Patch(':id/reject')
-  @UseGuards(AuthGuard('jwt'))
-  reject(@Request() req, @Param('id') id: string) {
-    if (req.user.role !== 'ADMIN') throw new ForbiddenException('Accès réservé aux admins.');
-    return this.service.reject(+id);
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  reject(@Param('id', ParseIntPipe) id: number) {
+    return this.service.reject(id);
   }
 }

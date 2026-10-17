@@ -6,9 +6,14 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 
 import { GuestService } from './guest.service';
+import {
+  RateLimit,
+  RateLimitGuard,
+} from '../../common/rate-limit/rate-limit.guard';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
@@ -26,6 +31,8 @@ export class GuestController {
   // POST /guest/interventions
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-create', limit: 10, windowMs: 60 * 60_000 })
   @Post('interventions')
   createGuestIntervention(@Body() dto: CreateGuestInterventionDto) {
     return this.guestService.createGuestIntervention(dto);
@@ -140,6 +147,8 @@ export class GuestController {
   // POST /guest/account/request-activation
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-request-activation', limit: 5, windowMs: 15 * 60_000 })
   @Post('account/request-activation')
   requestAccountActivation(@Body() dto: RequestGuestActivationDto) {
     return this.guestService.requestAccountActivation(dto);
@@ -150,6 +159,8 @@ export class GuestController {
   // POST /guest/account/activate
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-activate', limit: 10, windowMs: 15 * 60_000 })
   @Post('account/activate')
   activateGuestAccount(@Body() dto: ActivateGuestAccountDto) {
     return this.guestService.activateGuestAccount(dto);

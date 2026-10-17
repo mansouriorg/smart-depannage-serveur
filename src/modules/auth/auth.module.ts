@@ -10,14 +10,8 @@ import { UsersModule } from '../users/users.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaModule } from '../../prisma/prisma.module';
 
-// If your JwtStrategy file is here:
-// src/modules/auth/jwt.strategy.ts
-import { JwtStrategy } from './jwt.strategy';
-
-// If your JwtStrategy file is here instead:
-// src/modules/auth/strategies/jwt.strategy.ts
-// replace the import above with:
-// import { JwtStrategy } from './strategies/jwt.strategy';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { getJwtAccessSecret } from '../../config/env';
 
 // ✅ Fix for TS2322: expiresIn typing problem
 type JwtExpiresIn =
@@ -51,10 +45,8 @@ type JwtExpiresIn =
       useFactory: async (
         configService: ConfigService,
       ): Promise<JwtModuleOptions> => {
-        const secret =
-          configService.get<string>('JWT_ACCESS_SECRET') ||
-          configService.get<string>('JWT_SECRET') ||
-          'dev_access_secret_change_me';
+        // No fallback: env validation guarantees the secret exists.
+        const secret = getJwtAccessSecret();
 
         const expiresIn =
           (configService.get<string>('JWT_ACCESS_EXPIRES_IN') ||

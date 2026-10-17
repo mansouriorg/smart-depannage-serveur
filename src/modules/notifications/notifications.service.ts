@@ -419,11 +419,29 @@ export class NotificationsService {
     };
   }
 
+  /**
+   * True while sendEmail only writes to the log. Flows that depend on an email
+   * reaching the user (first password, activation) use it to hand the secret
+   * link to the staff member who triggered them instead.
+   * Switch to false when a real mail provider is wired (Phase 1).
+   */
+  isEmailSimulated(): boolean {
+    return true;
+  }
+
   async sendEmail(email: string, subject: string, content: string) {
     this.logger.log(
       `📧 [EMAIL SIMULATION] To: ${email} | Subject: "${subject}"`,
     );
-    this.logger.log(`   Body: "${content}"`);
+
+    // Bodies carry one-time links (password setup, reset). In production they
+    // stay out of the logs, where a link would be a password.
+    if (
+      process.env.NODE_ENV !== 'production' ||
+      process.env.LOG_EMAIL_BODIES === 'true'
+    ) {
+      this.logger.log(`   Body: "${content}"`);
+    }
 
     return {
       provider: 'SIMULATED_EMAIL',

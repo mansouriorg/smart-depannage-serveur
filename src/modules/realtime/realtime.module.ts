@@ -3,14 +3,21 @@ import { JwtModule } from '@nestjs/jwt';
 
 import { PrismaModule } from '../../prisma/prisma.module';
 
+import { getJwtAccessSecret } from '../../config/env';
+
 import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeService } from './realtime.service';
 
 @Module({
   imports: [
     PrismaModule,
-    JwtModule.register({
-      secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_change_me',
+    // registerAsync: the factory runs after ConfigModule has loaded .env.
+    // A plain register() would read process.env while the file is imported,
+    // i.e. before .env is loaded, and silently use the wrong secret.
+    JwtModule.registerAsync({
+      useFactory: () => ({
+        secret: getJwtAccessSecret(),
+      }),
     }),
   ],
   providers: [

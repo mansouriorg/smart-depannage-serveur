@@ -1,10 +1,25 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import {
+  getAllowedOrigins,
+  getFrontendUrl,
+  parseTrustProxy,
+} from './config/env';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Behind nginx / a load balancer, request.ip would be the proxy's address
+  // for every client, which breaks the per-IP rate limits. Set TRUST_PROXY to
+  // the number of proxies in front of the API (usually 1).
+  const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+
+  if (trustProxy !== undefined) {
+    app.set('trust proxy', trustProxy);
+  }
 
   // 1. Enable Global Validation
   app.useGlobalPipes(
@@ -21,19 +36,13 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
 
   // 3. Enable CORS (Cross-Origin Resource Sharing)
-  // 🚨 CORRECTION CRITIQUE ICI :
-  // On ne peut pas mettre '*' ET credentials: true en même temps.
-  // Il faut lister explicitement les adresses de votre Frontend (Next.js).
+  // Allowed origins come from the environment: FRONTEND_URL, the optional
+  // CORS_ORIGINS list (admin dashboard, ...) and, outside production only,
+  // the local development ports. See src/config/env.ts.
   app.enableCors({
-    origin: [
-      'http://localhost:3000', // Backend (parfois utile)
-      'http://localhost:3001', // 👈 Votre Admin Panel Next.js (Port par défaut)
-      'http://localhost:3002', // Au cas où le port 3001 est pris
-      'http://127.0.0.1:3000', 
-      'http://127.0.0.1:3001',
-    ],
+    origin: getAllowedOrigins(),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true, // ✅ Maintenant autorisé car on a défini des origines précises
+    credentials: true,
   });
 
   // 4. Start the Server
@@ -41,6 +50,26 @@ async function bootstrap() {
 
   // L'ajout de '0.0.0.0' permet au serveur d'accepter les connexions venant du réseau Wi-Fi.
   await app.listen(port, '0.0.0.0');
+
+  if (!process.env.NODE_ENV) {
+    logger.warn(
+      'NODE_ENV is not set: the server runs in development mode (localhost CORS origins, shorter secrets allowed). Set NODE_ENV=production on the server.',
+    );
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    if (!getFrontendUrl().startsWith('https://')) {
+      logger.warn(
+        'FRONTEND_URL is not https: links sent to users (password reset, tracking) will not be secure.',
+      );
+    }
+
+    if (trustProxy === undefined) {
+      logger.warn(
+        'TRUST_PROXY is not set. If the API runs behind nginx or a load balancer, every visitor shares the proxy address and the rate limits apply to all of them at once. Set TRUST_PROXY to the number of proxies (usually 1).',
+      );
+    }
+  }
 
   logger.log(`Application is running on: http://localhost:${port}/api`);
   logger.log(`Network access (Mobile): http://YOUR_IP_ADDRESS:${port}/api`);

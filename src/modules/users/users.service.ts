@@ -5,6 +5,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { issuePasswordSetupLink } from '../auth/password-setup';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -17,7 +19,10 @@ import {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // ==========================================================
   // SAFE SELECT — never return password to frontend
@@ -54,6 +59,9 @@ export class UsersService {
   // ==========================================================
 
   async create(data: Prisma.UserCreateInput): Promise<User> {
+    // Login looks accounts up in lower case, so they must be stored that way.
+    data = { ...data, email: this.normalizeEmail(data.email) };
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -216,6 +224,10 @@ export class UsersService {
       throw new NotFoundException('Utilisateur introuvable.');
     }
 
+    if (updateData.email) {
+      updateData = { ...updateData, email: this.normalizeEmail(updateData.email) };
+    }
+
     if (updateData.email && updateData.email !== currentUser.email) {
       const existingEmail = await this.prisma.user.findUnique({
         where: { email: updateData.email },
@@ -268,6 +280,8 @@ export class UsersService {
     await this.findOne(id);
 
     if (data.email) {
+      data = { ...data, email: this.normalizeEmail(data.email) };
+
       const existingEmail = await this.prisma.user.findFirst({
         where: {
           email: data.email,
@@ -370,8 +384,8 @@ export class UsersService {
   // ==========================================================
   // 14. CREATE ARTISAN DIRECTLY
   // Used by admin dashboard
-  // Important: no fixed public password like "Artisan2026!"
-  // AuthService should sendPasswordSetupEmail(user.id) after creation
+  // No fixed password. The account gets a random unusable password and the
+  // owner receives a one-time link to choose their own (P0-04).
   // ==========================================================
 
   async createArtisanDirectly(data: {
@@ -379,7 +393,13 @@ export class UsersService {
     email: string;
     phone: string;
     specialty?: string;
-  }): Promise<User> {
+  }) {
+    if (typeof data?.name !== 'string' || !data.name.trim()) {
+      throw new BadRequestException('Le nom est obligatoire.');
+    }
+
+    data = { ...data, email: this.normalizeEmail(data.email) };
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -391,7 +411,7 @@ export class UsersService {
     const temporaryPassword = this.generateTemporaryPassword();
     const hashedPassword = await argon2.hash(temporaryPassword);
 
-    return this.prisma.user.create({
+    const user = await this.prisma.user.create({
       data: {
         name: data.name,
         email: data.email,
@@ -401,12 +421,19 @@ export class UsersService {
         isActive: true,
       },
     });
+
+    const passwordSetupUrl = await this.sendPasswordSetupLink(user);
+
+    return {
+      ...this.stripPassword(user),
+      ...(passwordSetupUrl ? { passwordSetupUrl } : {}),
+    };
   }
 
   // ==========================================================
   // 15. CREATE STAFF USER
   // Used later for SUPPORT / DISPATCHER / ACCOUNTANT / ADMIN
-  // AuthService should sendPasswordSetupEmail(user.id) after creation
+  // Same rule as artisans: random password + one-time set-password link.
   // ==========================================================
 
   async createStaffUser(data: {
@@ -414,7 +441,7 @@ export class UsersService {
     email: string;
     phone?: string;
     role: Role;
-  }): Promise<User> {
+  }) {
     const allowedStaffRoles: Role[] = [
       Role.ADMIN,
       Role.SUPER_ADMIN,
@@ -427,6 +454,12 @@ export class UsersService {
       throw new BadRequestException('Rôle staff invalide.');
     }
 
+    if (typeof data?.name !== 'string' || !data.name.trim()) {
+      throw new BadRequestException('Le nom est obligatoire.');
+    }
+
+    data = { ...data, email: this.normalizeEmail(data.email) };
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -438,7 +471,7 @@ export class UsersService {
     const temporaryPassword = this.generateTemporaryPassword();
     const hashedPassword = await argon2.hash(temporaryPassword);
 
-    return this.prisma.user.create({
+    const user = await this.prisma.user.create({
       data: {
         name: data.name,
         email: data.email,
@@ -448,6 +481,13 @@ export class UsersService {
         isActive: true,
       },
     });
+
+    const passwordSetupUrl = await this.sendPasswordSetupLink(user);
+
+    return {
+      ...this.stripPassword(user),
+      ...(passwordSetupUrl ? { passwordSetupUrl } : {}),
+    };
   }
 
   // ==========================================================
@@ -473,6 +513,63 @@ export class UsersService {
   // ==========================================================
 
   private generateTemporaryPassword(): string {
-    return `Temp-${crypto.randomBytes(16).toString('hex')}A1`;
+    return `Temp-${crypto.randomBytes(32).toString('hex')}A1`;
+  }
+
+  private stripPassword(user: User) {
+    const { password, ...safeUser } = user;
+    return safeUser;
+  }
+
+  /**
+   * Issues a new one-time "choose your password" link for an existing account
+   * (the first one was lost, or expired after 24 hours). The previous unused
+   * link is revoked. Only for accounts that can log in.
+   */
+  async reissuePasswordSetupLink(userId: number) {
+    const user = await this.findOne(userId);
+
+    if (user.deletedAt || !user.isActive || user.isGuest) {
+      throw new BadRequestException(
+        "Ce compte est désactivé ou n'est pas un compte complet : impossible de créer un lien.",
+      );
+    }
+
+    const passwordSetupUrl = await this.sendPasswordSetupLink(user);
+
+    return passwordSetupUrl
+      ? { message: 'Nouveau lien créé (24 h, usage unique).', passwordSetupUrl }
+      : { message: 'Un nouveau lien a été envoyé par email.' };
+  }
+
+  private normalizeEmail(email: string): string {
+    // Some admin routes take an inline body type, which the global
+    // ValidationPipe does not check: refuse anything that is not an address.
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      throw new BadRequestException('Adresse email invalide.');
+    }
+
+    return email.trim().toLowerCase();
+  }
+
+  /**
+   * Sends the one-time "choose your password" link.
+   *
+   * E-mail delivery is still simulated (NotificationsService), so the mail
+   * would never arrive. While that is true the link is also returned to the
+   * staff member who created the account, who hands it over in person or by
+   * message. The caller is always an authenticated back-office user.
+   */
+  private async sendPasswordSetupLink(user: User): Promise<string | undefined> {
+    const setupUrl = await issuePasswordSetupLink(this.prisma, user.id);
+
+    await this.notifications.sendEmail(
+      user.email,
+      'Création de votre mot de passe',
+      `Votre compte Smart Dépannage a été créé. Choisissez votre mot de passe ` +
+        `(lien valable 24 heures, usage unique) : ${setupUrl}`,
+    );
+
+    return this.notifications.isEmailSimulated() ? setupUrl : undefined;
   }
 }

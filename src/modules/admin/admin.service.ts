@@ -9,6 +9,7 @@ import * as crypto from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 
 import {
@@ -68,7 +69,7 @@ export class AdminService {
   // ==========================================================
 
   private getFrontendUrl(): string {
-    return process.env.FRONTEND_URL || 'http://localhost:3000';
+    return getConfiguredFrontendUrl();
   }
 
   private normalizeEmail(email: string): string {

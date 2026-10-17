@@ -260,8 +260,11 @@ export class PaymentsController {
     Role.ACCOUNTANT,
   )
   @Get(':paymentId/receipt')
-  generateReceipt(@Param('paymentId', ParseIntPipe) paymentId: number) {
-    return this.service.generateReceipt(paymentId);
+  generateReceipt(
+    @CurrentUser() user: { id: number; role: Role },
+    @Param('paymentId', ParseIntPipe) paymentId: number,
+  ) {
+    return this.service.generateReceipt(paymentId, user);
   }
 
   // ==========================================================

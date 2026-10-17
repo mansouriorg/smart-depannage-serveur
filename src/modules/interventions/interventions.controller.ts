@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { open, unlink } from 'fs/promises';
 
 import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
@@ -23,6 +23,55 @@ import { UpdateInterventionDto } from './dto/update-intervention.dto';
 import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
 import { ReportIssueDto } from './dto/report-issue.dto'; 
 import { AuthGuard } from '@nestjs/passport';
+import { isTicketStaff } from '../../common/auth/role-policy';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Role } from '../../../generated/prisma/client';
+import {
+  RateLimit,
+  RateLimitGuard,
+} from '../../common/rate-limit/rate-limit.guard';
+
+// Proof-of-work photos: images only, with the extension chosen by the server
+// from the declared type (never from the client's file name), and a size cap.
+// The folder is served publicly, so an .html or .svg upload would be a
+// stored-XSS vector.
+const PROOF_MAX_BYTES = 10 * 1024 * 1024;
+const PROOF_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+};
+
+/**
+ * The declared MIME type comes from the client. Before keeping a file in a
+ * publicly served folder, check that its first bytes really are those of a
+ * JPEG, PNG, WebP or HEIC/HEIF image.
+ */
+async function looksLikeImage(path: string): Promise<boolean> {
+  const handle = await open(path, 'r').catch(() => null);
+
+  if (!handle) return false;
+
+  try {
+    const head = Buffer.alloc(12);
+    await handle.read(head, 0, 12, 0);
+
+    const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+    const isPng =
+      head[0] === 0x89 && head.toString('latin1', 1, 4) === 'PNG';
+    const isWebp =
+      head.toString('latin1', 0, 4) === 'RIFF' &&
+      head.toString('latin1', 8, 12) === 'WEBP';
+    const isHeif = head.toString('latin1', 4, 8) === 'ftyp';
+
+    return isJpeg || isPng || isWebp || isHeif;
+  } finally {
+    await handle.close();
+  }
+}
 
 @Controller('interventions')
 export class InterventionsController {
@@ -32,6 +81,8 @@ export class InterventionsController {
   // 1. PUBLIC ROUTE: Create Request (GUESTS)
   // ==========================================================
   @Post()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'legacy-guest-create', limit: 10, windowMs: 60 * 60_000 })
   create(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
     return this.interventionsService.create(null, createInterventionDto);
   }
@@ -42,7 +93,7 @@ export class InterventionsController {
   @Post('secure')
   @UseGuards(AuthGuard('jwt'))
   createSecure(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
-    return this.interventionsService.create(req.user.userId, createInterventionDto);
+    return this.interventionsService.create(req.user.id, createInterventionDto);
   }
 
   // ==========================================================
@@ -53,7 +104,7 @@ export class InterventionsController {
   @UseGuards(AuthGuard('jwt')) 
   findAssigned(@Request() req) {
     // Only Artisans should call this, but the query handles it safely
-    return this.interventionsService.findByArtisan(req.user.userId);
+    return this.interventionsService.findByArtisan(req.user.id);
   }
 
   // ==========================================================
@@ -64,8 +115,8 @@ export class InterventionsController {
   @Get()
   @UseGuards(AuthGuard('jwt'))
   findAll(@Request() req) {
-    // Logic: Admins see everything
-    if (req.user.role === 'ADMIN') {
+    // Logic: back-office staff see everything (ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER)
+    if (isTicketStaff(req.user.role)) {
       return this.interventionsService.findAll();
     }
     // Artisans see "Pending" jobs (Marketplace)
@@ -74,7 +125,7 @@ export class InterventionsController {
     }
     
     // Clients see only their own history
-    return this.interventionsService.findByUser(req.user.userId);
+    return this.interventionsService.findByUser(req.user.id);
   }
 
   // ==========================================================
@@ -84,7 +135,7 @@ export class InterventionsController {
   @Get('dashboard/stats')
   @UseGuards(AuthGuard('jwt'))
   getDashboardStats(@Request() req) {
-    if (req.user.role !== 'ADMIN') {
+    if (!isTicketStaff(req.user.role)) {
       throw new ForbiddenException('Seuls les administrateurs ont accès aux statistiques.');
     }
     return this.interventionsService.getDashboardStats();
@@ -93,8 +144,12 @@ export class InterventionsController {
   // GET /interventions/:id (Get details)
   @Get(':id')
   @UseGuards(AuthGuard('jwt'))
-  findOne(@Param('id') id: string) {
-    return this.interventionsService.findOne(+id);
+  findOne(@Request() req, @Param('id') id: string) {
+    // P0-16: the service checks that this user may see this ticket.
+    return this.interventionsService.findOneForActor(+id, {
+      id: req.user.id,
+      role: req.user.role,
+    });
   }
 
   // ==========================================================
@@ -107,25 +162,44 @@ export class InterventionsController {
     @Param('id') id: string, 
     @Body() updateInterventionDto: UpdateInterventionDto
   ) {
-    // Security: Clients cannot update interventions directly
-    if (req.user.role === 'CLIENT') {
-       throw new ForbiddenException('Clients cannot update interventions directly');
+    // P0-16: staff manage tickets; an artisan may only advance their own
+    // mission (en route / on site / in progress); everybody else is refused.
+    if (isTicketStaff(req.user.role)) {
+      return this.interventionsService.update(+id, updateInterventionDto);
     }
-    return this.interventionsService.update(+id, updateInterventionDto);
+
+    if (req.user.role === 'ARTISAN') {
+      return this.interventionsService.updateAsArtisan(
+        +id,
+        req.user.id,
+        updateInterventionDto,
+      );
+    }
+
+    throw new ForbiddenException('Vous ne pouvez pas modifier cette intervention.');
   }
 
   // ==========================================================
   // 7. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
   // ==========================================================
   @Post(':id/complete-work')
-  @UseGuards(AuthGuard('jwt'))
+  // The role is checked BEFORE the interceptor writes the file to disk.
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(Role.ARTISAN)
   @UseInterceptors(FileInterceptor('photo', {
+    limits: { fileSize: PROOF_MAX_BYTES, files: 1 },
+    fileFilter: (req, file, cb) => {
+      if (PROOF_EXTENSIONS[file.mimetype]) {
+        cb(null, true);
+      } else {
+        cb(new BadRequestException('La preuve doit être une photo (JPEG, PNG, WebP ou HEIC).'), false);
+      }
+    },
     storage: diskStorage({
       destination: './uploads/proofs', // Ensure this folder exists at the root of your project!
       filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = extname(file.originalname);
-        cb(null, `proof-${uniqueSuffix}${ext}`);
+        cb(null, `proof-${uniqueSuffix}${PROOF_EXTENSIONS[file.mimetype] ?? '.jpg'}`);
       }
     })
   }))
@@ -146,6 +220,11 @@ export class InterventionsController {
       throw new BadRequestException('La photo sécurisée est obligatoire.');
     }
 
+    if (!(await looksLikeImage(file.path))) {
+      await unlink(file.path).catch(() => undefined);
+      throw new BadRequestException("Le fichier envoyé n'est pas une photo valide.");
+    }
+
     // Convert string inputs from FormData back into proper data types
     const proofData = {
       photoUrl: `/uploads/proofs/${file.filename}`,
@@ -154,7 +233,14 @@ export class InterventionsController {
       timestamp: new Date(timestamp),
     };
 
-    return this.interventionsService.completeWork(+id, proofData);
+    try {
+      return await this.interventionsService.completeWork(+id, req.user.id, proofData);
+    } catch (error) {
+      // Rejected (not your mission, already closed...): do not leave the file
+      // in a publicly served folder.
+      await unlink(file.path).catch(() => undefined);
+      throw error;
+    }
   }
 
   // ==========================================================

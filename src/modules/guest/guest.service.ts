@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -10,6 +11,11 @@ import * as crypto from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
+import {
+  RATE_RULES,
+  RateLimitService,
+} from '../../common/rate-limit/rate-limit.service';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
@@ -36,6 +42,7 @@ export class GuestService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
+    private readonly rateLimit: RateLimitService,
   ) {}
 
   // ==========================================================
@@ -43,7 +50,7 @@ export class GuestService {
   // ==========================================================
 
   private getFrontendUrl(): string {
-    return process.env.FRONTEND_URL || 'http://localhost:3000';
+    return getConfiguredFrontendUrl();
   }
 
   private hashToken(token: string): string {
@@ -55,7 +62,8 @@ export class GuestService {
   }
 
   private generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // CSPRNG, not Math.random() (P0-07).
+    return crypto.randomInt(100000, 1000000).toString();
   }
 
   private generateUnusablePassword(): string {
@@ -172,14 +180,36 @@ export class GuestService {
       );
     }
 
-    const existingUser = await this.prisma.user.findFirst({
+    const matches = await this.prisma.user.findMany({
       where: {
         OR: [
           contactEmail ? { email: contactEmail } : undefined,
           contactPhone ? { phone: contactPhone } : undefined,
         ].filter(Boolean) as any[],
       },
+      orderBy: { id: 'asc' },
     });
+
+    // The e-mail is unique and always counts. A phone number is shared, so a
+    // deleted or deactivated account that only shares the phone is ignored.
+    const relevant = matches.filter(
+      (user) =>
+        (contactEmail && user.email === contactEmail) ||
+        (user.isActive && !user.deletedAt),
+    );
+
+    // P0-09: a public request must never attach itself to a real account
+    // (client, artisan, staff). Only a previous guest profile is reused, and
+    // the answer does not depend on the order the database returns rows in.
+    if (relevant.some((user) => !user.isGuest)) {
+      throw new ConflictException(
+        'Un compte existe déjà avec ces coordonnées. Connectez-vous pour envoyer votre demande.',
+      );
+    }
+
+    const existingUser =
+      relevant.find((user) => contactEmail && user.email === contactEmail) ??
+      relevant[0];
 
     if (existingUser) {
       return existingUser;
@@ -586,6 +616,28 @@ export class GuestService {
       throw new BadRequestException('Email ou téléphone obligatoire.');
     }
 
+    const genericAnswer = {
+      message:
+        'Si un profil invité existe, un lien ou code d’activation a été envoyé.',
+    };
+
+    // P0-07: at most 3 activation messages per email / phone per hour. Over
+    // the limit the answer is the same generic one, so nothing is revealed.
+    // The lookup below matches the email OR the phone, so the quota is counted
+    // on every identifier given: changing the phone must not reset the count
+    // for the same email.
+    const identifiers = [dto.email, dto.phone]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => `guest-activation:${value.trim().toLowerCase()}`);
+
+    const withinLimit = identifiers
+      .map((key) => this.rateLimit.tryConsume(key, RATE_RULES.codeSendPerTarget))
+      .every(Boolean);
+
+    if (!withinLimit) {
+      return genericAnswer;
+    }
+
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
@@ -598,10 +650,7 @@ export class GuestService {
     });
 
     if (!user) {
-      return {
-        message:
-          'Si un profil invité existe, un lien ou code d’activation a été envoyé.',
-      };
+      return genericAnswer;
     }
 
     const rawMagicToken = this.generateRawToken();
@@ -683,6 +732,9 @@ export class GuestService {
         },
       });
     } else if (dto.phone && dto.otp) {
+      // P0-07: a 6 digit code must not be guessable by trying all of them.
+      this.rateLimit.assertNotLocked(`otp:guest:${dto.phone}`);
+
       const user = await this.prisma.user.findFirst({
         where: {
           phone: dto.phone,
@@ -715,7 +767,18 @@ export class GuestService {
     }
 
     if (!tokenRecord) {
+      if (dto.phone && dto.otp) {
+        this.rateLimit.registerFailure(
+          `otp:guest:${dto.phone}`,
+          RATE_RULES.otpFailures,
+        );
+      }
+
       throw new BadRequestException('Lien ou code invalide ou expiré.');
+    }
+
+    if (dto.phone && dto.otp) {
+      this.rateLimit.clear(`otp:guest:${dto.phone}`);
     }
 
     const user = await this.prisma.user.findUnique({

@@ -13,6 +13,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
 
 import {
   ArtisanLocationUpdateDto,
@@ -42,10 +43,7 @@ type JwtPayload = {
 
 @WebSocketGateway({
   namespace: 'realtime',
-  cors: {
-    origin: '*',
-    credentials: true,
-  },
+  cors: socketCorsOptions,
 })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -118,7 +116,7 @@ export class RealtimeGateway
 
   private async resolveUserFromToken(token: string): Promise<SocketUser> {
     const payload = this.jwtService.verify<JwtPayload>(token, {
-      secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_change_me',
+      secret: getJwtAccessSecret(),
     });
 
     const userId = Number(payload.sub || payload.userId || payload.id);

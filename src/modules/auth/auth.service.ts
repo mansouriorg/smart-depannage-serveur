@@ -11,6 +11,16 @@ import * as crypto from 'crypto';
 import { UsersService } from '../users/users.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  getFrontendUrl as getConfiguredFrontendUrl,
+  getJwtAccessSecret,
+  getJwtRefreshSecret,
+} from '../../config/env';
+import {
+  RATE_RULES,
+  RateLimitService,
+} from '../../common/rate-limit/rate-limit.service';
+import { generateUnusablePassword } from './password-setup';
 
 import {
   AuthTokenType,
@@ -40,7 +50,20 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
+    private readonly rateLimit: RateLimitService,
   ) {}
+
+  /**
+   * Hash verified when the email is unknown, so "no such account" and "wrong
+   * password" take the same time. Built lazily with the same argon2 settings
+   * as real hashes.
+   */
+  private dummyPasswordHash?: Promise<string>;
+
+  private getDummyPasswordHash(): Promise<string> {
+    this.dummyPasswordHash ??= argon2.hash(generateUnusablePassword());
+    return this.dummyPasswordHash;
+  }
 
   // ==========================================================
   // 1. HELPERS
@@ -60,11 +83,12 @@ export class AuthService {
   }
 
   private generatePhoneCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // CSPRNG, not Math.random(): a 6 digit code is only as strong as its source.
+    return crypto.randomInt(100000, 1000000).toString();
   }
 
   private getFrontendUrl(): string {
-    return process.env.FRONTEND_URL || 'http://localhost:3000';
+    return getConfiguredFrontendUrl();
   }
 
   private isGeneratedGuestEmail(email: string): boolean {
@@ -126,7 +150,7 @@ export class AuthService {
     };
 
     const options: JwtSignOptions = {
-      secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_change_me',
+      secret: getJwtAccessSecret(),
       expiresIn: this.getAccessTokenExpiration(),
     };
 
@@ -156,7 +180,7 @@ export class AuthService {
     };
 
     const options: JwtSignOptions = {
-      secret: process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret_change_me',
+      secret: getJwtRefreshSecret(),
       expiresIn: this.getRefreshTokenExpiration(),
     };
 
@@ -249,9 +273,8 @@ export class AuthService {
 
   // ==========================================================
   // 4. REGISTER
-  // Creates a normal client account.
-  // If a guest profile already exists with same email/phone,
-  // it converts that guest profile into a real account.
+  // Creates a normal client account. It never takes over an existing guest
+  // profile (P0-09): that needs the one-time code flow of GuestService.
   // ==========================================================
 
   async register(userDto: {
@@ -263,7 +286,7 @@ export class AuthService {
     const normalizedEmail = this.normalizeEmail(userDto.email);
     const normalizedPhone = this.normalizePhone(userDto.phone);
 
-    const existingUser = await this.prisma.user.findFirst({
+    const matches = await this.prisma.user.findMany({
       where: {
         OR: [
           { email: normalizedEmail },
@@ -273,7 +296,9 @@ export class AuthService {
     });
 
     // Case 1: normal user already exists
-    if (existingUser && !existingUser.isGuest) {
+    const existingUser = matches.find((candidate) => !candidate.isGuest);
+
+    if (existingUser) {
       if (existingUser.email === normalizedEmail) {
         throw new ConflictException('Cet email est déjà utilisé.');
       }
@@ -287,65 +312,25 @@ export class AuthService {
       throw new ConflictException('Un compte existe déjà.');
     }
 
-    // Case 2: guest user exists => activate/convert it
-    if (existingUser && existingUser.isGuest) {
-      const existingEmailOwner = await this.prisma.user.findUnique({
-        where: { email: normalizedEmail },
-      });
-
-      if (
-        existingEmailOwner &&
-        existingEmailOwner.id !== existingUser.id
-      ) {
-        throw new ConflictException('Cet email est déjà utilisé.');
-      }
-
-      const hashedPassword = await argon2.hash(userDto.password);
-
-      const activatedGuest = await this.prisma.$transaction(async (tx) => {
-        const updated = await tx.user.update({
-          where: { id: existingUser.id },
-          data: {
-            email: normalizedEmail,
-            name: userDto.name || existingUser.name,
-            phone: normalizedPhone || existingUser.phone,
-            password: hashedPassword,
-            role: Role.CLIENT,
-            isActive: true,
-            isGuest: false,
-            guestActivatedAt: new Date(),
-            passwordChangedAt: new Date(),
-
-            // The user still needs email verification.
-            // OTP activation can verify phone in GuestService.
-            emailVerifiedAt: null,
-          },
-        });
-
-        await tx.authToken.updateMany({
-          where: {
-            userId: existingUser.id,
-            type: {
-              in: [
-                AuthTokenType.GUEST_MAGIC_LINK,
-                AuthTokenType.GUEST_OTP,
-                AuthTokenType.PASSWORD_RESET,
-              ],
-            },
-            usedAt: null,
-            revokedAt: null,
-          },
-          data: {
-            revokedAt: new Date(),
-          },
-        });
-
-        return updated;
-      });
-
-      await this.sendEmailVerification(activatedGuest.id);
-
-      return this.createTokenPair(activatedGuest);
+    // Case 2: a guest account already uses this EMAIL.
+    //
+    // P0-09: registering must NOT convert the guest account. Anyone who knew
+    // (or guessed) a guest's e-mail could otherwise register with it and take
+    // over the account, including its interventions, addresses and tracking
+    // links. The conversion now requires proof of ownership through the
+    // one-time code flow of GuestService (requestAccountActivation /
+    // activateGuestAccount). Re-enabling a single-step flow is tracked in
+    // P1-03 and needs working SMS delivery first.
+    //
+    // A guest that only shares the PHONE does not block registration: phone
+    // numbers are not unique, the new account is simply not linked to that
+    // guest, so nothing is taken over and nobody can lock a number out by
+    // creating a guest profile for it.
+    if (matches.some((candidate) => candidate.email === normalizedEmail)) {
+      throw new ConflictException(
+        'Un compte invité existe déjà avec ces coordonnées. ' +
+          'Activez-le avec le code reçu pour définir votre mot de passe.',
+      );
     }
 
     // Case 3: totally new user
@@ -370,37 +355,50 @@ export class AuthService {
   // OR login(email, password) if controller sends credentials
   // ==========================================================
 
-  async login(userOrEmail: any, password?: string) {
+  async login(userOrEmail: any, password?: string, clientIp?: string) {
     let user: User | null = null;
 
     // Case 1: login(email, password)
     if (typeof userOrEmail === 'string') {
-      user = await this.usersService.findOneByEmail(
-        this.normalizeEmail(userOrEmail),
-      );
+      const normalizedEmail = this.normalizeEmail(userOrEmail);
+      const accountKey = `login:${normalizedEmail}`;
+      const clientKey = `login:${normalizedEmail}:${clientIp ?? 'unknown'}`;
 
-      if (!user) {
+      // P0-07: after 5 wrong passwords from one address, that address is locked
+      // out of the account for 15 minutes (a correct password is refused too).
+      // 30 wrong passwords from many addresses lock the account itself.
+      this.rateLimit.assertNotLocked(clientKey);
+      this.rateLimit.assertNotLocked(accountKey);
+
+      const found = await this.usersService.findOneByEmail(normalizedEmail);
+
+      // Always run one argon2 verification so the response time does not tell
+      // an attacker whether the email exists.
+      const hashToCheck = found?.password ?? (await this.getDummyPasswordHash());
+      const isPasswordValid = await argon2
+        .verify(hashToCheck, password || '')
+        .catch(() => false);
+
+      if (!found || !isPasswordValid) {
+        this.rateLimit.registerFailure(clientKey, RATE_RULES.loginFailuresPerClient);
+        this.rateLimit.registerFailure(accountKey, RATE_RULES.loginFailuresPerAccount);
         throw new UnauthorizedException('Email ou mot de passe incorrect.');
       }
 
-      if (user.isGuest) {
+      // Account state is only disclosed to someone who knows the password.
+      if (found.isGuest) {
         throw new UnauthorizedException(
           'Veuillez activer votre compte avant de vous connecter.',
         );
       }
 
-      if (!user.isActive || user.deletedAt) {
+      if (!found.isActive || found.deletedAt) {
         throw new UnauthorizedException('Compte désactivé.');
       }
 
-      const isPasswordValid = await argon2.verify(
-        user.password,
-        password || '',
-      );
-
-      if (!isPasswordValid) {
-        throw new UnauthorizedException('Email ou mot de passe incorrect.');
-      }
+      this.rateLimit.clear(clientKey);
+      this.rateLimit.clear(accountKey);
+      user = found;
     }
 
     // Case 2: login(user)
@@ -434,8 +432,7 @@ export class AuthService {
       payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
         refreshToken,
         {
-          secret:
-            process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret_change_me',
+          secret: getJwtRefreshSecret(),
         },
       );
     } catch {
@@ -506,8 +503,7 @@ export class AuthService {
       const payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
         refreshToken,
         {
-          secret:
-            process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret_change_me',
+          secret: getJwtRefreshSecret(),
         },
       );
 
@@ -559,7 +555,17 @@ export class AuthService {
   async forgotPassword(email: string) {
     const normalizedEmail = this.normalizeEmail(email);
 
-    const user = await this.usersService.findOneByEmail(normalizedEmail);
+    // P0-07: at most 3 reset mails per address per hour. Over the limit we
+    // answer exactly as if nothing were wrong, so the limit itself does not
+    // reveal whether the account exists.
+    const withinLimit = this.rateLimit.tryConsume(
+      `forgot:${normalizedEmail}`,
+      RATE_RULES.forgotPasswordPerEmail,
+    );
+
+    const user = withinLimit
+      ? await this.usersService.findOneByEmail(normalizedEmail)
+      : null;
 
     if (!user || !user.isActive || user.deletedAt || user.isGuest) {
       return {
@@ -741,6 +747,11 @@ export class AuthService {
       };
     }
 
+    this.rateLimit.assertWithin(
+      `code-send:email:${user.id}`,
+      RATE_RULES.codeSendPerTarget,
+    );
+
     const rawToken = await this.createOneTimeToken(
       user.id,
       AuthTokenType.EMAIL_VERIFICATION,
@@ -837,6 +848,12 @@ export class AuthService {
       };
     }
 
+    // P0-07: limit how many SMS one user can trigger (cost and spam).
+    this.rateLimit.assertWithin(
+      `code-send:phone:${userId}`,
+      RATE_RULES.codeSendPerTarget,
+    );
+
     const code = this.generatePhoneCode();
 
     await this.prisma.authToken.updateMany({
@@ -875,6 +892,10 @@ export class AuthService {
   // ==========================================================
 
   async verifyPhone(userId: number, code: string) {
+    // P0-07: a 6 digit code must not be guessable by trying all of them.
+    const lockKey = `otp:phone:${userId}`;
+    this.rateLimit.assertNotLocked(lockKey);
+
     const user = await this.usersService.findOne(userId);
 
     if (user.isGuest) {
@@ -897,8 +918,11 @@ export class AuthService {
     });
 
     if (!tokenRecord) {
+      this.rateLimit.registerFailure(lockKey, RATE_RULES.otpFailures);
       throw new BadRequestException('Code invalide ou expiré.');
     }
+
+    this.rateLimit.clear(lockKey);
 
     await this.prisma.$transaction([
       this.prisma.user.update({

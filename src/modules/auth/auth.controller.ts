@@ -4,13 +4,19 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 
 import { AuthService } from './auth.service';
 import { AuthCredentialsDto } from './dto/auth-credentials.dto';
+import { RegisterDto } from './dto/register.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import {
+  RateLimit,
+  RateLimitGuard,
+} from '../../common/rate-limit/rate-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 // DTOs for the new auth features
@@ -30,9 +36,13 @@ export class AuthController {
   // POST /auth/register
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'register', limit: 10, windowMs: 60 * 60_000 })
   @Post('register')
-  async register(@Body() credentialsDto: AuthCredentialsDto) {
-    return this.authService.register(credentialsDto);
+  async register(@Body() registerDto: RegisterDto) {
+    // RegisterDto enforces the password policy (8+ chars, uppercase, digit)
+    // and accepts the optional name and phone (P0-03).
+    return this.authService.register(registerDto);
   }
 
   // ==========================================================
@@ -40,12 +50,15 @@ export class AuthController {
   // POST /auth/login
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'login', limit: 30, windowMs: 15 * 60_000 })
   @HttpCode(HttpStatus.OK)
   @Post('login')
-  async login(@Body() credentialsDto: AuthCredentialsDto) {
+  async login(@Body() credentialsDto: AuthCredentialsDto, @Req() request: any) {
     return this.authService.login(
       credentialsDto.email,
       credentialsDto.password,
+      request.ip,
     );
   }
 
@@ -89,6 +102,8 @@ export class AuthController {
   // POST /auth/forgot-password
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'forgot-password', limit: 5, windowMs: 15 * 60_000 })
   @HttpCode(HttpStatus.OK)
   @Post('forgot-password')
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
@@ -100,6 +115,8 @@ export class AuthController {
   // POST /auth/reset-password
   // ==========================================================
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'reset-password', limit: 10, windowMs: 15 * 60_000 })
   @HttpCode(HttpStatus.OK)
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
@@ -169,7 +186,8 @@ export class AuthController {
   // Requires accessToken
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({ name: 'phone-verify', limit: 20, windowMs: 15 * 60_000 })
   @HttpCode(HttpStatus.OK)
   @Post('phone/verify')
   async verifyPhone(

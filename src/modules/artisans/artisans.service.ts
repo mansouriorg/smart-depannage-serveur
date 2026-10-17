@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -10,6 +11,7 @@ import * as crypto from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 
 import { ApplyArtisanDto } from './dto/apply-artisan.dto';
@@ -55,7 +57,7 @@ export class ArtisansService {
   // ==========================================================
 
   private getFrontendUrl(): string {
-    return process.env.FRONTEND_URL || 'http://localhost:3000';
+    return getConfiguredFrontendUrl();
   }
 
   private hashToken(token: string): string {
@@ -78,15 +80,17 @@ export class ArtisansService {
     return phone?.trim() || undefined;
   }
 
-  private canAcceptMissionStatus(status: Status): boolean {
-    const allowedStatuses: Status[] = [
+  private acceptableMissionStatuses(): Status[] {
+    return [
       Status.PENDING,
       Status.ADMIN_REVIEW,
       Status.QUOTE_ACCEPTED,
       Status.ASSIGNED,
     ];
+  }
 
-    return allowedStatuses.includes(status);
+  private canAcceptMissionStatus(status: Status): boolean {
+    return this.acceptableMissionStatuses().includes(status);
   }
 
   private safeUserSelect = {
@@ -881,14 +885,33 @@ export class ArtisansService {
       );
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: intervention.id },
+    // P0-10: claim the mission atomically. The check above and the write
+    // below are two separate queries, so two artisans pressing "accept" at the
+    // same moment used to both succeed (last write won, both were told yes).
+    // The WHERE clause makes the database decide: only one UPDATE can match a
+    // mission that is still unassigned (or already theirs) and still open.
+    const claimed = await this.prisma.intervention.updateMany({
+      where: {
+        id: intervention.id,
+        status: { in: this.acceptableMissionStatuses() },
+        OR: [{ artisanId: null }, { artisanId: userId }],
+      },
       data: {
         artisanId: userId,
         status: Status.ACCEPTED,
         artisanAcceptedAt: new Date(),
         lastStatusChangedAt: new Date(),
       },
+    });
+
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'Cette mission vient d’être attribuée à un autre artisan ou n’est plus disponible.',
+      );
+    }
+
+    const updated = await this.prisma.intervention.findUniqueOrThrow({
+      where: { id: intervention.id },
       include: this.missionInclude(),
     });
 

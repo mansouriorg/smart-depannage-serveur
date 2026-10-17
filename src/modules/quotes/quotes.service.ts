@@ -15,8 +15,10 @@ import {
   MessageAudience,
   Prisma,
   QuoteStatus,
+  Role,
   Status,
 } from '../../../generated/prisma/client';
+import { isBackOffice, isTicketStaff } from '../../common/auth/role-policy';
 
 @Injectable()
 export class QuotesService {
@@ -135,6 +137,43 @@ export class QuotesService {
     };
   }
 
+  /**
+   * P0-06: who may create, edit, send, cancel a quote of an intervention.
+   * Ticket staff: any intervention. Artisan: only the one assigned to them.
+   * Before, any artisan could write quotes on any intervention.
+   */
+  private async assertCanManageQuotesOf(
+    actorId: number,
+    interventionId: number,
+  ): Promise<void> {
+    const [actor, intervention] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: actorId },
+        select: { role: true },
+      }),
+      this.prisma.intervention.findUnique({
+        where: { id: interventionId },
+        select: { artisanId: true },
+      }),
+    ]);
+
+    if (!actor || !intervention) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+
+    if (isTicketStaff(actor.role)) {
+      return;
+    }
+
+    if (actor.role === Role.ARTISAN && intervention.artisanId === actorId) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      'Vous ne pouvez gérer que les devis de vos propres missions.',
+    );
+  }
+
   private async ensureInterventionExists(interventionId: number) {
     const intervention = await this.prisma.intervention.findUnique({
       where: {
@@ -238,6 +277,7 @@ export class QuotesService {
     createdById: number,
     dto: CreateQuoteDto,
   ) {
+    await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
 
     const totals = this.calculateTotals(dto.items, dto.taxRate ?? 20);
@@ -302,6 +342,7 @@ export class QuotesService {
     createdById: number,
     dto: CreateQuoteDto,
   ) {
+    await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
 
     const totals = this.calculateTotals(dto.items, dto.taxRate ?? 20);
@@ -337,6 +378,8 @@ export class QuotesService {
     dto: Partial<CreateQuoteDto>,
   ) {
     const quote = await this.getQuoteOrFail(quoteId);
+
+    await this.assertCanManageQuotesOf(updatedById, quote.interventionId);
 
     this.ensureQuoteEditable(quote);
 
@@ -408,6 +451,8 @@ export class QuotesService {
 
   async sendQuote(quoteId: number, sentById: number) {
     const quote = await this.getQuoteOrFail(quoteId);
+
+    await this.assertCanManageQuotesOf(sentById, quote.interventionId);
 
     const sendableStatuses: QuoteStatus[] = [
       QuoteStatus.DRAFT,
@@ -506,8 +551,22 @@ export class QuotesService {
   // Client/Admin/Artisan: quote detail
   // ==========================================================
 
-  async findOne(quoteId: number) {
-    return this.getQuoteOrFail(quoteId);
+  async findOne(quoteId: number, actor?: { id: number; role: Role }) {
+    const quote = await this.getQuoteOrFail(quoteId);
+
+    // P0-06: back office sees every quote; an artisan only the quotes of
+    // their own missions. Anyone else gets the same 404 as an unknown id.
+    if (actor && !isBackOffice(actor.role)) {
+      const isAssignedArtisan =
+        actor.role === Role.ARTISAN &&
+        quote.intervention?.artisanId === actor.id;
+
+      if (!isAssignedArtisan) {
+        throw new NotFoundException('Devis introuvable.');
+      }
+    }
+
+    return quote;
   }
 
   // ==========================================================
@@ -706,6 +765,8 @@ export class QuotesService {
   ) {
     const quote = await this.getQuoteOrFail(quoteId);
 
+    await this.assertCanManageQuotesOf(cancelledById, quote.interventionId);
+
     const nonCancellableStatuses: QuoteStatus[] = [
       QuoteStatus.ACCEPTED,
       QuoteStatus.CANCELLED,
@@ -790,8 +851,12 @@ export class QuotesService {
   // Admin / Artisan: attach or update PDF URL
   // ==========================================================
 
-  async setPdfUrl(quoteId: number, pdfUrl: string) {
+  async setPdfUrl(quoteId: number, pdfUrl: string, actorId?: number) {
     const quote = await this.getQuoteOrFail(quoteId);
+
+    if (actorId !== undefined) {
+      await this.assertCanManageQuotesOf(actorId, quote.interventionId);
+    }
 
     return this.prisma.quote.update({
       where: {

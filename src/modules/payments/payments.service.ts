@@ -17,8 +17,10 @@ import {
   PaymentProvider,
   PaymentStatus,
   Prisma,
+  Role,
   Status,
 } from '../../../generated/prisma/client';
+import { isBackOffice } from '../../common/auth/role-policy';
 
 @Injectable()
 export class PaymentsService {
@@ -69,8 +71,8 @@ export class PaymentsService {
     return Math.round(value * 100) / 100;
   }
 
-  private generateReceiptNumber(paymentId: number): string {
-    const year = new Date().getFullYear();
+  private generateReceiptNumber(paymentId: number, date: Date = new Date()): string {
+    const year = date.getFullYear();
     return `RCPT-${year}-${String(paymentId).padStart(6, '0')}`;
   }
 
@@ -713,8 +715,25 @@ export class PaymentsService {
   // No external PDF generator for now
   // ==========================================================
 
-  async generateReceipt(paymentId: number) {
+  async generateReceipt(
+    paymentId: number,
+    user: { id: number; role: Role },
+  ) {
     const payment = await this.getPaymentOrFail(paymentId);
+
+    // P0-06: a receipt shows the names, e-mails and phones of both parties.
+    // Only back-office staff, the client who paid and the artisan of the job
+    // may read it. Anyone else gets the same 404 as for an unknown id.
+    const intervention = payment.intervention;
+
+    const isOwnerClient =
+      user.role === Role.CLIENT && intervention.clientId === user.id;
+    const isAssignedArtisan =
+      user.role === Role.ARTISAN && intervention.artisanId === user.id;
+
+    if (!isBackOffice(user.role) && !isOwnerClient && !isAssignedArtisan) {
+      throw new NotFoundException('Paiement introuvable.');
+    }
 
     if (payment.status !== PaymentStatus.PAID) {
       throw new BadRequestException(
@@ -722,39 +741,37 @@ export class PaymentsService {
       );
     }
 
+    // P0-06: reading a receipt must not write to the database. The number and
+    // date are assigned when the payment is confirmed (see confirm()); for
+    // older rows without them we derive the same values from existing data.
     const receiptNumber =
-      payment.receiptNumber || this.generateReceiptNumber(payment.id);
-
-    const updated = await this.prisma.payment.update({
-      where: {
-        id: paymentId,
-      },
-      data: {
-        receiptNumber,
-        receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
-      },
-      include: this.paymentInclude,
-    });
+      payment.receiptNumber ||
+      this.generateReceiptNumber(
+        payment.id,
+        payment.confirmedAt ?? payment.createdAt,
+      );
+    const receiptDate =
+      payment.receiptGeneratedAt ?? payment.confirmedAt ?? payment.createdAt;
 
     return {
-      receiptNumber: updated.receiptNumber,
-      receiptUrl: updated.receiptUrl,
-      generatedAt: updated.receiptGeneratedAt,
-      payment: updated,
+      receiptNumber,
+      receiptUrl: payment.receiptUrl,
+      generatedAt: receiptDate,
+      payment,
       receipt: {
-        number: updated.receiptNumber,
-        date: updated.receiptGeneratedAt,
-        amount: updated.amount,
-        amountRefunded: updated.amountRefunded,
-        currency: updated.currency,
-        method: updated.method,
-        provider: updated.provider,
-        reference: updated.reference,
-        interventionId: updated.interventionId,
-        quoteId: updated.quoteId,
-        invoiceId: updated.invoiceId,
-        client: updated.intervention.client,
-        artisan: updated.intervention.artisan,
+        number: receiptNumber,
+        date: receiptDate,
+        amount: payment.amount,
+        amountRefunded: payment.amountRefunded,
+        currency: payment.currency,
+        method: payment.method,
+        provider: payment.provider,
+        reference: payment.reference,
+        interventionId: payment.interventionId,
+        quoteId: payment.quoteId,
+        invoiceId: payment.invoiceId,
+        client: payment.intervention.client,
+        artisan: payment.intervention.artisan,
       },
       message:
         'Reçu généré côté backend. Vous pouvez utiliser ces données pour afficher ou imprimer le reçu côté frontend.',
@@ -775,7 +792,11 @@ export class PaymentsService {
       data: {
         receiptUrl,
         receiptNumber:
-          payment.receiptNumber || this.generateReceiptNumber(payment.id),
+          payment.receiptNumber ||
+          this.generateReceiptNumber(
+            payment.id,
+            payment.confirmedAt ?? payment.createdAt,
+          ),
         receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
       },
       include: this.paymentInclude,

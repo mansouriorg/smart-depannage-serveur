@@ -21,8 +21,22 @@ const prisma = new PrismaClient({ adapter });
 async function main() {
   console.log('🌱 Starting seeding...');
 
-  // 4. Create a password hash
-  const password = await argon2.hash('password123');
+  // 4. Choose the demo password (P0-12: no password written in the source).
+  // Set SEED_PASSWORD in .env to choose it; otherwise a random one is generated
+  // and printed ONCE below. In production only the admin account is created.
+  const isProduction = process.env.NODE_ENV === 'production';
+  const seedPassword =
+    process.env.SEED_PASSWORD?.trim() || crypto.randomBytes(12).toString('base64url');
+
+  if (isProduction && !process.env.SEED_PASSWORD?.trim()) {
+    throw new Error('Set SEED_PASSWORD explicitly to seed a production database.');
+  }
+
+  if (!process.env.SEED_PASSWORD?.trim()) {
+    console.log(`Generated password for the demo accounts (shown once): ${seedPassword}`);
+  }
+
+  const password = await argon2.hash(seedPassword);
 
   // 5. Create an Admin User
   const admin = await prisma.user.upsert({
@@ -37,6 +51,11 @@ async function main() {
     },
   });
   console.log(`Created Admin: ${admin.email}`);
+
+  if (isProduction) {
+    console.log('Production: demo client, artisan and ticket skipped.');
+    return;
+  }
 
   // 6. Create a Client
   const client = await prisma.user.upsert({

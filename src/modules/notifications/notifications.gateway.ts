@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 
 import { Role } from '../../../generated/prisma/client';
+import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
 
 type SocketUser = {
   sub: number;
@@ -22,10 +23,7 @@ type SocketUser = {
 @Injectable()
 @WebSocketGateway({
   namespace: 'notifications',
-  cors: {
-    origin: '*',
-    credentials: true,
-  },
+  cors: socketCorsOptions,
 })
 export class NotificationsGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -73,7 +71,7 @@ export class NotificationsGateway
       }
 
       const payload = this.jwtService.verify<SocketUser>(token, {
-        secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_change_me',
+        secret: getJwtAccessSecret(),
       });
 
       if (!payload?.sub || payload.tokenType !== 'access') {
