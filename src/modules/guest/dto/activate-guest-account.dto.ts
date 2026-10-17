@@ -7,12 +7,12 @@ import {
 } from 'class-validator';
 
 export class ActivateGuestAccountDto {
-  // Magic link token from email/SMS
+  // Token of the link sent to the guest's mailbox (it proves the e-mail address)
   @IsOptional()
   @IsString()
   token?: string;
 
-  // OTP alternative
+  // Alternative: the code sent by SMS to the guest's phone (it proves the phone number)
   @IsOptional()
   @IsString()
   phone?: string;
@@ -21,6 +21,9 @@ export class ActivateGuestAccountDto {
   @IsString()
   otp?: string;
 
+  // Only for a profile made from a phone number alone (its address is made up and
+  // nobody can log in with it): the address to log in with from now on. A profile
+  // that already has a real address keeps it.
   @IsOptional()
   @IsEmail()
   email?: string;

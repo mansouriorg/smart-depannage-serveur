@@ -149,3 +149,57 @@ describe('what keeps the delivery safe (P1-03 review)', () => {
     expect(interventions.includes('21600000000')).toBe(false);
   });
 });
+
+describe('contact change is wired (P1-03, step 4)', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
+
+  it('the users module provides the service and exports it to the admin dashboard', () => {
+    const text = read('modules/users/users.module.ts');
+
+    expect(/providers:\s*\[[^\]]*\bContactChangeService\b/.test(text)).toBe(true);
+    expect(/exports:\s*\[[^\]]*\bContactChangeService\b/.test(text)).toBe(true);
+    expect(/imports:\s*\[[^\]]*\bUsersModule\b/.test(read('modules/admin/admin.module.ts'))).toBe(true);
+  });
+
+  it('every route that changes an e-mail or a phone is rate limited, and only the e-mail link is public', () => {
+    const text = read('modules/users/users.controller.ts');
+
+    for (const route of ["@Post('me/email-change')", "@Post('email-change/confirm')", "@Post('me/phone-change')", "@Post('me/phone-change/confirm')"]) {
+      const at = text.indexOf(route);
+      const before = text.slice(Math.max(0, at - 260), at);
+
+      expect(at > 0).toBe(true);
+      expect(before.includes('RateLimitGuard')).toBe(true);
+      expect(before.includes('@RateLimit(')).toBe(true);
+      // the link in the mail is opened without a session; everything else needs one
+      expect(before.includes('JwtAuthGuard')).toBe(route !== "@Post('email-change/confirm')");
+    }
+  });
+
+  it('the fixed routes are declared before the :id ones', () => {
+    const text = read('modules/users/users.controller.ts');
+
+    expect(text.indexOf("@Delete('me')") < text.indexOf("@Delete(':id')")).toBe(true);
+    expect(text.indexOf("@Get('profile')") < text.indexOf("@Get(':id')")).toBe(true);
+    expect(text.indexOf("@Patch('profile')") < text.indexOf("@Patch(':id')")).toBe(true);
+  });
+
+  it('the activation request knows the client address, so one visitor cannot use up a number\'s quota', () => {
+    const text = read('modules/guest/guest.controller.ts');
+    const at = text.indexOf("@Post('account/request-activation')");
+
+    expect(at > 0).toBe(true);
+    expect(text.slice(at, at + 400).includes('@Ip()')).toBe(true);
+  });
+
+  it('the phone key is read at start-up', () => {
+    expect(read('modules/users/contact-change.service.ts').includes('async onApplicationBootstrap()')).toBe(true);
+  });
+
+  it('npm run phones:backfill exists and the script is in the repository', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(SRC, '../package.json'), 'utf8'));
+
+    expect(typeof pkg.scripts['phones:backfill']).toBe('string');
+    expect(fs.existsSync(path.join(SRC, '../scripts/backfill-phone-keys.ts'))).toBe(true);
+  });
+});

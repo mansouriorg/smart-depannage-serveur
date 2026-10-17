@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Ip,
   Param,
   ParseIntPipe,
   Post,
@@ -150,8 +151,10 @@ export class GuestController {
   @UseGuards(RateLimitGuard)
   @RateLimit({ name: 'guest-request-activation', limit: 5, windowMs: 15 * 60_000 })
   @Post('account/request-activation')
-  requestAccountActivation(@Body() dto: RequestGuestActivationDto) {
-    return this.guestService.requestAccountActivation(dto);
+  requestAccountActivation(@Body() dto: RequestGuestActivationDto, @Ip() ip: string) {
+    // The client address is part of the quota: one visitor cannot use up the messages an
+    // address or a number may receive and keep its real owner out.
+    return this.guestService.requestAccountActivation(dto, ip || 'unknown');
   }
 
   // ==========================================================

@@ -1,4 +1,4 @@
-import { isDeliverableEmail, maskEmail, maskPhone, toE164 } from './contact';
+import { isDeliverableEmail, isMadeUpGuestEmail, maskEmail, maskPhone, toE164 } from './contact';
 
 describe('toE164', () => {
   it('a Tunisian number written in the usual ways', () => {
@@ -14,6 +14,15 @@ describe('toE164', () => {
     expect(toE164('022123456')).toBe('+21622123456');
     expect(toE164('+33 6 12 34 56 78')).toBe('+33612345678');
     expect(toE164('0612345678', '33')).toBe('+33612345678');
+  });
+
+  it('a national zero written after the country code is not part of the number', () => {
+    expect(toE164('+216 0 22123456')).toBe('+21622123456');
+    expect(toE164('+2160022123456')).toBe('+21622123456');
+    expect(toE164('00216 022123456')).toBe('+21622123456');
+    expect(toE164('216022123456')).toBe('+21622123456');
+    // other countries are left alone
+    expect(toE164('+33 0612345678')).toBe('+330612345678');
   });
 
   it('a national number that starts like the country code is still national', () => {
@@ -47,8 +56,12 @@ describe('isDeliverableEmail', () => {
     expect(isDeliverableEmail(' Amine.B@smart-depannage.tn ')).toBe(true);
   });
 
-  it('the made-up address of a guest cannot', () => {
+  it('the made-up address of a guest cannot, in either of its two shapes', () => {
     expect(isDeliverableEmail('guest_0b6e1f6a-1d1e-4c5b-9a53-2f9a7f3f0c11@guest.smart-depannage.local')).toBe(false);
+    expect(isDeliverableEmail('guest_1712345678901@smart-depannage.com')).toBe(false);
+    expect(isMadeUpGuestEmail('Guest_1712345678901@Smart-Depannage.com')).toBe(true);
+    expect(isMadeUpGuestEmail('guest_amine@smart-depannage.com')).toBe(false);
+    expect(isDeliverableEmail('guest_amine@smart-depannage.com')).toBe(true);
   });
 
   it('reserved and broken addresses cannot', () => {

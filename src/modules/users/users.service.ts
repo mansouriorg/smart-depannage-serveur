@@ -7,6 +7,17 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { issuePasswordSetupLink } from '../auth/password-setup';
+import {
+  ContactChangeService,
+  contactChangeRequired,
+} from './contact-change.service';
+import {
+  PHONE_TAKEN_MESSAGE,
+  phoneColumns,
+  phoneKeyOf,
+  phoneWhere,
+  rethrowContactConflict,
+} from '../../common/contact/phone';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -22,6 +33,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly contactChange: ContactChangeService,
   ) {}
 
   // ==========================================================
@@ -70,19 +82,50 @@ export class UsersService {
       throw new ConflictException('Cet email est déjà utilisé.');
     }
 
+    // One phone number, one account (the database enforces it too).
+    const phoneCols = await this.claimPhone(data.phone);
+
     if (!data.password || typeof data.password !== 'string') {
       throw new BadRequestException('Le mot de passe est obligatoire.');
     }
 
     const hashedPassword = await argon2.hash(data.password);
 
-    return this.prisma.user.create({
-      data: {
-        ...data,
-        password: hashedPassword,
-        isActive: true,
-      },
-    });
+    try {
+      return await this.prisma.user.create({
+        data: {
+          ...data,
+          ...phoneCols,
+          password: hashedPassword,
+          isActive: true,
+        },
+      });
+    } catch (error) {
+      rethrowContactConflict(error);
+    }
+  }
+
+  /**
+   * The phone columns to write for a new account, after checking that nobody
+   * else has the number. `{}` when no number was given (the column is left alone).
+   */
+  private async claimPhone(raw: string | null | undefined) {
+    if (raw === undefined) return {};
+
+    const columns = phoneColumns(raw);
+
+    if (columns.phoneKey) {
+      const holder = await this.prisma.user.findFirst({
+        where: phoneWhere(columns.phone),
+        select: { id: true },
+      });
+
+      if (holder) {
+        throw new ConflictException(PHONE_TAKEN_MESSAGE);
+      }
+    }
+
+    return columns;
   }
 
   // ==========================================================
@@ -224,37 +267,43 @@ export class UsersService {
       throw new NotFoundException('Utilisateur introuvable.');
     }
 
-    if (updateData.email) {
-      updateData = { ...updateData, email: this.normalizeEmail(updateData.email) };
+    // P1-03 (step 4): the e-mail and the phone are how a person gets back into
+    // the account, so they change only through the routes that ask for the
+    // current password and for proof that the new value is theirs. Sending the
+    // value the account already has (an app that posts the whole form) is fine.
+    const { email, phone, ...rest } = updateData;
+    const data: Record<string, unknown> = { ...rest };
+
+    if (email !== undefined && email !== null) {
+      if (this.normalizeEmail(email) !== currentUser.email) {
+        throw contactChangeRequired('email');
+      }
     }
 
-    if (updateData.email && updateData.email !== currentUser.email) {
-      const existingEmail = await this.prisma.user.findUnique({
-        where: { email: updateData.email },
+    if (phone !== undefined) {
+      const asked = phoneKeyOf(phone);
+      const typed = String(phone ?? '').trim();
+      const current = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { phone: true, phoneKey: true },
       });
+      const currentKey = current?.phoneKey ?? phoneKeyOf(current?.phone);
 
-      if (existingEmail) {
-        throw new ConflictException('Cet email est déjà utilisé.');
+      if (!typed) {
+        // Nothing to remove is fine; removing the number is a contact change like the others.
+        if (current?.phone) {
+          throw contactChangeRequired('phone');
+        }
+      } else if (asked && asked === currentKey) {
+        // Same number, maybe written differently: nothing to change.
+      } else if (typed !== current?.phone) {
+        throw contactChangeRequired('phone');
       }
     }
 
     return this.prisma.user.update({
       where: { id: userId },
-      data: {
-        ...updateData,
-
-        // If email changed, force email verification again
-        emailVerifiedAt:
-          updateData.email && updateData.email !== currentUser.email
-            ? null
-            : currentUser.emailVerifiedAt,
-
-        // If phone changed, force phone verification again
-        phoneVerifiedAt:
-          updateData.phone && updateData.phone !== currentUser.phone
-            ? null
-            : currentUser.phoneVerifiedAt,
-      },
+      data,
       select: this.safeUserSelect,
     });
   }
@@ -276,29 +325,48 @@ export class UsersService {
       taxId?: string;
       website?: string;
     },
+    options: { actorId?: number } = {},
   ) {
-    await this.findOne(id);
+    const current = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, name: true, email: true, phone: true, phoneKey: true },
+    });
 
-    if (data.email) {
-      data = { ...data, email: this.normalizeEmail(data.email) };
-
-      const existingEmail = await this.prisma.user.findFirst({
-        where: {
-          email: data.email,
-          NOT: { id },
-        },
-      });
-
-      if (existingEmail) {
-        throw new ConflictException('Cet email est déjà utilisé.');
-      }
+    // Deleted accounts can still be corrected by staff (to free a number, say).
+    if (!current) {
+      throw new NotFoundException('Utilisateur introuvable.');
     }
 
-    return this.prisma.user.update({
-      where: { id },
-      data,
-      select: this.safeUserSelect,
-    });
+    const { email, phone, ...rest } = data;
+
+    // Staff correct other people's contact details (a customer who lost the
+    // mailbox cannot prove anything). Their own go through the self-service
+    // routes: the password check would otherwise be one PATCH away.
+    const change = await this.contactChange.prepareAdminChange(current, { email, phone });
+
+    if (options.actorId === id && (change.emailChangedFrom || change.phoneChangedFrom !== undefined)) {
+      throw contactChangeRequired(change.emailChangedFrom ? 'email' : 'phone');
+    }
+
+    // The change and the end of the links that went to the old address or number are
+    // one step: either both happen or neither does.
+    const updated = await this.prisma
+      .$transaction(async (tx) => {
+        const row = await tx.user.update({
+          where: { id },
+          data: { ...rest, ...change.data },
+          select: this.safeUserSelect,
+        });
+
+        await this.contactChange.revokeAfterAdminChange(tx, id, change);
+
+        return row;
+      })
+      .catch(rethrowContactConflict);
+
+    await this.contactChange.noticeAfterAdminChange(current, change, updated);
+
+    return updated;
   }
 
   // ==========================================================
@@ -352,6 +420,9 @@ export class UsersService {
         data: {
           isActive: false,
           deletedAt: new Date(),
+          // The number is free again (a person who deletes their account can come back
+          // with it); the text stays on the row for the records.
+          phoneKey: null,
         },
       }),
 
@@ -408,19 +479,23 @@ export class UsersService {
       throw new BadRequestException('Cet email est déjà utilisé.');
     }
 
+    const phoneCols = await this.claimPhone(data.phone);
+
     const temporaryPassword = this.generateTemporaryPassword();
     const hashedPassword = await argon2.hash(temporaryPassword);
 
-    const user = await this.prisma.user.create({
-      data: {
-        name: data.name,
-        email: data.email,
-        phone: data.phone,
-        password: hashedPassword,
-        role: Role.ARTISAN,
-        isActive: true,
-      },
-    });
+    const user = await this.prisma.user
+      .create({
+        data: {
+          name: data.name,
+          email: data.email,
+          ...phoneCols,
+          password: hashedPassword,
+          role: Role.ARTISAN,
+          isActive: true,
+        },
+      })
+      .catch(rethrowContactConflict);
 
     const passwordSetupUrl = await this.sendPasswordSetupLink(user);
 
@@ -468,19 +543,23 @@ export class UsersService {
       throw new BadRequestException('Cet email est déjà utilisé.');
     }
 
+    const phoneCols = await this.claimPhone(data.phone);
+
     const temporaryPassword = this.generateTemporaryPassword();
     const hashedPassword = await argon2.hash(temporaryPassword);
 
-    const user = await this.prisma.user.create({
-      data: {
-        name: data.name,
-        email: data.email,
-        phone: data.phone,
-        password: hashedPassword,
-        role: data.role,
-        isActive: true,
-      },
-    });
+    const user = await this.prisma.user
+      .create({
+        data: {
+          name: data.name,
+          email: data.email,
+          ...phoneCols,
+          password: hashedPassword,
+          role: data.role,
+          isActive: true,
+        },
+      })
+      .catch(rethrowContactConflict);
 
     const passwordSetupUrl = await this.sendPasswordSetupLink(user);
 
@@ -496,16 +575,35 @@ export class UsersService {
   // ==========================================================
 
   async reactivateUser(id: number) {
-    await this.findOne(id);
+    const user = await this.findOne(id);
 
-    return this.prisma.user.update({
-      where: { id },
-      data: {
-        isActive: true,
-        deletedAt: null,
-      },
-      select: this.safeUserSelect,
-    });
+    // Take the number back if nobody has it in the meantime; otherwise the account
+    // comes back without a key and staff sort the number out.
+    let phoneKey: string | null = null;
+
+    if (user.phone && user.phoneKey === null) {
+      const key = phoneKeyOf(user.phone);
+      const holder = key
+        ? await this.prisma.user.findFirst({
+            where: { phoneKey: key, NOT: { id } },
+            select: { id: true },
+          })
+        : null;
+
+      phoneKey = key && !holder ? key : null;
+    }
+
+    return this.prisma.user
+      .update({
+        where: { id },
+        data: {
+          isActive: true,
+          deletedAt: null,
+          ...(phoneKey ? { phoneKey } : {}),
+        },
+        select: this.safeUserSelect,
+      })
+      .catch(rethrowContactConflict);
   }
 
   // ==========================================================

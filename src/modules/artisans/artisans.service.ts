@@ -48,6 +48,11 @@ import {
   Role,
   Status,
 } from '../../../generated/prisma/client';
+import {
+  phoneColumns,
+  phoneWhere,
+  rethrowContactConflict,
+} from '../../common/contact/phone';
 
 @Injectable()
 export class ArtisansService {
@@ -365,7 +370,7 @@ export class ArtisansService {
 
     const existingUser = await this.prisma.user.findFirst({
       where: {
-        OR: [{ email }, phone ? { phone } : undefined].filter(Boolean) as any[],
+        OR: [{ email }, phoneWhere(phone)].filter(Boolean) as any[],
       },
       include: {
         artisanProfile: true,
@@ -389,16 +394,18 @@ export class ArtisansService {
     const result = await this.prisma.$transaction(async (tx) => {
       const user =
         existingUser ||
-        (await tx.user.create({
-          data: {
-            email,
-            phone,
-            name: dto.name,
-            password: hashedPassword,
-            role: Role.ARTISAN,
-            isActive: false,
-          },
-        }));
+        (await tx.user
+          .create({
+            data: {
+              email,
+              ...phoneColumns(phone),
+              name: dto.name,
+              password: hashedPassword,
+              role: Role.ARTISAN,
+              isActive: false,
+            },
+          })
+          .catch(rethrowContactConflict));
 
       const profile = await tx.artisanProfile.create({
         data: {

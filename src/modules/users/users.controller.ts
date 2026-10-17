@@ -13,10 +13,15 @@ import {
 } from '@nestjs/common';
 
 import { UsersService } from './users.service';
+import { ContactChangeService } from './contact-change.service';
 
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
+import { ChangeEmailDto } from './dto/change-email.dto';
+import { ConfirmEmailChangeDto } from './dto/confirm-email-change.dto';
+import { ChangePhoneDto } from './dto/change-phone.dto';
+import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
 
 import { Role } from '../../../generated/prisma/client';
 
@@ -25,10 +30,17 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { canManage } from '../../common/auth/role-policy';
+import {
+  RateLimit,
+  RateLimitGuard,
+} from '../../common/rate-limit/rate-limit.guard';
 
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly contactChange: ContactChangeService,
+  ) {}
 
   /**
    * P0-08: hierarchy check for every admin action on another account.
@@ -69,6 +81,57 @@ export class UsersController {
     @Body() updateData: UpdateProfileDto,
   ) {
     return this.usersService.updateProfile(userId, updateData);
+  }
+
+  // ----------------------------------------------------------
+  // Changing the e-mail address or the phone number (P1-03, step 4).
+  // PATCH /users/me no longer changes them: it answers 400 with the code
+  // CONTACT_CHANGE_REQUIRES_VERIFICATION and the app calls these routes.
+  // ----------------------------------------------------------
+
+  // POST /users/me/email-change   { newEmail, currentPassword }
+  // Sends a link to the NEW address. Nothing changes before it is clicked.
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({ name: 'email-change', limit: 10, windowMs: 60 * 60_000 })
+  @Post('me/email-change')
+  requestEmailChange(
+    @CurrentUser('id') userId: number,
+    @Body() dto: ChangeEmailDto,
+  ) {
+    return this.contactChange.requestEmailChange(userId, dto);
+  }
+
+  // POST /users/email-change/confirm   { token }
+  // Public on purpose: the link is opened from a mailbox, often on another
+  // device than the one that is logged in. The token is the proof.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'email-change-confirm', limit: 20, windowMs: 15 * 60_000 })
+  @Post('email-change/confirm')
+  confirmEmailChange(@Body() dto: ConfirmEmailChangeDto) {
+    return this.contactChange.confirmEmailChange(dto.token);
+  }
+
+  // POST /users/me/phone-change   { newPhone, currentPassword }
+  // Sends a 6-digit code by SMS to the NEW number.
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({ name: 'phone-change', limit: 10, windowMs: 60 * 60_000 })
+  @Post('me/phone-change')
+  requestPhoneChange(
+    @CurrentUser('id') userId: number,
+    @Body() dto: ChangePhoneDto,
+  ) {
+    return this.contactChange.requestPhoneChange(userId, dto);
+  }
+
+  // POST /users/me/phone-change/confirm   { code }
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({ name: 'phone-change-confirm', limit: 20, windowMs: 15 * 60_000 })
+  @Post('me/phone-change/confirm')
+  confirmPhoneChange(
+    @CurrentUser('id') userId: number,
+    @Body() dto: ConfirmPhoneChangeDto,
+  ) {
+    return this.contactChange.confirmPhoneChange(userId, dto.code);
   }
 
   // DELETE /users/me
@@ -309,7 +372,9 @@ export class UsersController {
       );
     }
 
-    return this.usersService.updateByAdmin(id, updateUserDto);
+    return this.usersService.updateByAdmin(id, updateUserDto, {
+      actorId: currentUserId,
+    });
   }
 
   // DELETE /users/:id

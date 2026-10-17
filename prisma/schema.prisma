@@ -72,6 +72,10 @@ enum AuthTokenType {
   PHONE_VERIFICATION
   GUEST_MAGIC_LINK
   GUEST_OTP
+  // P1-03 step 4: a new e-mail address / phone number waiting for proof that the
+  // person owns it. The value is kept in AuthToken.newValue until it is confirmed.
+  EMAIL_CHANGE
+  PHONE_CHANGE
 }
 
 enum UrgencyLevel {
@@ -423,6 +427,12 @@ model User {
 
   name  String?
   phone String?
+  // The number in one canonical spelling (E.164, "+21622123456"), so "22 123 456" and
+  // "+216 22123456" are the same number. Unique: a number belongs to one account.
+  // Written together with `phone` by phoneColumns() (src/common/contact/phone.ts),
+  // never by hand. Null when there is no number, or for the rare row that lost a
+  // duplicate during scripts/backfill-phone-keys.ts.
+  phoneKey String? @unique
 
   address String?
   taxId   String?
@@ -497,6 +507,10 @@ model AuthToken {
 
   type      AuthTokenType
   tokenHash String        @unique
+
+  // EMAIL_CHANGE / PHONE_CHANGE: the address or number the person asked for.
+  // It only replaces the one on the account once they prove they own it.
+  newValue String?
 
   expiresAt DateTime
   usedAt    DateTime?

@@ -48,6 +48,7 @@ async function main() {
       name: 'Super Admin',
       role: Role.ADMIN,
       phone: '21600000000',
+      phoneKey: '+21600000000', // same number, canonical spelling (see src/common/contact/phone.ts)
     },
   });
   console.log(`Created Admin: ${admin.email}`);
@@ -67,6 +68,7 @@ async function main() {
       name: 'Monsieur Client',
       role: Role.CLIENT,
       phone: '21699999999',
+      phoneKey: '+21699999999', // same number, canonical spelling (see src/common/contact/phone.ts)
     },
   });
   console.log(`Created Client: ${client.email}`);
@@ -81,6 +83,7 @@ async function main() {
       name: 'Ahmed Plombier',
       role: Role.ARTISAN,
       phone: '21655555555',
+      phoneKey: '+21655555555', // same number, canonical spelling (see src/common/contact/phone.ts)
     },
   });
   console.log(`Created Artisan: ${plumber.email}`);

@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { InterventionEventsModule } from '../intervention-events/intervention-events.module';
+import { UsersModule } from '../users/users.module';
 
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
@@ -12,6 +13,8 @@ import { AdminService } from './admin.service';
     PrismaModule,
     NotificationsModule,
     InterventionEventsModule,
+    // ContactChangeService: staff corrections of an e-mail or a phone.
+    UsersModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

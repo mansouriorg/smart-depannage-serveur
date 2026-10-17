@@ -8,6 +8,11 @@ import {
 } from '../auth/password-setup';
 import * as argon2 from 'argon2';
 import { Role } from '../../../generated/prisma/client'; // Adjust path if needed
+import {
+  phoneColumns,
+  phoneWhere,
+  rethrowContactConflict,
+} from '../../common/contact/phone';
 
 @Injectable()
 export class ArtisanApplicationsService {
@@ -22,6 +27,10 @@ export class ArtisanApplicationsService {
       where: { email: dto.email },
     });
     if (existing) throw new BadRequestException('Une candidature existe déjà pour cet email.');
+
+    // A number that cannot be a phone number is refused here, while the applicant can
+    // still fix it, instead of blocking the approval later.
+    phoneColumns(dto.phone);
 
     return this.prisma.artisanApplication.create({
       data: {
@@ -39,7 +48,7 @@ export class ArtisanApplicationsService {
   }
 
   // 3. APPROVE APPLICATION
-  async approve(id: number) {
+  async approve(id: number, phoneOverride?: string) {
     // A. Find the application
     const application = await this.prisma.artisanApplication.findUnique({ where: { id } });
     if (!application) throw new NotFoundException('Candidature introuvable.');
@@ -47,21 +56,25 @@ export class ArtisanApplicationsService {
 
     const email = application.email.trim().toLowerCase();
 
-    // The e-mail is unique: any account with it blocks the approval.
-    // The phone is not unique (clients and guest profiles share numbers), so it
-    // only blocks when it already belongs to an artisan or a staff account.
+    // Staff can give the number to use when the one on the form is not usable.
+    const phoneInput = phoneOverride?.trim() ? phoneOverride : application.phone;
+    let phone: ReturnType<typeof phoneColumns>;
+
+    try {
+      phone = phoneColumns(phoneInput);
+    } catch {
+      throw new BadRequestException(
+        "Le numéro de téléphone de la candidature n'est pas valide: indiquez le numéro à utiliser dans le champ phone.",
+      );
+    }
+
+    // The e-mail and the phone number each belong to one account (P1-03, step 4):
+    // an existing account with either one blocks the approval. A technician who
+    // already has a client account must give a different number, or have the
+    // number moved off the client account first.
     const existingUser = await this.prisma.user.findFirst({
       where: {
-        OR: [
-          { email },
-          application.phone
-            ? {
-                phone: application.phone,
-                isGuest: false,
-                role: { not: Role.CLIENT },
-              }
-            : undefined,
-        ].filter(Boolean) as any[],
+        OR: [{ email }, phoneWhere(phoneInput)].filter(Boolean) as any[],
       },
       select: { id: true, email: true },
     });
@@ -70,7 +83,7 @@ export class ArtisanApplicationsService {
       throw new BadRequestException(
         existingUser.email === email
           ? 'Un compte existe déjà avec cet email.'
-          : 'Un compte artisan ou staff existe déjà avec ce téléphone.',
+          : 'Un compte existe déjà avec ce téléphone: indiquez un autre numéro dans le champ phone, ou retirez-le de l’autre compte.',
       );
     }
 
@@ -79,25 +92,27 @@ export class ArtisanApplicationsService {
     // artisan chooses their own through a single-use link sent by email.
     const hashedPassword = await argon2.hash(generateUnusablePassword());
 
-    const newUser = await this.prisma.user.create({
-      data: {
-        name: application.name,
-        email,
-        phone: application.phone,
-        password: hashedPassword,
-        role: Role.ARTISAN,
-        isActive: true,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-      },
-    });
+    const newUser = await this.prisma.user
+      .create({
+        data: {
+          name: application.name,
+          email,
+          ...phone,
+          password: hashedPassword,
+          role: Role.ARTISAN,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+        },
+      })
+      .catch(rethrowContactConflict);
 
     // C. Update Application Status
     await this.prisma.artisanApplication.update({

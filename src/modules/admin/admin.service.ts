@@ -11,6 +11,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { ContactChangeService } from '../users/contact-change.service';
+import {
+  phoneColumns,
+  phoneWhere,
+  rethrowContactConflict,
+} from '../../common/contact/phone';
 import { statusesInGroup } from '../intervention-workflow/intervention-status';
 import {
   transitionStatus,
@@ -68,6 +74,7 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
+    private readonly contactChange: ContactChangeService,
   ) {}
 
   // ==========================================================
@@ -1002,7 +1009,7 @@ export class AdminService {
 
     const existingUser = await this.prisma.user.findFirst({
       where: {
-        OR: [{ email }, { phone: dto.phone }],
+        OR: [{ email }, phoneWhere(dto.phone)].filter(Boolean) as any[],
       },
     });
 
@@ -1015,16 +1022,18 @@ export class AdminService {
     const hashedPassword = await argon2.hash(this.generateUnusablePassword());
 
     const profile = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          email,
-          phone: dto.phone,
-          name: dto.name,
-          password: hashedPassword,
-          role: Role.ARTISAN,
-          isActive: true,
-        },
-      });
+      const user = await tx.user
+        .create({
+          data: {
+            email,
+            ...phoneColumns(dto.phone),
+            name: dto.name,
+            password: hashedPassword,
+            role: Role.ARTISAN,
+            isActive: true,
+          },
+        })
+        .catch(rethrowContactConflict);
 
       return tx.artisanProfile.create({
         data: {
@@ -1517,28 +1526,44 @@ export class AdminService {
   async editClient(clientId: number, dto: EditClientDto) {
     await this.getClientDetail(clientId);
 
-    if (dto.email) {
-      const existingEmail = await this.prisma.user.findUnique({
-        where: {
-          email: this.normalizeEmail(dto.email),
-        },
-      });
+    const current = await this.prisma.user.findUnique({
+      where: { id: clientId },
+      select: { id: true, name: true, email: true, phone: true, phoneKey: true },
+    });
 
-      if (existingEmail && existingEmail.id !== clientId) {
-        throw new BadRequestException('Cet email est déjà utilisé.');
-      }
+    if (!current) {
+      throw new NotFoundException('Client introuvable.');
     }
 
-    return this.prisma.user.update({
-      where: { id: clientId },
-      data: {
-        email: dto.email ? this.normalizeEmail(dto.email) : undefined,
-        name: dto.name,
-        phone: dto.phone,
-        address: dto.address,
-      },
-      select: this.safeUserSelect,
+    // Same rules as every other contact change: unique e-mail and phone,
+    // verification flags reset, the old mailbox is told (ContactChangeService).
+    const change = await this.contactChange.prepareAdminChange(current, {
+      email: dto.email,
+      phone: dto.phone,
     });
+
+    // The change and the end of the links that went to the old address or number are one step.
+    const updated = await this.prisma
+      .$transaction(async (tx) => {
+        const row = await tx.user.update({
+          where: { id: clientId },
+          data: {
+            ...change.data,
+            name: dto.name,
+            address: dto.address,
+          },
+          select: this.safeUserSelect,
+        });
+
+        await this.contactChange.revokeAfterAdminChange(tx, clientId, change);
+
+        return row;
+      })
+      .catch(rethrowContactConflict);
+
+    await this.contactChange.noticeAfterAdminChange(current, change, updated);
+
+    return updated;
   }
 
   async deactivateClient(clientId: number) {
@@ -1549,6 +1574,8 @@ export class AdminService {
       data: {
         isActive: false,
         deletedAt: new Date(),
+        // The number is free again; the text stays on the row for the records.
+        phoneKey: null,
       },
       select: this.safeUserSelect,
     });

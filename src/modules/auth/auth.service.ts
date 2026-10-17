@@ -21,12 +21,31 @@ import {
   RateLimitService,
 } from '../../common/rate-limit/rate-limit.service';
 import { generateUnusablePassword } from './password-setup';
+import { deliveryAnswer } from '../notifications/delivery/delivery-answer';
+import {
+  phoneColumns,
+  phoneWhere,
+} from '../../common/contact/phone';
+import { isMadeUpGuestEmail } from '../notifications/delivery/contact';
+import {
+  generateSixDigitCode,
+  hashOneTimeCode,
+} from '../../common/auth/one-time-code';
 
 import {
   AuthTokenType,
   Role,
   User,
 } from '../../../generated/prisma/client';
+
+/** A change of e-mail or phone that is waiting for its link or code. */
+const PENDING_CONTACT_CHANGES = [
+  AuthTokenType.EMAIL_CHANGE,
+  AuthTokenType.PHONE_CHANGE,
+];
+
+/** `code` of the 409 that tells an app to open the guest activation screen. */
+export const GUEST_PROFILE_EXISTS = 'GUEST_PROFILE_EXISTS';
 
 type AccessTokenPayload = {
   sub: number;
@@ -82,17 +101,12 @@ export class AuthService {
     return crypto.randomBytes(32).toString('hex');
   }
 
-  private generatePhoneCode(): string {
-    // CSPRNG, not Math.random(): a 6 digit code is only as strong as its source.
-    return crypto.randomInt(100000, 1000000).toString();
-  }
-
   private getFrontendUrl(): string {
     return getConfiguredFrontendUrl();
   }
 
   private isGeneratedGuestEmail(email: string): boolean {
-    return email.endsWith('@guest.smart-depannage.local');
+    return isMadeUpGuestEmail(email);
   }
 
   private normalizeEmail(email: string): string {
@@ -286,14 +300,22 @@ export class AuthService {
     const normalizedEmail = this.normalizeEmail(userDto.email);
     const normalizedPhone = this.normalizePhone(userDto.phone);
 
+    // 400 when the number cannot be a phone number; the canonical key is what
+    // makes "22 123 456" and "+216 22123456" the same number.
+    const phone = phoneColumns(normalizedPhone);
+
     const matches = await this.prisma.user.findMany({
       where: {
         OR: [
           { email: normalizedEmail },
-          normalizedPhone ? { phone: normalizedPhone } : undefined,
+          phoneWhere(normalizedPhone),
         ].filter(Boolean) as any[],
       },
     });
+
+    const samePhone = (candidate: { phone: string | null; phoneKey: string | null }) =>
+      Boolean(phone.phoneKey) &&
+      (candidate.phoneKey === phone.phoneKey || candidate.phone === phone.phone);
 
     // Case 1: normal user already exists
     const existingUser = matches.find((candidate) => !candidate.isGuest);
@@ -303,7 +325,7 @@ export class AuthService {
         throw new ConflictException('Cet email est déjà utilisé.');
       }
 
-      if (normalizedPhone && existingUser.phone === normalizedPhone) {
+      if (samePhone(existingUser)) {
         throw new ConflictException(
           'Ce numéro de téléphone est déjà utilisé.',
         );
@@ -312,25 +334,35 @@ export class AuthService {
       throw new ConflictException('Un compte existe déjà.');
     }
 
-    // Case 2: a guest account already uses this EMAIL.
+    // Case 2: a guest profile already uses this e-mail or this phone number.
     //
-    // P0-09: registering must NOT convert the guest account. Anyone who knew
-    // (or guessed) a guest's e-mail could otherwise register with it and take
-    // over the account, including its interventions, addresses and tracking
-    // links. The conversion now requires proof of ownership through the
-    // one-time code flow of GuestService (requestAccountActivation /
-    // activateGuestAccount). Re-enabling a single-step flow is tracked in
-    // P1-03 and needs working SMS delivery first.
+    // P0-09: registering must NOT convert the guest profile. Anyone who knew
+    // (or guessed) a guest's e-mail or number could otherwise register with it
+    // and take over the profile, including its interventions, addresses and
+    // tracking links. The conversion needs proof of ownership, through the
+    // one-time code flow of GuestService (POST /guest/account/request-activation,
+    // then POST /guest/account/activate): the code goes to the guest's own
+    // phone, the link to the guest's own mailbox (P1-03, step 4).
     //
-    // A guest that only shares the PHONE does not block registration: phone
-    // numbers are not unique, the new account is simply not linked to that
-    // guest, so nothing is taken over and nobody can lock a number out by
-    // creating a guest profile for it.
-    if (matches.some((candidate) => candidate.email === normalizedEmail)) {
-      throw new ConflictException(
-        'Un compte invité existe déjà avec ces coordonnées. ' +
+    // A phone number now belongs to one account, so a guest holding the number
+    // also blocks it here. `code` lets an app send the person to the activation
+    // screen; the answer does not say which of the two details matched.
+    if (
+      matches.some(
+        (candidate) =>
+          candidate.isGuest &&
+          !candidate.deletedAt &&
+          (candidate.email === normalizedEmail || samePhone(candidate)),
+      )
+    ) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: GUEST_PROFILE_EXISTS,
+        message:
+          'Un profil invité existe déjà avec ces coordonnées. ' +
           'Activez-le avec le code reçu pour définir votre mot de passe.',
-      );
+      });
     }
 
     // Case 3: totally new user
@@ -535,7 +567,8 @@ export class AuthService {
     await this.prisma.authToken.updateMany({
       where: {
         userId,
-        type: AuthTokenType.REFRESH,
+        type: { in: [AuthTokenType.REFRESH, ...PENDING_CONTACT_CHANGES] },
+        usedAt: null,
         revokedAt: null,
       },
       data: {
@@ -655,7 +688,10 @@ export class AuthService {
       this.prisma.authToken.updateMany({
         where: {
           userId: tokenRecord.userId,
-          type: AuthTokenType.REFRESH,
+          // Sessions end, and so does a contact change somebody started with the old
+          // password: its link or code must not finish after the owner took the account back.
+          type: { in: [AuthTokenType.REFRESH, ...PENDING_CONTACT_CHANGES] },
+          usedAt: null,
           revokedAt: null,
         },
         data: {
@@ -690,6 +726,13 @@ export class AuthService {
       throw new UnauthorizedException('Compte désactivé.');
     }
 
+    // A stolen session must not be able to guess the current password at machine speed.
+    const lockKey = `password-confirm:${user.id}`;
+
+    this.rateLimit.assertNotLocked(lockKey);
+    // Counted before the slow check: requests sent at once must not all pass the lock test.
+    this.rateLimit.registerFailure(lockKey, RATE_RULES.passwordConfirmFailures);
+
     const isPasswordValid = await argon2.verify(
       user.password,
       currentPassword,
@@ -698,6 +741,8 @@ export class AuthService {
     if (!isPasswordValid) {
       throw new BadRequestException('Mot de passe actuel incorrect.');
     }
+
+    this.rateLimit.clear(lockKey);
 
     const hashedPassword = await argon2.hash(newPassword);
 
@@ -713,7 +758,8 @@ export class AuthService {
       this.prisma.authToken.updateMany({
         where: {
           userId,
-          type: AuthTokenType.REFRESH,
+          type: { in: [AuthTokenType.REFRESH, ...PENDING_CONTACT_CHANGES] },
+          usedAt: null,
           revokedAt: null,
         },
         data: {
@@ -787,35 +833,14 @@ export class AuthService {
     );
   }
 
-  /**
-   * What the caller is told about a message it asked for. "sent" is true only
-   * when a provider is configured and the message was really accepted for
-   * delivery; otherwise the person is told why nothing will arrive.
-   */
+  /** See delivery-answer.ts: the answer to "was the message sent?". */
   private deliveryAnswer(
     result: { queued: boolean },
     notConfigured: boolean,
     kind: 'email' | 'sms',
     okMessage: string,
   ) {
-    if (notConfigured) {
-      return {
-        sent: false,
-        message:
-          kind === 'email'
-            ? "L'envoi d'e-mails n'est pas configuré sur le serveur: aucun message n'a été envoyé."
-            : "L'envoi de SMS n'est pas configuré sur le serveur: aucun message n'a été envoyé.",
-      };
-    }
-
-    if (!result.queued) {
-      return {
-        sent: false,
-        message: "Le message n'a pas pu être préparé pour l'envoi. Réessayez dans un instant.",
-      };
-    }
-
-    return { sent: true, message: okMessage };
+    return deliveryAnswer(result, notConfigured, kind, okMessage);
   }
 
   // ==========================================================
@@ -901,7 +926,7 @@ export class AuthService {
       RATE_RULES.codeSendPerTarget,
     );
 
-    const code = this.generatePhoneCode();
+    const code = generateSixDigitCode();
 
     await this.prisma.authToken.updateMany({
       where: {
@@ -919,7 +944,7 @@ export class AuthService {
       data: {
         userId,
         type: AuthTokenType.PHONE_VERIFICATION,
-        tokenHash: this.hashToken(code),
+        tokenHash: hashOneTimeCode(userId, 'phone-verification', code),
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       },
     });
@@ -953,6 +978,9 @@ export class AuthService {
     // P0-07: a 6 digit code must not be guessable by trying all of them.
     const lockKey = `otp:phone:${userId}`;
     this.rateLimit.assertNotLocked(lockKey);
+    // Counted before the lookup, cleared when the code is right: requests sent at
+    // once must not all pass the lock test before the first failure is written down.
+    this.rateLimit.registerFailure(lockKey, RATE_RULES.otpFailures);
 
     const user = await this.usersService.findOne(userId);
 
@@ -965,7 +993,7 @@ export class AuthService {
     const tokenRecord = await this.prisma.authToken.findFirst({
       where: {
         userId,
-        tokenHash: this.hashToken(code),
+        tokenHash: hashOneTimeCode(userId, 'phone-verification', code),
         type: AuthTokenType.PHONE_VERIFICATION,
         usedAt: null,
         revokedAt: null,
@@ -976,7 +1004,6 @@ export class AuthService {
     });
 
     if (!tokenRecord) {
-      this.rateLimit.registerFailure(lockKey, RATE_RULES.otpFailures);
       throw new BadRequestException('Code invalide ou expiré.');
     }
 

@@ -65,7 +65,9 @@ describe('MessageTemplatesService', () => {
     const { service, warnings } = make({
       'auth.password_reset': { ...email, content: 'Cliquez ici pour réinitialiser.' },
       'auth.phone_code': { key: 'auth.phone_code', type: 'SMS', isActive: true, content: 'Votre code est {{ code }}' },
+      // step 4: the activation SMS carries the code only; a text that offers just the link is not used
       'guest.activation_sms': { key: 'guest.activation_sms', type: 'SMS', isActive: true, content: 'Lien: {{link}}' },
+      'auth.email_change': { key: 'auth.email_change', type: 'EMAIL', isActive: true, content: 'Confirmez: {{link}}' },
       'guest.activation_email': { key: 'guest.activation_email', type: 'EMAIL', isActive: true, content: 'Bonjour {{name}}' },
     });
 
@@ -77,7 +79,8 @@ describe('MessageTemplatesService', () => {
 
     // spaces inside the braces are fine; either placeholder satisfies a message that has both
     expect((await service.render('auth.phone_code', 'SMS', { code: '123456' }, { content: 'x' })).content).toBe('Votre code est 123456');
-    expect((await service.render('guest.activation_sms', 'SMS', { link: 'https://y.tn' }, { content: 'x' })).content).toBe('Lien: https://y.tn');
+    expect((await service.render('guest.activation_sms', 'SMS', { link: 'https://y.tn', code: '123456' }, { content: 'x' })).fromTemplate).toBe(false);
+    expect((await service.render('auth.email_change', 'EMAIL', { link: 'https://z.tn' }, fallback)).content).toBe('Confirmez: https://z.tn');
     expect((await service.render('guest.activation_email', 'EMAIL', {}, fallback)).fromTemplate).toBe(false);
   });
 

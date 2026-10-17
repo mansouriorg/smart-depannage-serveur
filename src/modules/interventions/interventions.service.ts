@@ -10,6 +10,7 @@ import { CreateInterventionDto } from './dto/create-intervention.dto';
 import { UpdateInterventionDto } from './dto/update-intervention.dto';
 import { SubmitFeedbackDto } from './dto/submit-feedback.dto'; 
 import { InterventionsGateway } from './interventions.gateway'; 
+import { isMadeUpGuestEmail } from '../notifications/delivery/contact';
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateUnusablePassword } from '../auth/password-setup';
 import { adminAlertPhone } from '../../config/delivery';
@@ -29,6 +30,12 @@ import {
   withAliases,
 } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
+import {
+  isUniqueViolation,
+  phoneColumns,
+  phoneWhere,
+  rethrowContactConflict,
+} from '../../common/contact/phone';
 
 // guest_<timestamp>@smart-depannage.com: guests created by the old public form.
 const LEGACY_GUEST_EMAIL = /^guest_\d+@smart-depannage\.com$/;
@@ -56,6 +63,9 @@ export class InterventionsService {
     //   - an existing real account is never reused: its owner must log in;
     //   - only a previous guest profile (no credentials) is reused;
     //   - a new guest profile gets a random, never-disclosed password.
+    let guestRequest = false;
+    let guestWithoutNumber = false;
+
     if (!finalClientId) {
       const { contactPhone, contactName } = createInterventionDto;
 
@@ -68,7 +78,7 @@ export class InterventionsService {
       // Only live accounts count: a deleted or deactivated account must not
       // lock its former owner out of the public form.
       const candidates = await this.prisma.user.findMany({
-        where: { phone: contactPhone, deletedAt: null, isActive: true },
+        where: { ...phoneWhere(contactPhone), deletedAt: null, isActive: true },
         orderBy: { id: 'asc' },
       });
 
@@ -96,23 +106,55 @@ export class InterventionsService {
         }
       }
 
-      const existing = candidates[0];
+      // A profile is reused only when no mailbox is behind it (a made-up address). One that
+      // has a real address was made by somebody who typed it next to this number on a form:
+      // attaching this request to it could send the notices to that person. Such a number
+      // counts as taken below and the profile made here goes without it.
+      const existing = candidates.find((candidate) => isMadeUpGuestEmail(candidate.email));
 
-      const user =
-        existing ??
-        (await this.prisma.user.create({
+      // A number belongs to one account: if a deleted or deactivated account
+      // still holds it, the guest profile is made without the number.
+      const numberTaken =
+        !existing && (await this.prisma.user.count({ where: phoneWhere(contactPhone) })) > 0;
+
+      const newProfile = async (withNumber: boolean) =>
+        this.prisma.user.create({
           data: {
             email: `guest_${crypto.randomUUID()}@guest.smart-depannage.local`,
-            phone: contactPhone,
+            ...(withNumber ? phoneColumns(contactPhone) : { phone: null, phoneKey: null }),
             name: contactName || 'Client Invité',
             password: await argon2.hash(generateUnusablePassword()),
             role: Role.CLIENT,
             isActive: true,
             isGuest: true,
           },
+        });
+
+      const user =
+        existing ??
+        (await newProfile(!numberTaken).catch(async (error) => {
+          if (!isUniqueViolation(error)) throw error;
+
+          // The same number was taken at the same moment by another request.
+          const winner = await this.prisma.user.findFirst({
+            where: { ...phoneWhere(contactPhone), deletedAt: null, isActive: true },
+            orderBy: { id: 'asc' },
+          });
+
+          if (winner && (await isGuestProfile(winner))) {
+            // The same person sending the form twice: use the profile the other request made.
+            if (isMadeUpGuestEmail(winner.email)) return winner;
+
+            // A guest with a real address of its own has the number: this one goes without it.
+            return newProfile(false);
+          }
+
+          return rethrowContactConflict(error);
         }));
 
       finalClientId = user.id;
+      guestRequest = true;
+      guestWithoutNumber = !user.phone;
     }
 
     const { contactName, contactPhone, ...interventionData } = createInterventionDto;
@@ -125,6 +167,9 @@ export class InterventionsService {
     const newIntervention = await this.prisma.intervention.create({
       data: {
         ...interventionData,
+        // A guest profile that could not keep the number (a deleted account still holds
+        // it) must not lose the way to call this person back: it stays on the request.
+        ...(guestRequest && guestWithoutNumber ? { contactPhone, contactName } : {}),
         client: {
           connect: { id: finalClientId },
         },

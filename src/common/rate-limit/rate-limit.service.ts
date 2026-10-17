@@ -33,6 +33,17 @@ export const RATE_RULES = {
     lockMs: 15 * 60_000,
   } satisfies FailureRule,
 
+  /**
+   * Wrong "current password" typed while asking for something that needs it
+   * (changing the password, the e-mail or the phone). Counted per account: a
+   * stolen session must not be able to guess the password at machine speed.
+   */
+  passwordConfirmFailures: {
+    maxFailures: 5,
+    windowMs: 15 * 60_000,
+    lockMs: 15 * 60_000,
+  } satisfies FailureRule,
+
   /** Wrong one-time code for one phone / user. */
   otpFailures: {
     maxFailures: 5,
@@ -46,9 +57,31 @@ export const RATE_RULES = {
     windowMs: 60 * 60_000,
   } satisfies WindowRule,
 
+  /**
+   * Requests to change an e-mail or a phone number from one account. The
+   * messages themselves are capped by codeSendPerTarget; this caps the tries,
+   * including those refused before anything is sent ("address already used"),
+   * so the route cannot be used to ask which addresses and numbers exist.
+   */
+  contactChangeAttempts: {
+    limit: 15,
+    windowMs: 60 * 60_000,
+  } satisfies WindowRule,
+
   /** SMS / email codes sent to one phone / user (SMS cost and spam). */
   codeSendPerTarget: {
     limit: 3,
+    windowMs: 60 * 60_000,
+  } satisfies WindowRule,
+
+  /**
+   * Messages one ADDRESS or NUMBER may receive from the contact-change and
+   * activation flows, whoever asks. Higher than what one requester may send
+   * (codeSendPerTarget, counted per account or per client address), so a single
+   * troublemaker cannot use up the quota of the real owner and keep them out.
+   */
+  codeSendPerDestination: {
+    limit: 10,
     windowMs: 60 * 60_000,
   } satisfies WindowRule,
 

@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Patch, Param, ParseIntPipe, UseGuards } from '@nestjs/common';
 import { ArtisanApplicationsService } from './artisan-applications.service';
 import { CreateArtisanApplicationDto } from './dto/create-artisan-application.dto';
+import { ApproveArtisanApplicationDto } from './dto/approve-artisan-application.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -28,8 +29,11 @@ export class ArtisanApplicationsController {
   @Patch(':id/approve')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  approve(@Param('id', ParseIntPipe) id: number) {
-    return this.service.approve(id);
+  approve(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body?: ApproveArtisanApplicationDto,
+  ) {
+    return this.service.approve(id, body?.phone);
   }
 
   // 🔒 STAFF ONLY: Reject
