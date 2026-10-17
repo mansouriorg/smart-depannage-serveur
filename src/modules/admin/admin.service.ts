@@ -227,16 +227,29 @@ export class AdminService {
     const rawToken = await this.createPasswordSetupToken(user.id);
     const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
+    // A setup link is a password-reset token that lives 24 h and revokes the
+    // previous one: the message follows the same rules (see AuthService).
     await this.notifications.sendEmail(
       user.email,
       'Création de votre mot de passe',
       `Votre compte a été créé. Cliquez ici pour créer votre mot de passe: ${setupUrl}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
+        validForMs: 24 * 60 * 60 * 1000,
+        replaces: `auth:PASSWORD_RESET:${user.id}`,
+      },
     );
 
     if (user.phone) {
       await this.notifications.sendSms(
         user.phone,
         `Smart Dépannage: créez votre mot de passe ici: ${setupUrl}`,
+        {
+          userId: user.id,
+          validForMs: 24 * 60 * 60 * 1000,
+          replaces: `auth:PASSWORD_RESET_SMS:${user.id}`,
+        },
       );
     }
   }
@@ -2021,7 +2034,7 @@ export class AdminService {
   }
 
   async createNotificationTemplate(dto: CreateNotificationTemplateDto) {
-    return this.prisma.notificationTemplate.create({
+    const template = await this.prisma.notificationTemplate.create({
       data: {
         key: dto.key,
         type: dto.type,
@@ -2030,6 +2043,11 @@ export class AdminService {
         isActive: dto.isActive ?? true,
       },
     });
+
+    // The wording is cached for a minute: the next message must use the new one.
+    this.notifications.clearTemplateCache();
+
+    return template;
   }
 
   async updateNotificationTemplate(
@@ -2044,10 +2062,14 @@ export class AdminService {
       throw new NotFoundException('Template introuvable.');
     }
 
-    return this.prisma.notificationTemplate.update({
+    const updated = await this.prisma.notificationTemplate.update({
       where: { id: templateId },
       data: dto,
     });
+
+    this.notifications.clearTemplateCache();
+
+    return updated;
   }
 
   async deleteNotificationTemplate(templateId: number) {
@@ -2062,6 +2084,8 @@ export class AdminService {
     await this.prisma.notificationTemplate.delete({
       where: { id: templateId },
     });
+
+    this.notifications.clearTemplateCache();
 
     return {
       message: 'Template supprimé avec succès.',

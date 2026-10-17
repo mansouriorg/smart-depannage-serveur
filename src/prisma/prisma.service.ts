@@ -1,11 +1,11 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../../generated/prisma/client'; // relative like every other file, so jest can load it too
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService extends PrismaClient implements OnModuleInit, OnApplicationShutdown {
   constructor(config: ConfigService) {
     // 1. Create the Postgres Pool
     const connectionString = config.get<string>('DATABASE_URL');
@@ -22,7 +22,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     await this.$connect();
   }
 
-  async onModuleDestroy() {
+  // Not onModuleDestroy: the delivery worker finishes (and records) the message it
+  // is sending in its own onModuleDestroy, which needs the database to still be open.
+  // onApplicationShutdown runs after every onModuleDestroy.
+  async onApplicationShutdown() {
     await this.$disconnect();
   }
 }

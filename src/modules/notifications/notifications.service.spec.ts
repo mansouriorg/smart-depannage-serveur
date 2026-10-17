@@ -1,8 +1,9 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { NotificationsService } from './notifications.service';
+import { MessageTemplatesService } from './delivery/message-templates.service';
 
-type User = { id: number; role: string; isActive: boolean; email?: string; phone?: string };
+type User = { id: number; role: string; isActive: boolean; email?: string; phone?: string; name?: string };
 
 /** An in-memory stand-in for the few Prisma calls the service makes. */
 function makeWorld(extra: Partial<{
@@ -13,6 +14,15 @@ function makeWorld(extra: Partial<{
   complaints: any[];
   /** notification preferences by user id (default: everything on) */
   prefs: Record<number, any>;
+  /** NotificationTemplate rows by key */
+  templates: Record<string, any>;
+  emailConfigured: boolean;
+  smsConfigured: boolean;
+  pushConfigured: boolean;
+  /** make the outbox refuse to queue */
+  outboxDown: boolean;
+  /** NotificationOutbox rows by id */
+  outboxRows: Record<number, any>;
 }> = {}) {
   const users: User[] = extra.users ?? [
     { id: 1, role: 'ADMIN', isActive: true },
@@ -21,7 +31,7 @@ function makeWorld(extra: Partial<{
     { id: 4, role: 'DISPATCHER', isActive: true },
     { id: 5, role: 'SUPER_ADMIN', isActive: true },
     { id: 6, role: 'ADMIN', isActive: false },
-    { id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com' },
+    { id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com', name: 'Sami' },
     { id: 20, role: 'ARTISAN', isActive: true, email: 'artisan@example.com' },
   ];
 
@@ -69,9 +79,21 @@ function makeWorld(extra: Partial<{
     },
     notificationDeliveryLog: {
       create: async ({ data }: any) => {
-        deliveries.push(data);
-        return data;
+        const row = { id: deliveries.length + 1, ...data };
+        deliveries.push(row);
+        return row;
       },
+      update: async ({ where, data }: any) => {
+        const row = byId(deliveries, where.id);
+        Object.assign(row, data);
+        return row;
+      },
+    },
+    notificationOutbox: {
+      findUnique: async ({ where }: any) => extra.outboxRows?.[where.id] ?? null,
+    },
+    notificationTemplate: {
+      findUnique: async ({ where }: any) => extra.templates?.[where.key] ?? null,
     },
     pushDeviceToken: { findMany: async () => [] },
     quote: {
@@ -94,9 +116,30 @@ function makeWorld(extra: Partial<{
     },
   };
 
-  const service = new NotificationsService(prisma, gateway as any);
+  // What the outbox was asked to send, in place of the real one.
+  const queued: any[] = [];
+  const outbox: any = {
+    enqueue: async (input: any) => {
+      if (extra.outboxDown) throw new Error('database is down');
+      queued.push(input);
+      return { id: queued.length };
+    },
+    isEmailConfigured: () => extra.emailConfigured ?? false,
+    isSmsConfigured: () => extra.smsConfigured ?? false,
+    isPushConfigured: () => extra.pushConfigured ?? false,
+    providerName: () => 'FAKE',
+  };
 
-  return { service, prisma, notifications, deliveries, live, users };
+  const service = new NotificationsService(prisma, gateway as any, outbox, new MessageTemplatesService(prisma));
+
+  const logLines: string[] = [];
+  (service as any).logger = {
+    log: (line: string) => logLines.push(line),
+    warn: (line: string) => logLines.push(line),
+    error: (line: string) => logLines.push(line),
+  };
+
+  return { service, prisma, notifications, deliveries, live, users, queued, logLines };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {
@@ -565,5 +608,315 @@ describe('the notification centre', () => {
     await service.update(admin, row.id, { isRead: false } as any);
     expect(row.isRead).toBe(false);
     expect(row.readAt).toBe(null);
+  });
+});
+
+describe('e-mail, SMS and push go through the outbox', () => {
+  const channelsOf = (...channels: string[]) => ({
+    recipientId: 10,
+    type: 'QUOTE_SENT' as any,
+    title: 'Nouveau devis',
+    message: 'Votre devis est prêt.',
+    channels: channels as any,
+    data: { quoteId: 7 },
+  });
+
+  it('an e-mail is queued, and its delivery log starts as PENDING', async () => {
+    const { service, queued, deliveries, notifications } = makeWorld();
+
+    await service.notify(channelsOf('EMAIL'));
+
+    expect(queued.length).toBe(1);
+    expect(queued[0]).toEqual({
+      channel: 'EMAIL',
+      userId: 10,
+      recipient: 'client@example.com',
+      subject: 'Nouveau devis',
+      body: 'Votre devis est prêt.',
+      data: undefined,
+      notificationId: notifications[0].id,
+      deliveryLogId: deliveries[0].id,
+    });
+    expect(deliveries[0].status).toBe('PENDING');
+    expect(deliveries[0].provider).toBe('OUTBOX');
+    expect(deliveries[0].destination).toBe('client@example.com');
+  });
+
+  it('no address, no number: skipped, nothing queued', async () => {
+    const { service, queued, deliveries } = makeWorld();
+
+    await service.notify(channelsOf('SMS'));
+    await service.notify({ ...channelsOf('EMAIL'), recipientId: 5 });
+
+    expect(queued.length).toBe(0);
+    expect(deliveries.map((d) => d.status)).toEqual(['SKIPPED', 'SKIPPED']);
+  });
+
+  it('an SMS goes to the phone of the recipient', async () => {
+    const { service, queued } = makeWorld({
+      users: [{ id: 10, role: 'CLIENT', isActive: true, phone: '22123456' }],
+    });
+
+    await service.notify(channelsOf('SMS'));
+
+    expect(queued[0].channel).toBe('SMS');
+    expect(queued[0].recipient).toBe('22123456');
+  });
+
+  it('a push is queued for the user, with the data of the notification', async () => {
+    const { service, queued } = makeWorld();
+
+    await service.notify(channelsOf('PUSH'));
+
+    expect(queued[0].channel).toBe('PUSH');
+    expect(queued[0].userId).toBe(10);
+    expect(queued[0].recipient).toBe(undefined);
+    expect(queued[0].data).toEqual({ quoteId: 7 });
+  });
+
+  it('in-app notifications do not touch the outbox', async () => {
+    const { service, queued } = makeWorld();
+
+    await service.notify(channelsOf('IN_APP', 'ADMIN_REAL_TIME'));
+
+    expect(queued.length).toBe(0);
+  });
+
+  it('the wording comes from the NotificationTemplate for this type and channel', async () => {
+    const { service, queued } = makeWorld({
+      templates: {
+        'QUOTE_SENT.EMAIL': {
+          key: 'QUOTE_SENT.EMAIL',
+          type: 'EMAIL',
+          isActive: true,
+          subject: 'Devis n°{{quoteId}}',
+          content: 'Bonjour {{recipientName}}, {{message}} (devis {{quoteId}})',
+        },
+      },
+    });
+
+    await service.notify(channelsOf('EMAIL'));
+
+    expect(queued[0].subject).toBe('Devis n°7');
+    expect(queued[0].body).toBe('Bonjour Sami, Votre devis est prêt. (devis 7)');
+  });
+
+  it('a template that is inactive, or of another channel, is ignored', async () => {
+    const { service, queued } = makeWorld({
+      templates: {
+        'QUOTE_SENT.EMAIL': { key: 'QUOTE_SENT.EMAIL', type: 'SMS', isActive: true, content: 'wrong type' },
+      },
+    });
+
+    await service.notify(channelsOf('EMAIL'));
+
+    expect(queued[0].subject).toBe('Nouveau devis');
+    expect(queued[0].body).toBe('Votre devis est prêt.');
+  });
+
+  it('the outbox being down fails that channel in the delivery log, not the notification', async () => {
+    const { service, deliveries, notifications, logLines } = makeWorld({ outboxDown: true });
+
+    const created = await service.notify(channelsOf('IN_APP', 'EMAIL'));
+
+    expect(created.id).toBe(notifications[0].id);
+    expect(deliveries.map((d) => `${d.channel}:${d.status}`)).toContain('IN_APP:SENT');
+
+    // one e-mail log, closed as FAILED: no PENDING row is left looking like a message in flight
+    const mailLogs = deliveries.filter((d) => d.channel === 'EMAIL');
+    expect(mailLogs.length).toBe(1);
+    expect(mailLogs[0].status).toBe('FAILED');
+    expect(mailLogs[0].error).toBe('Could not be queued (Error).');
+    expect(deliveries.some((d) => d.status === 'PENDING')).toBe(false);
+
+    // what the database said (which could repeat the message) is not kept anywhere
+    expect(mailLogs[0].error).not.toContain('database is down');
+    for (const line of logLines) {
+      expect(line).not.toContain('database is down');
+      expect(line).not.toContain('Votre devis');
+    }
+  });
+});
+
+describe('guests have no mailbox', () => {
+  const guest = {
+    id: 30,
+    role: 'CLIENT',
+    isActive: true,
+    name: 'Invité',
+    email: 'guest_0b6e1f6a-1d1e-4c5b-9a53-2f9a7f3f0c11@guest.smart-depannage.local',
+    phone: '22123456',
+  };
+
+  const quote = (channels: string[]) => ({
+    recipientId: 30,
+    type: 'QUOTE_SENT' as any,
+    title: 'Nouveau devis',
+    message: 'Votre devis est prêt.',
+    channels: channels as any,
+  });
+
+  it('nothing is mailed to the made-up address; the text goes to the phone instead', async () => {
+    const { service, queued, deliveries } = makeWorld({ users: [guest] });
+
+    await service.notify(quote(['EMAIL']));
+
+    expect(queued.length).toBe(1);
+    expect(queued[0].channel).toBe('SMS');
+    expect(queued[0].recipient).toBe('22123456');
+    expect(deliveries.map((d) => `${d.channel}:${d.status}`)).toEqual(['EMAIL:SKIPPED', 'SMS:PENDING']);
+  });
+
+  it('no second SMS when the notification already asked for one', async () => {
+    const { service, queued } = makeWorld({ users: [guest] });
+
+    await service.notify(quote(['EMAIL', 'SMS']));
+
+    expect(queued.map((q) => q.channel)).toEqual(['SMS']);
+  });
+
+  it('no SMS either when the person turned SMS off, or has no phone', async () => {
+    const off = makeWorld({ users: [guest], prefs: { 30: { smsEnabled: false } } });
+    await off.service.notify(quote(['EMAIL']));
+    expect(off.queued.length).toBe(0);
+
+    const noPhone = makeWorld({ users: [{ ...guest, phone: undefined }] });
+    await noPhone.service.notify(quote(['EMAIL']));
+    expect(noPhone.queued.length).toBe(0);
+    expect(noPhone.deliveries.map((d) => d.status)).toEqual(['SKIPPED']);
+  });
+});
+
+describe('direct e-mail and SMS (codes, links)', () => {
+  it('queues the message and says where it went', async () => {
+    const { service, queued } = makeWorld();
+
+    const sms = await service.sendSms('22123456', 'Votre code est 482913', { userId: 10 });
+    const mail = await service.sendEmail('a@b.tn', 'Sujet', 'Lien: https://x.tn/?token=AAA');
+
+    expect(sms).toEqual({ queued: true, outboxId: 1, provider: 'FAKE' });
+    expect(mail.queued).toBe(true);
+    expect(queued[0]).toEqual({ channel: 'SMS', recipient: '22123456', body: 'Votre code est 482913', userId: 10 });
+    expect(queued[1].subject).toBe('Sujet');
+  });
+
+  it('uses a template for the key when there is one, the given text otherwise', async () => {
+    const withTemplate = makeWorld({
+      templates: {
+        'auth.phone_code': { key: 'auth.phone_code', type: 'SMS', isActive: true, content: 'Smart Dépannage: {{code}}' },
+      },
+    });
+    await withTemplate.service.sendSms('22123456', 'fallback', { template: { key: 'auth.phone_code', vars: { code: '482913' } } });
+    expect(withTemplate.queued[0].body).toBe('Smart Dépannage: 482913');
+
+    const without = makeWorld();
+    await without.service.sendSms('22123456', 'fallback 482913', { template: { key: 'auth.phone_code', vars: { code: '482913' } } });
+    expect(without.queued[0].body).toBe('fallback 482913');
+  });
+
+  it('a queue failure never throws into the flow that asked (and says it was not queued)', async () => {
+    const { service, logLines } = makeWorld({ outboxDown: true });
+
+    const sms = await service.sendSms('22123456', 'Votre code est 482913');
+    const mail = await service.sendEmail('a@b.tn', 's', 'c');
+
+    expect(sms.queued).toBe(false);
+    expect(mail.queued).toBe(false);
+    expect(logLines.length).toBe(2);
+    for (const line of logLines) {
+      expect(line).not.toContain('database is down');
+      expect(line).not.toContain('482913');
+    }
+  });
+
+  it('a message can expire and can replace the ones before it; without options the row has neither', async () => {
+    const { service, queued } = makeWorld();
+    const before = Date.now();
+
+    await service.sendSms('22123456', 'Code 111111', { userId: 10, validForMs: 600_000, replaces: 'auth:PHONE_VERIFICATION:10' });
+    await service.sendEmail('a@b.tn', 'S', 'C', { replaces: 'auth:EMAIL_VERIFICATION:10' });
+    await service.sendSms('22123456', 'Autre');
+
+    expect(queued[0].supersedeKey).toBe('auth:PHONE_VERIFICATION:10');
+    expect(queued[0].expiresAt.getTime() - before).toBeGreaterThan(599_000);
+    expect(601_000 > queued[0].expiresAt.getTime() - before).toBe(true);
+    expect(queued[1].supersedeKey).toBe('auth:EMAIL_VERIFICATION:10');
+    expect(queued[1].expiresAt).toBeUndefined();
+    expect('expiresAt' in queued[2]).toBe(false);
+    expect('supersedeKey' in queued[2]).toBe(false);
+  });
+
+  it('tells the flows whether anything can be sent yet', () => {
+    const off = makeWorld().service;
+    expect(off.isEmailSimulated()).toBe(true);
+    expect(off.isSmsSimulated()).toBe(true);
+
+    const on = makeWorld({ emailConfigured: true, smsConfigured: true }).service;
+    expect(on.isEmailSimulated()).toBe(false);
+    expect(on.isSmsSimulated()).toBe(false);
+  });
+});
+
+describe('admin delivery checks', () => {
+  const admin = { id: 1, role: 'ADMIN' as any };
+
+  it('the test message goes to the caller, only when the channel is set up', async () => {
+    const users = [
+      { id: 1, role: 'ADMIN', isActive: true, email: 'admin@smart-depannage.tn', phone: '22123456' },
+    ];
+    const off = makeWorld({ users });
+
+    expect((await failure(off.service.testDelivery(admin, 'EMAIL'))).message).toContain('SMTP_HOST');
+    expect((await failure(off.service.testDelivery(admin, 'SMS'))).message).toContain('SMS_PROVIDER');
+    expect((await failure(off.service.testDelivery(admin, 'PUSH'))).message).toContain('PUSH_PROVIDER');
+    expect(off.queued.length).toBe(0);
+
+    const on = makeWorld({ users, emailConfigured: true, smsConfigured: true, pushConfigured: true });
+    const mail = await on.service.testDelivery(admin, 'EMAIL');
+    await on.service.testDelivery(admin, 'SMS');
+    await on.service.testDelivery(admin, 'PUSH');
+
+    expect(mail.queued).toBe(true);
+    expect(on.queued.map((q) => q.channel)).toEqual(['EMAIL', 'SMS', 'PUSH']);
+    expect(on.queued[0].recipient).toBe('admin@smart-depannage.tn');
+    expect(on.queued[1].recipient).toBe('22123456');
+    expect(on.queued[2].userId).toBe(1);
+  });
+
+  it('an account without a usable address or number is told so', async () => {
+    const users = [{ id: 1, role: 'ADMIN', isActive: true, email: 'admin_1@guest.smart-depannage.local' }];
+    const { service } = makeWorld({ users, emailConfigured: true, smsConfigured: true });
+
+    expect((await failure(service.testDelivery(admin, 'EMAIL'))).message).toContain('adresse e-mail');
+    expect((await failure(service.testDelivery(admin, 'SMS'))).message).toContain('téléphone');
+  });
+
+  it('the status of a queued message shows what happened, never the text or the address', async () => {
+    const { service } = makeWorld({
+      outboxRows: { 7: { id: 7, channel: 'SMS', status: 'PENDING', attempts: 1, lastError: 'SMS gateway refused (HTTP 503)' } },
+    });
+
+    const status = await service.outboxStatus(7);
+
+    expect(status.status).toBe('PENDING');
+    expect(status.lastError).toBe('SMS gateway refused (HTTP 503)');
+    expect('body' in status).toBe(false);
+    expect('recipient' in status).toBe(false);
+    expect((await failure(service.outboxStatus(8))) instanceof NotFoundException).toBe(true);
+  });
+
+  it('an edited template is used by the next message, not a minute later', async () => {
+    const templates: Record<string, any> = {};
+    const { service, queued } = makeWorld({ templates });
+
+    await service.sendSms('22123456', 'built-in', { template: { key: 'QUOTE_SENT.SMS' } });
+    templates['QUOTE_SENT.SMS'] = { key: 'QUOTE_SENT.SMS', type: 'SMS', isActive: true, content: 'edited by an admin' };
+
+    await service.sendSms('22123456', 'built-in', { template: { key: 'QUOTE_SENT.SMS' } });
+    expect(queued[1].body).toBe('built-in'); // still cached
+
+    service.clearTemplateCache();
+    await service.sendSms('22123456', 'built-in', { template: { key: 'QUOTE_SENT.SMS' } });
+    expect(queued[2].body).toBe('edited by an admin');
   });
 });

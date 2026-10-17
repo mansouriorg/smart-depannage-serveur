@@ -332,6 +332,15 @@ enum NotificationDeliveryStatus {
   SKIPPED
 }
 
+// Messages waiting to leave the server (e-mail, SMS, push). See NotificationOutbox.
+enum OutboxStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
 enum NotificationPriority {
   LOW
   NORMAL
@@ -675,6 +684,55 @@ model PushDeviceToken {
   @@index([platform])
   @@index([isActive])
   @@index([lastUsedAt])
+}
+
+// ==========================================================
+// Outbox (P1-03)
+// Every e-mail, SMS and push goes through this table: the request that caused
+// it writes a row and returns, a worker sends it and retries with a growing
+// delay. `body` and `subject` are emptied once the message is sent or has failed
+// for good, so one-time codes and links do not stay in the database.
+// No relations on purpose: it is an operational queue, not business data.
+// ==========================================================
+
+model NotificationOutbox {
+  id Int @id @default(autoincrement())
+
+  channel NotificationChannel
+  status  OutboxStatus        @default(PENDING)
+
+  userId         Int?
+  notificationId Int?
+  deliveryLogId  Int?
+
+  recipient String?
+  subject   String?
+  body      String  @default("")
+  data      Json?
+
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  nextAttemptAt DateTime  @default(now())
+  lockedAt      DateTime?
+
+  // A code or link is useless once it has expired: after this time the message
+  // is not sent any more. supersedeKey: a newer message with the same key
+  // cancels the ones still waiting (a second "send me a code" replaces the first).
+  expiresAt    DateTime?
+  supersedeKey String?
+
+  provider          String?
+  providerMessageId String?
+  lastError         String?
+  sentAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([supersedeKey, status])
+  @@index([userId])
+  @@index([createdAt])
 }
 
 // ==========================================================

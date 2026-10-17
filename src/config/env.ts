@@ -20,7 +20,11 @@
  *                       intervention statuses is written to the database (P1-01).
  *                       Keep "legacy" until the admin, mobile and website apps use
  *                       the new names; see scripts/migrate-status-vocabulary.ts.
+ *   SMS_PROVIDER, SMTP_HOST, PUSH_PROVIDER, ...  how messages are delivered (P1-03);
+ *                       the full list is in ./delivery.ts and .env.example.
  */
+
+import { deliveryConfigProblems } from './delivery';
 
 export const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
@@ -116,6 +120,8 @@ export function validateEnv(
   if (statusStorage && statusStorage !== 'legacy' && statusStorage !== 'canonical') {
     errors.push('STATUS_STORAGE must be "legacy" or "canonical" (or empty).');
   }
+
+  errors.push(...deliveryConfigProblems(rawEnv));
 
   if (errors.length > 0) {
     throw new Error(

@@ -12,6 +12,11 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
+  // On SIGTERM (a deploy, a restart) let Nest call onModuleDestroy: the
+  // delivery worker then finishes the message it is sending instead of being
+  // cut off halfway, which could send it a second time after the restart.
+  app.enableShutdownHooks();
+
   // Behind nginx / a load balancer, request.ip would be the proxy's address
   // for every client, which breaks the per-IP rate limits. Set TRUST_PROXY to
   // the number of proxies in front of the API (usually 1).

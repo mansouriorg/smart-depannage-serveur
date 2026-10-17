@@ -586,6 +586,13 @@ export class AuthService {
       user.email,
       'Réinitialisation de votre mot de passe',
       `Cliquez sur ce lien pour réinitialiser votre mot de passe: ${resetUrl}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.password_reset', vars: { name: user.name, link: resetUrl } },
+        // Same life as the token (1 h); a new request revokes the old token, so its message must not go out either.
+        validForMs: 60 * 60 * 1000,
+        replaces: `auth:PASSWORD_RESET:${user.id}`,
+      },
     );
 
     return {
@@ -760,15 +767,55 @@ export class AuthService {
 
     const verifyUrl = `${this.getFrontendUrl()}/verify-email?token=${rawToken}`;
 
-    await this.notificationsService.sendEmail(
+    const queued = await this.notificationsService.sendEmail(
       user.email,
       'Vérification de votre email',
       `Cliquez sur ce lien pour vérifier votre email: ${verifyUrl}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.email_verification', vars: { name: user.name, link: verifyUrl } },
+        validForMs: 24 * 60 * 60 * 1000,
+        replaces: `auth:EMAIL_VERIFICATION:${user.id}`,
+      },
     );
 
-    return {
-      message: 'Email de vérification envoyé.',
-    };
+    return this.deliveryAnswer(
+      queued,
+      this.notificationsService.isEmailSimulated(),
+      'email',
+      'Email de vérification envoyé.',
+    );
+  }
+
+  /**
+   * What the caller is told about a message it asked for. "sent" is true only
+   * when a provider is configured and the message was really accepted for
+   * delivery; otherwise the person is told why nothing will arrive.
+   */
+  private deliveryAnswer(
+    result: { queued: boolean },
+    notConfigured: boolean,
+    kind: 'email' | 'sms',
+    okMessage: string,
+  ) {
+    if (notConfigured) {
+      return {
+        sent: false,
+        message:
+          kind === 'email'
+            ? "L'envoi d'e-mails n'est pas configuré sur le serveur: aucun message n'a été envoyé."
+            : "L'envoi de SMS n'est pas configuré sur le serveur: aucun message n'a été envoyé.",
+      };
+    }
+
+    if (!result.queued) {
+      return {
+        sent: false,
+        message: "Le message n'a pas pu être préparé pour l'envoi. Réessayez dans un instant.",
+      };
+    }
+
+    return { sent: true, message: okMessage };
   }
 
   // ==========================================================
@@ -877,14 +924,25 @@ export class AuthService {
       },
     });
 
-    await this.notificationsService.sendSms(
+    const queued = await this.notificationsService.sendSms(
       user.phone,
       `Votre code de vérification est: ${code}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.phone_code', vars: { name: user.name, code } },
+        // The code lives 10 minutes; asking again cancels the previous one, so a
+        // gateway coming back after an outage never delivers a pile of dead codes.
+        validForMs: 10 * 60 * 1000,
+        replaces: `auth:PHONE_VERIFICATION:${user.id}`,
+      },
     );
 
-    return {
-      message: 'Code de vérification envoyé par SMS.',
-    };
+    return this.deliveryAnswer(
+      queued,
+      this.notificationsService.isSmsSimulated(),
+      'sms',
+      'Code de vérification envoyé par SMS.',
+    );
   }
 
   // ==========================================================
@@ -974,14 +1032,24 @@ export class AuthService {
 
     const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
-    await this.notificationsService.sendEmail(
+    const queued = await this.notificationsService.sendEmail(
       user.email,
       'Création de votre mot de passe',
       `Votre compte a été créé. Cliquez ici pour créer votre mot de passe: ${setupUrl}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
+        validForMs: 24 * 60 * 60 * 1000,
+        // Setup links are password-reset tokens: a newer one revokes the older one.
+        replaces: `auth:PASSWORD_RESET:${user.id}`,
+      },
     );
 
-    return {
-      message: 'Email de création de mot de passe envoyé.',
-    };
+    return this.deliveryAnswer(
+      queued,
+      this.notificationsService.isEmailSimulated(),
+      'email',
+      'Email de création de mot de passe envoyé.',
+    );
   }
 }

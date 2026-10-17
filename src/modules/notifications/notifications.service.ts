@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -15,6 +16,11 @@ import {
   UpdateNotificationPreferencesDto,
 } from './dto/notification.dto';
 import { messageRecipients } from '../messages/message-audience';
+import { OutboxService } from './delivery/outbox.service';
+import { MessageTemplatesService } from './delivery/message-templates.service';
+import { flattenVars } from './delivery/render-template';
+import { isDeliverableEmail } from './delivery/contact';
+import { describeError } from './delivery/delivery-error';
 
 import {
   NotificationChannel,
@@ -46,6 +52,29 @@ const DISPATCH_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER, R
 /** The only roles that may look at, list or edit other people's notifications. */
 const AUDIT_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN];
 
+/** What the callers of sendSms / sendEmail / sendPush can add. */
+export type SendOptions = {
+  userId?: number;
+  /**
+   * Wording kept in the NotificationTemplate table. The text given by the
+   * caller is the fallback when no active template exists for the key.
+   */
+  template?: {
+    key: string;
+    vars?: Record<string, string | number | boolean | null | undefined>;
+  };
+  /**
+   * How long the message is still worth sending (a code or link that expires
+   * in 10 minutes is no use after 10 minutes, e.g. when the gateway was down).
+   */
+  validForMs?: number;
+  /**
+   * A newer message with the same key cancels the older ones that have not
+   * left yet (asking three times for a code results in one SMS, not three).
+   */
+  replaces?: string;
+};
+
 type NotifyPayload = {
   recipientId: number;
   actorId?: number;
@@ -69,6 +98,10 @@ export class NotificationsService {
     // Required on purpose: while this was @Optional() and the gateway was not
     // provided, no notification ever reached a socket and nothing said so.
     private readonly gateway: NotificationsGateway,
+
+    // E-mail, SMS and push leave through the outbox (P1-03).
+    private readonly outbox: OutboxService,
+    private readonly templates: MessageTemplatesService,
   ) {}
 
   // ==========================================================
@@ -456,54 +489,173 @@ export class NotificationsService {
   }
 
   // ==========================================================
-  // 2. SIMULATED DELIVERY CHANNELS
-  // No external API for now
+  // 2. DELIVERY CHANNELS (P1-03)
+  // Each call writes a row in the outbox and returns: the worker sends it and
+  // retries. A message can carry a one-time code or link, so its text is never
+  // logged and is erased from the outbox once sent (see OutboxService).
   // ==========================================================
 
-  async sendSms(phoneNumber: string, message: string) {
-    this.logger.log(
-      `📱 [SMS SIMULATION] To: ${phoneNumber} | Message: "${message}"`,
-    );
+  /** True while no mail server is configured: flows that need the user to receive a link hand it to staff instead. */
+  isEmailSimulated(): boolean {
+    return !this.outbox.isEmailConfigured();
+  }
 
-    return {
-      provider: 'SIMULATED_SMS',
-      success: true,
-      to: phoneNumber,
-      message,
-    };
+  isSmsSimulated(): boolean {
+    return !this.outbox.isSmsConfigured();
+  }
+
+  /** Never throws: a message problem must not break (or reveal anything about) the request that caused it. */
+  private async queue(
+    channel: 'EMAIL' | 'SMS' | 'PUSH',
+    input: {
+      recipient?: string;
+      subject?: string;
+      body: string;
+      data?: unknown;
+      userId?: number;
+      notificationId?: number;
+      deliveryLogId?: number;
+      expiresAt?: Date;
+      supersedeKey?: string;
+    },
+  ) {
+    try {
+      const row = await this.outbox.enqueue({ channel, ...input });
+
+      return {
+        queued: true,
+        outboxId: row.id,
+        provider: this.outbox.providerName(channel),
+      };
+    } catch (error: any) {
+      // Only the kind of error: a database error can repeat the message it failed to store.
+      this.logger.error(`${channel} message could not be queued (${describeError(error)})`);
+
+      return { queued: false, outboxId: undefined, provider: this.outbox.providerName(channel) };
+    }
+  }
+
+  async sendSms(phoneNumber: string, message: string, options?: SendOptions) {
+    const rendered = options?.template
+      ? await this.templates.render(options.template.key, 'SMS', options.template.vars ?? {}, {
+          content: message,
+        })
+      : { content: message };
+
+    return this.queue('SMS', {
+      recipient: phoneNumber,
+      body: rendered.content,
+      userId: options?.userId,
+      ...this.lifetime(options),
+    });
+  }
+
+  async sendEmail(email: string, subject: string, content: string, options?: SendOptions) {
+    const rendered = options?.template
+      ? await this.templates.render(options.template.key, 'EMAIL', options.template.vars ?? {}, {
+          subject,
+          content,
+        })
+      : { subject, content };
+
+    return this.queue('EMAIL', {
+      recipient: email,
+      subject: rendered.subject ?? subject,
+      body: rendered.content,
+      userId: options?.userId,
+      ...this.lifetime(options),
+    });
   }
 
   /**
-   * True while sendEmail only writes to the log. Flows that depend on an email
-   * reaching the user (first password, activation) use it to hand the secret
-   * link to the staff member who triggered them instead.
-   * Switch to false when a real mail provider is wired (Phase 1).
+   * Admin check: one test message to the caller's own address, number or
+   * devices. Says plainly when the channel is not set up.
    */
-  isEmailSimulated(): boolean {
-    return true;
-  }
+  async testDelivery(user: AuthenticatedUser, channel: 'EMAIL' | 'SMS' | 'PUSH') {
+    const me = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { email: true, phone: true },
+    });
 
-  async sendEmail(email: string, subject: string, content: string) {
-    this.logger.log(
-      `📧 [EMAIL SIMULATION] To: ${email} | Subject: "${subject}"`,
-    );
-
-    // Bodies carry one-time links (password setup, reset). In production they
-    // stay out of the logs, where a link would be a password.
-    if (
-      process.env.NODE_ENV !== 'production' ||
-      process.env.LOG_EMAIL_BODIES === 'true'
-    ) {
-      this.logger.log(`   Body: "${content}"`);
+    if (!me) {
+      throw new NotFoundException('Utilisateur introuvable.');
     }
 
+    const text = "Smart Dépannage: message de test. Si vous le lisez, cette voie d'envoi fonctionne.";
+
+    if (channel === 'EMAIL') {
+      if (this.isEmailSimulated()) {
+        throw new BadRequestException("L'envoi d'e-mails n'est pas configuré sur le serveur (SMTP_HOST).");
+      }
+
+      if (!isDeliverableEmail(me.email)) {
+        throw new BadRequestException("Votre compte n'a pas d'adresse e-mail valide.");
+      }
+
+      return this.queue('EMAIL', {
+        recipient: me.email,
+        subject: 'Smart Dépannage: message de test',
+        body: text,
+        userId: user.id,
+      });
+    }
+
+    if (channel === 'SMS') {
+      if (this.isSmsSimulated()) {
+        throw new BadRequestException("L'envoi de SMS n'est pas configuré sur le serveur (SMS_PROVIDER).");
+      }
+
+      if (!me.phone) {
+        throw new BadRequestException("Votre compte n'a pas de numéro de téléphone.");
+      }
+
+      return this.queue('SMS', { recipient: me.phone, body: text, userId: user.id });
+    }
+
+    if (!this.outbox.isPushConfigured()) {
+      throw new BadRequestException("L'envoi de notifications push n'est pas configuré sur le serveur (PUSH_PROVIDER).");
+    }
+
+    return this.queue('PUSH', { userId: user.id, subject: 'Smart Dépannage', body: text });
+  }
+
+  /** What became of a queued message. Never the text, never the address. */
+  async outboxStatus(outboxId: number) {
+    const row = await this.prisma.notificationOutbox.findUnique({
+      where: { id: outboxId },
+      select: {
+        id: true,
+        channel: true,
+        status: true,
+        attempts: true,
+        maxAttempts: true,
+        nextAttemptAt: true,
+        expiresAt: true,
+        provider: true,
+        providerMessageId: true,
+        lastError: true,
+        sentAt: true,
+        createdAt: true,
+      },
+    });
+
+    if (!row) {
+      throw new NotFoundException('Message introuvable.');
+    }
+
+    return row;
+  }
+
+  private lifetime(options?: SendOptions) {
     return {
-      provider: 'SIMULATED_EMAIL',
-      success: true,
-      to: email,
-      subject,
-      content,
+      ...(options?.validForMs ? { expiresAt: new Date(Date.now() + options.validForMs) } : {}),
+      ...(options?.replaces ? { supersedeKey: options.replaces } : {}),
     };
+  }
+
+  /** After an admin edits or deletes a message template, the next message uses the new wording at once. */
+  clearTemplateCache() {
+    this.templates.clearCache();
   }
 
   async sendPush(
@@ -512,26 +664,7 @@ export class NotificationsService {
     message: string,
     data?: Prisma.InputJsonValue,
   ) {
-    const tokens = await this.prisma.pushDeviceToken.findMany({
-      where: {
-        userId,
-        isActive: true,
-      },
-    });
-
-    this.logger.log(
-      `🔔 [PUSH SIMULATION] User: ${userId} | Tokens: ${tokens.length} | Title: "${title}"`,
-    );
-
-    return {
-      provider: 'SIMULATED_PUSH',
-      success: true,
-      userId,
-      tokenCount: tokens.length,
-      title,
-      message,
-      data,
-    };
+    return this.queue('PUSH', { userId, subject: title, body: message, data });
   }
 
   // Old compatibility helpers
@@ -653,7 +786,7 @@ export class NotificationsService {
         });
       } catch (error: any) {
         this.logger.warn(
-          `Live delivery of notification #${notification.id} failed: ${error?.message ?? error}`,
+          `Live delivery of notification #${notification.id} failed (${describeError(error)})`,
         );
       }
     };
@@ -690,91 +823,14 @@ export class NotificationsService {
           continue;
         }
 
-        if (channel === NotificationChannel.EMAIL) {
-          const email = notification.recipient.email;
-
-          if (!email) {
-            await this.logDelivery({
-              notificationId: notification.id,
-              userId: notification.recipientId,
-              channel,
-              status: NotificationDeliveryStatus.SKIPPED,
-              provider: 'SIMULATED_EMAIL',
-              error: 'No email address.',
-            });
-
-            continue;
-          }
-
-          await this.sendEmail(email, notification.title, notification.message);
-
-          await this.logDelivery({
-            notificationId: notification.id,
-            userId: notification.recipientId,
-            channel,
-            destination: email,
-            status: NotificationDeliveryStatus.SENT,
-            provider: 'SIMULATED_EMAIL',
-            sentAt: new Date(),
-          });
+        if (
+          channel === NotificationChannel.EMAIL ||
+          channel === NotificationChannel.SMS ||
+          channel === NotificationChannel.PUSH
+        ) {
+          await this.queueNotificationChannel(notification, channel);
 
           continue;
-        }
-
-        if (channel === NotificationChannel.SMS) {
-          const phone = notification.recipient.phone;
-
-          if (!phone) {
-            await this.logDelivery({
-              notificationId: notification.id,
-              userId: notification.recipientId,
-              channel,
-              status: NotificationDeliveryStatus.SKIPPED,
-              provider: 'SIMULATED_SMS',
-              error: 'No phone number.',
-            });
-
-            continue;
-          }
-
-          await this.sendSms(phone, notification.message);
-
-          await this.logDelivery({
-            notificationId: notification.id,
-            userId: notification.recipientId,
-            channel,
-            destination: phone,
-            status: NotificationDeliveryStatus.SENT,
-            provider: 'SIMULATED_SMS',
-            sentAt: new Date(),
-          });
-
-          continue;
-        }
-
-        if (channel === NotificationChannel.PUSH) {
-          const result = await this.sendPush(
-            notification.recipientId,
-            notification.title,
-            notification.message,
-            notification.data,
-          );
-
-          await this.logDelivery({
-            notificationId: notification.id,
-            userId: notification.recipientId,
-            channel,
-            status:
-              result.tokenCount > 0
-                ? NotificationDeliveryStatus.SENT
-                : NotificationDeliveryStatus.SKIPPED,
-            provider: 'SIMULATED_PUSH',
-            sentAt: result.tokenCount > 0 ? new Date() : undefined,
-            error:
-              result.tokenCount > 0
-                ? undefined
-                : 'No active push token.',
-          });
         }
       } catch (error: any) {
         await this.logDelivery({
@@ -783,10 +839,135 @@ export class NotificationsService {
           channel,
           status: NotificationDeliveryStatus.FAILED,
           provider: 'INTERNAL',
-          error: error?.message || 'Notification delivery failed.',
+          // Kind of error only: it can come from a failed write that repeats the message.
+          error: `Notification delivery failed (${describeError(error)}).`,
         });
       }
     }
+  }
+
+  /**
+   * E-mail, SMS and push of a notification: the wording comes from the
+   * NotificationTemplate "<TYPE>.<CHANNEL>" when there is one, the delivery log
+   * starts as PENDING, and the outbox updates it when the message is sent.
+   */
+  private async queueNotificationChannel(
+    notification: any,
+    channel: 'EMAIL' | 'SMS' | 'PUSH',
+  ) {
+    const recipient = notification.recipient;
+
+    const destination =
+      channel === NotificationChannel.EMAIL
+        ? recipient?.email
+        : channel === NotificationChannel.SMS
+          ? recipient?.phone
+          : undefined;
+
+    if (channel !== NotificationChannel.PUSH && !destination) {
+      await this.logDelivery({
+        notificationId: notification.id,
+        userId: notification.recipientId,
+        channel,
+        status: NotificationDeliveryStatus.SKIPPED,
+        provider: 'OUTBOX',
+        error: channel === NotificationChannel.EMAIL ? 'No email address.' : 'No phone number.',
+      });
+
+      return;
+    }
+
+    // A guest has no mailbox: the table needs an address, so one is made up
+    // ("guest_<id>@guest.smart-depannage.local"). Mail to it can only bounce.
+    if (channel === NotificationChannel.EMAIL && !isDeliverableEmail(destination)) {
+      await this.logDelivery({
+        notificationId: notification.id,
+        userId: notification.recipientId,
+        channel,
+        status: NotificationDeliveryStatus.SKIPPED,
+        provider: 'OUTBOX',
+        error: 'This address cannot receive e-mail (placeholder address).',
+      });
+
+      await this.fallbackToSms(notification);
+
+      return;
+    }
+
+    const rendered = await this.templates.render(
+      `${notification.type}.${channel}`,
+      channel,
+      {
+        title: notification.title,
+        message: notification.message,
+        recipientName: recipient?.name,
+        entityType: notification.entityType,
+        entityId: notification.entityId,
+        ...flattenVars(notification.data),
+      },
+      { subject: notification.title, content: notification.message },
+    );
+
+    const log = await this.logDelivery({
+      notificationId: notification.id,
+      userId: notification.recipientId,
+      channel,
+      status: NotificationDeliveryStatus.PENDING,
+      destination: destination ?? undefined,
+      provider: 'OUTBOX',
+    });
+
+    try {
+      await this.outbox.enqueue({
+        channel,
+        userId: notification.recipientId,
+        recipient: destination ?? undefined,
+        subject: rendered.subject ?? notification.title,
+        body: rendered.content,
+        data: channel === NotificationChannel.PUSH ? notification.data : undefined,
+        notificationId: notification.id,
+        deliveryLogId: log.id,
+      });
+    } catch (error: any) {
+      // Nothing was queued, so nothing will ever update this log: close it now
+      // instead of leaving a PENDING row that looks like a message in flight.
+      this.logger.error(
+        `${channel} of notification #${notification.id} could not be queued (${describeError(error)})`,
+      );
+
+      try {
+        await this.prisma.notificationDeliveryLog.update({
+          where: { id: log.id },
+          data: {
+            status: NotificationDeliveryStatus.FAILED,
+            error: `Could not be queued (${describeError(error)}).`,
+          },
+        });
+      } catch {
+        // The database is having a bad moment; the error is in the log above.
+      }
+    }
+  }
+
+  /**
+   * The e-mail of a notification had nowhere to go (a guest). If the person
+   * has a phone, and neither they nor the notification say no to SMS, the text
+   * goes there instead, so a guest still hears about their quote.
+   */
+  private async fallbackToSms(notification: any) {
+    const channels = (notification.channels ?? []) as NotificationChannel[];
+
+    if (channels.includes(NotificationChannel.SMS) || !notification.recipient?.phone) {
+      return;
+    }
+
+    const preferences = await this.getOrCreatePreferences(notification.recipientId);
+
+    if (!this.channelAllowed(preferences, NotificationChannel.SMS)) {
+      return;
+    }
+
+    await this.queueNotificationChannel(notification, NotificationChannel.SMS as 'SMS');
   }
 
   // ==========================================================
@@ -1018,7 +1199,7 @@ export class NotificationsService {
             });
           } catch (error: any) {
             this.logger.error(
-              `Notification for admin #${admin.id} failed: ${error?.message ?? error}`,
+              `Notification for admin #${admin.id} failed (${describeError(error)})`,
             );
             return null;
           }
@@ -1033,7 +1214,8 @@ export class NotificationsService {
     try {
       return await work();
     } catch (error: any) {
-      this.logger.error(`Notification "${label}" failed: ${error?.message ?? error}`);
+      // Kind of error only: a failed write can repeat the text it was saving.
+      this.logger.error(`Notification "${label}" failed (${describeError(error)})`);
       return null;
     }
   }

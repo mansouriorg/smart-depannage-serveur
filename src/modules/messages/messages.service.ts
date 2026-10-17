@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { describeError } from '../notifications/delivery/delivery-error';
 
 import { CreateMessageDto } from './dto/create-message.dto';
 
@@ -297,7 +298,7 @@ export class MessagesService {
     try {
       await this.realtime.emitNewMessage(message.id);
     } catch (error: any) {
-      this.logger.error(`Live delivery of message #${message.id} failed: ${error?.message ?? error}`);
+      this.logger.error(`Live delivery of message #${message.id} failed (${describeError(error)})`);
     }
 
     // One in-app notification for each person in this chat except the sender.

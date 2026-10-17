@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
+import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { withAliases } from '../intervention-workflow/intervention-status';
 import {
   transitionStatus,
@@ -54,6 +55,7 @@ export class ArtisansService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly events: InterventionEventsService,
+    private readonly rateLimit: RateLimitService,
   ) {}
 
   // ==========================================================
@@ -150,16 +152,27 @@ export class ArtisansService {
     const rawToken = await this.createPasswordSetupToken(user.id);
     const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
+    // The link lives 24 h and a newer one revokes it: the message follows (see AuthService).
     await this.notifications.sendEmail(
       user.email,
       'Votre compte artisan est approuvé',
       `Votre compte artisan a été approuvé. Créez votre mot de passe ici: ${setupUrl}`,
+      {
+        userId: user.id,
+        validForMs: 24 * 60 * 60 * 1000,
+        replaces: `auth:PASSWORD_RESET:${user.id}`,
+      },
     );
 
     if (user.phone) {
       await this.notifications.sendSms(
         user.phone,
         `Smart Dépannage: votre compte artisan est approuvé. Créez votre mot de passe: ${setupUrl}`,
+        {
+          userId: user.id,
+          validForMs: 24 * 60 * 60 * 1000,
+          replaces: `auth:PASSWORD_RESET_SMS:${user.id}`,
+        },
       );
     }
   }
@@ -462,13 +475,17 @@ export class ArtisansService {
       return profile;
     });
 
-    await this.notifications.sendEmail(
-      email,
-      'Candidature artisan reçue',
-      'Votre candidature artisan a bien été reçue. Notre équipe va l’examiner.',
-    );
+    // Public form: the destination is whatever the visitor typed, so each one
+    // gets a few messages per hour at most.
+    if (this.rateLimit.allowSendTo('email', email)) {
+      await this.notifications.sendEmail(
+        email,
+        'Candidature artisan reçue',
+        'Votre candidature artisan a bien été reçue. Notre équipe va l’examiner.',
+      );
+    }
 
-    if (phone) {
+    if (phone && this.rateLimit.allowSendTo('sms', phone)) {
       await this.notifications.sendSms(
         phone,
         'Smart Dépannage: votre candidature artisan a bien été reçue.',

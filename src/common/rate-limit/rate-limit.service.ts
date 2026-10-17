@@ -1,5 +1,8 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 
+import { readDeliveryConfig } from '../../config/delivery';
+import { toE164 } from '../../modules/notifications/delivery/contact';
+
 import {
   FailureRule,
   HitResult,
@@ -48,7 +51,46 @@ export const RATE_RULES = {
     limit: 3,
     windowMs: 60 * 60_000,
   } satisfies WindowRule,
+
+  /**
+   * The SMS that tells the person in charge about a new request (ADMIN_ALERT_PHONE),
+   * counted for the whole server: whatever visitors or accounts do, it stays a
+   * handful of paid SMS an hour, not one per request.
+   */
+  adminAlertSms: {
+    limit: 20,
+    windowMs: 60 * 60_000,
+  } satisfies WindowRule,
+
+  /**
+   * Messages that a public form (guest request, artisan application) sends to
+   * whatever phone number or e-mail address was typed into it.
+   */
+  publicSendPerTarget: {
+    limit: 3,
+    windowMs: 60 * 60_000,
+  } satisfies WindowRule,
 } as const;
+
+/**
+ * One inbox, one name: lower case, no "+tag" ("a+1@x.tn" and "a+2@x.tn" are the
+ * same mailbox), and no dots in Gmail addresses (a.b@gmail.com is ab@gmail.com).
+ * Null when it is not an address.
+ */
+export function canonicalEmail(value: string): string | null {
+  const email = String(value ?? '').trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+
+  if (at < 1 || at === email.length - 1) return null;
+
+  let local = email.slice(0, at).split('+')[0];
+  let domain = email.slice(at + 1);
+
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+
+  return local ? `${local}@${domain}` : null;
+}
 
 @Injectable()
 export class RateLimitService {
@@ -66,6 +108,23 @@ export class RateLimitService {
   /** Counts a call and returns false (instead of throwing) when over the limit. */
   tryConsume(key: string, rule: WindowRule): boolean {
     return this.limiter.hit(key, rule).allowed;
+  }
+
+  /**
+   * A public form can name any phone number or e-mail address, so what it
+   * sends is capped per destination: the site cannot be used to flood
+   * somebody, or to run up the SMS bill. Counts one message to this target and
+   * returns false when the target already got its share; the caller then just
+   * does not send (and does not tell the visitor, who could be probing).
+   */
+  allowSendTo(kind: 'sms' | 'email', target: string): boolean {
+    const destination =
+      kind === 'email' ? canonicalEmail(target) : toE164(target, readDeliveryConfig(process.env).defaultCountryCode);
+
+    // Not something a message can be sent to: nothing is sent, and nothing shares a counter by accident.
+    if (!destination) return false;
+
+    return this.tryConsume(`public-send:${kind}:${destination}`, RATE_RULES.publicSendPerTarget);
   }
 
   /** Counts a call and returns the full result, including the time left. */

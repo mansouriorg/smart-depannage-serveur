@@ -306,18 +306,22 @@ export class GuestService {
 
     const trackingUrl = `${this.getFrontendUrl()}/guest/tracking/${intervention.id}?token=${rawTrackingToken}`;
 
-    if (dto.contactPhone) {
+    // Anyone can type any number or address here: each destination gets a few
+    // messages per hour at most, whatever the visitor does.
+    if (dto.contactPhone && this.rateLimit.allowSendTo('sms', dto.contactPhone)) {
       await this.notifications.sendSms(
         dto.contactPhone,
         `Smart Dépannage: votre demande est créée. Suivi sécurisé: ${trackingUrl}`,
+        { userId: guestUser.id },
       );
     }
 
-    if (dto.contactEmail) {
+    if (dto.contactEmail && this.rateLimit.allowSendTo('email', dto.contactEmail)) {
       await this.notifications.sendEmail(
         dto.contactEmail,
         'Votre demande Smart Dépannage',
         `Votre demande a été créée. Suivi sécurisé: ${trackingUrl}`,
+        { userId: guestUser.id },
       );
     }
 
@@ -673,11 +677,19 @@ export class GuestService {
 
     const activationUrl = `${this.getFrontendUrl()}/guest/activate?token=${rawMagicToken}`;
 
+    // (No extra per-destination cap here: the quota above already counts every
+    // activation message per identifier, and it is checked before the old link is revoked.)
     if (user.email && !this.isGeneratedGuestEmail(user.email)) {
       await this.notifications.sendEmail(
         user.email,
         'Activation de votre compte',
         `Cliquez sur ce lien pour activer votre compte: ${activationUrl}`,
+        {
+          userId: user.id,
+          template: { key: 'guest.activation_email', vars: { name: user.name, link: activationUrl } },
+          validForMs: 30 * 60 * 1000, // the link's life
+          replaces: `guest:magic-link:${user.id}`,
+        },
       );
     }
 
@@ -694,6 +706,15 @@ export class GuestService {
       await this.notifications.sendSms(
         user.phone,
         `Smart Dépannage: votre code d’activation est ${otp}. Lien: ${activationUrl}`,
+        {
+          userId: user.id,
+          template: {
+            key: 'guest.activation_sms',
+            vars: { name: user.name, code: otp, link: activationUrl },
+          },
+          validForMs: 10 * 60 * 1000, // the code's life
+          replaces: `guest:otp:${user.id}`,
+        },
       );
     }
 

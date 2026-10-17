@@ -76,3 +76,76 @@ describe('services that push to sockets can reach the realtime service', () => {
     expect(/imports:\s*\[[^\]]*\bRealtimeModule\b/.test(text)).toBe(true);
   });
 });
+
+describe('the delivery outbox is wired (P1-03)', () => {
+  const text = fs.readFileSync(path.join(SRC, 'modules/notifications/notifications.module.ts'), 'utf8');
+
+  it('the notifications module provides the services NotificationsService is built from', () => {
+    for (const name of ['OutboxService', 'MessageTemplatesService']) {
+      expect(listedIn([text], 'providers', name)).toBe(true);
+    }
+  });
+
+  it('and the two values the outbox is injected with', () => {
+    expect(text.includes('provide: DELIVERY_CONFIG')).toBe(true);
+    expect(text.includes('provide: DeliveryProviders')).toBe(true);
+  });
+});
+
+describe('what keeps the delivery safe (P1-03 review)', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
+
+  it('the rate limit service can be injected anywhere: global module that exports it', () => {
+    const text = read('common/rate-limit/rate-limit.module.ts');
+
+    expect(text.includes('@Global()')).toBe(true);
+    expect(/exports:\s*\[[^\]]*\bRateLimitService\b/.test(text)).toBe(true);
+  });
+
+  it('the public artisan application is limited per visitor', () => {
+    const text = read('modules/artisans/artisans.controller.ts');
+    const at = text.indexOf("@Post('apply')");
+    const before = text.slice(Math.max(0, at - 300), at);
+
+    expect(at > 0).toBe(true);
+    expect(before.includes('@UseGuards(RateLimitGuard)')).toBe(true);
+    expect(before.includes("name: 'artisan-apply'")).toBe(true);
+  });
+
+  it('the admin delivery checks are declared before the :notificationId routes', () => {
+    const text = read('modules/notifications/notifications.controller.ts');
+    const detail = text.indexOf("@Get(':notificationId')");
+
+    for (const route of ["@Post('test-delivery')", "@Get('outbox/:outboxId')"]) {
+      const at = text.indexOf(route);
+      expect(at > 0).toBe(true);
+      expect(at < detail).toBe(true);
+    }
+  });
+
+  it('the server finishes the message it is sending on shutdown', () => {
+    expect(read('main.ts').includes('app.enableShutdownHooks()')).toBe(true);
+  });
+
+  it('the database is closed after the delivery worker has finished, not before', () => {
+    const prisma = read('prisma/prisma.service.ts');
+
+    expect(prisma.includes('onApplicationShutdown')).toBe(true);
+    expect(/async onModuleDestroy\s*\(/.test(prisma)).toBe(false);
+  });
+
+  it('creating a request while signed in is limited too, and the admin alert SMS has its own cap', () => {
+    const controller = read('modules/interventions/interventions.controller.ts');
+    const at = controller.indexOf("@Post('secure')");
+
+    expect(controller.slice(at, at + 200).includes('RateLimitGuard')).toBe(true);
+    expect(read('modules/interventions/interventions.service.ts').includes("'admin-alert-sms'")).toBe(true);
+  });
+
+  it('no phone number is written in the code', () => {
+    const interventions = read('modules/interventions/interventions.service.ts');
+
+    expect(/sendSms\(\s*['"`]\+?\d/.test(interventions)).toBe(false);
+    expect(interventions.includes('21600000000')).toBe(false);
+  });
+});

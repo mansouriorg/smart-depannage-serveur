@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,6 +11,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
+import { isDeliverableEmail } from '../notifications/delivery/contact';
 
 import {
   InterventionEventType,
@@ -700,11 +702,31 @@ ${invoice.pdfUrl ? `Lien PDF : ${invoice.pdfUrl}` : 'Le PDF sera disponible proc
 
 Cordialement.`;
 
-    await this.notifications.sendEmail(
+    // The invoice is only marked as sent when the e-mail really can leave:
+    // otherwise the back office would believe a customer was billed.
+    if (!isDeliverableEmail(email)) {
+      throw new BadRequestException(
+        'Cette adresse e-mail ne peut pas recevoir de courrier. Indiquez une adresse valide.',
+      );
+    }
+
+    if (this.notifications.isEmailSimulated()) {
+      throw new BadRequestException(
+        "L'envoi d'e-mails n'est pas configuré sur le serveur (SMTP_HOST): la facture n'a pas été envoyée.",
+      );
+    }
+
+    const queued = await this.notifications.sendEmail(
       email,
       `Votre facture ${invoice.invoiceNumber}`,
       message,
     );
+
+    if (!queued.queued) {
+      throw new ServiceUnavailableException(
+        "L'e-mail n'a pas pu être préparé pour l'envoi. Réessayez dans un instant.",
+      );
+    }
 
     const updated = await this.prisma.invoice.update({
       where: {

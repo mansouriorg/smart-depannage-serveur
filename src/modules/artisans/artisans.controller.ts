@@ -35,6 +35,7 @@ import {
   Role,
 } from '../../../generated/prisma/client';
 
+import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -48,6 +49,10 @@ export class ArtisansController {
   // 1. PUBLIC ONBOARDING
   // ==========================================================
 
+  // Public, and it sends an e-mail and an SMS to what was typed: capped per visitor here
+  // and per destination in the service.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'artisan-apply', limit: 5, windowMs: 60 * 60_000 })
   @Post('apply')
   apply(@Body() dto: ApplyArtisanDto) {
     return this.artisansService.apply(dto);

@@ -113,6 +113,11 @@ export class ArtisanApplicationsService {
       'Votre candidature est acceptée',
       `Bienvenue chez Smart Dépannage. Choisissez votre mot de passe ` +
         `(lien valable 24 heures, usage unique) : ${setupUrl}`,
+      {
+        userId: newUser.id,
+        validForMs: 24 * 60 * 60 * 1000,
+        replaces: `auth:PASSWORD_RESET:${newUser.id}`,
+      },
     );
 
     // The password hash is never returned (it used to be).

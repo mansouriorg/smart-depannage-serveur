@@ -91,7 +91,8 @@ export class InterventionsController {
   // 2. SECURE ROUTE: Create Request (LOGGED IN USERS)
   // ==========================================================
   @Post('secure')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), RateLimitGuard)
+  @RateLimit({ name: 'secure-create', limit: 60, windowMs: 60 * 60_000 })
   createSecure(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
     return this.interventionsService.create(req.user.id, createInterventionDto);
   }

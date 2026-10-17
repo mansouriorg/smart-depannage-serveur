@@ -12,6 +12,8 @@ import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
 import { InterventionsGateway } from './interventions.gateway'; 
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateUnusablePassword } from '../auth/password-setup';
+import { adminAlertPhone } from '../../config/delivery';
+import { RATE_RULES, RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto'; 
 
@@ -37,6 +39,7 @@ export class InterventionsService {
     private prisma: PrismaService,
     private gateway: InterventionsGateway,
     private notifications: NotificationsService,
+    private rateLimit: RateLimitService,
   ) {}
 
   // ==========================================================
@@ -136,11 +139,17 @@ export class InterventionsService {
     // D. 🔔 Real-Time Notification
     this.gateway.sendNewIntervention(newIntervention);
 
-    // E. 📱 SMS Notification to Admin
-    await this.notifications.sendSms(
-      '+21600000000', 
-      `Alerte: Nouvelle demande (${newIntervention.serviceType}) à ${newIntervention.address}`
-    );
+    // E. 📱 SMS to the person in charge, only when ADMIN_ALERT_PHONE is set.
+    // (A number written in the code used to receive this for every request.)
+    const alertPhone = adminAlertPhone();
+
+    // At most 20 an hour for the whole server: a loop of requests must not turn into a loop of paid SMS.
+    if (alertPhone && this.rateLimit.tryConsume('admin-alert-sms', RATE_RULES.adminAlertSms)) {
+      await this.notifications.sendSms(
+        alertPhone,
+        `Alerte: Nouvelle demande (${newIntervention.serviceType}) à ${newIntervention.address}`,
+      );
+    }
 
     // F. ✅ NEW: Return the raw token ONLY ONCE so the controller can set the cookie
     //

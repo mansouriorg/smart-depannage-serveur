@@ -2,6 +2,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsObject,
@@ -186,4 +187,10 @@ export class UpdateNotificationPreferencesDto {
   @IsOptional()
   @IsBoolean()
   artisanApplicationRejected?: boolean;
+}
+
+/** Admin check of the delivery set-up: sends a test message to the caller's own address, number or phone. */
+export class TestDeliveryDto {
+  @IsIn(['EMAIL', 'SMS', 'PUSH'])
+  channel: 'EMAIL' | 'SMS' | 'PUSH';
 }

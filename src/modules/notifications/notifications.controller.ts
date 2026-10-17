@@ -16,6 +16,7 @@ import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
 import {
   RegisterPushTokenDto,
+  TestDeliveryDto,
   UpdateNotificationPreferencesDto,
 } from './dto/notification.dto';
 
@@ -60,6 +61,27 @@ export class NotificationsController {
   @Get()
   findAll() {
     return this.notificationsService.findAll();
+  }
+
+  // ==========================================================
+  // 2b. ADMIN - CHECK THE DELIVERY SET-UP
+  // Sends a test to the caller's own e-mail, phone or devices, then shows what
+  // became of it (without the text). Both must stay before the :notificationId routes.
+  // ==========================================================
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Post('test-delivery')
+  testDelivery(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: TestDeliveryDto,
+  ) {
+    return this.notificationsService.testDelivery(user, dto.channel);
+  }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Get('outbox/:outboxId')
+  outboxStatus(@Param('outboxId', ParseIntPipe) outboxId: number) {
+    return this.notificationsService.outboxStatus(outboxId);
   }
 
   // ==========================================================

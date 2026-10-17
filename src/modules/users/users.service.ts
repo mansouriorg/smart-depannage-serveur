@@ -555,10 +555,10 @@ export class UsersService {
   /**
    * Sends the one-time "choose your password" link.
    *
-   * E-mail delivery is still simulated (NotificationsService), so the mail
-   * would never arrive. While that is true the link is also returned to the
-   * staff member who created the account, who hands it over in person or by
-   * message. The caller is always an authenticated back-office user.
+   * While no mail server is configured (SMTP_HOST is empty) the mail cannot
+   * arrive. In that case the link is also returned to the staff member who
+   * created the account, who hands it over in person or by message. The caller
+   * is always an authenticated back-office user.
    */
   private async sendPasswordSetupLink(user: User): Promise<string | undefined> {
     const setupUrl = await issuePasswordSetupLink(this.prisma, user.id);
@@ -568,6 +568,12 @@ export class UsersService {
       'Création de votre mot de passe',
       `Votre compte Smart Dépannage a été créé. Choisissez votre mot de passe ` +
         `(lien valable 24 heures, usage unique) : ${setupUrl}`,
+      {
+        userId: user.id,
+        template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
+        validForMs: 24 * 60 * 60 * 1000,
+        replaces: `auth:PASSWORD_RESET:${user.id}`,
+      },
     );
 
     return this.notifications.isEmailSimulated() ? setupUrl : undefined;
