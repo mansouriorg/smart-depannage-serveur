@@ -54,6 +54,7 @@ import {
   ComplaintStatus,
   InterventionEventType,
   MessageAudience,
+  NotificationChannel,
   PaymentStatus,
   Prisma,
   QuoteStatus,
@@ -849,6 +850,12 @@ export class AdminService {
         `Vous avez reçu un devis de ${amountTTC} € TTC.`,
       );
     }
+
+    // In the app only: the SMS and the e-mail above already went out (never throws).
+    await this.notifications.notifyQuoteSent(quote.id, adminId, [
+      NotificationChannel.IN_APP,
+      NotificationChannel.PUSH,
+    ]);
 
     return quote;
   }

@@ -3,9 +3,11 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 import {
@@ -30,9 +32,13 @@ export class CreateNotificationDto {
   priority?: NotificationPriority;
 
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
   title: string;
 
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
   message: string;
 
   @IsOptional()
@@ -42,6 +48,7 @@ export class CreateNotificationDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   entityType?: string;
 
   @IsOptional()
@@ -55,18 +62,23 @@ export class CreateNotificationDto {
 
 export class RegisterPushTokenDto {
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(512)
   token: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(30)
   platform?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   deviceId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   deviceName?: string;
 }
 

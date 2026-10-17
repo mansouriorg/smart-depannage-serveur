@@ -480,6 +480,9 @@ export class InvoicesService {
       },
     });
 
+    // In-app notification to the customer (never throws).
+    await this.notifications.notifyInvoiceReady(invoice.id, adminId);
+
     return invoice;
   }
 

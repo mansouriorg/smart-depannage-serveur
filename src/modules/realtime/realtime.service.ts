@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from './realtime.gateway';
+import { chatParties } from '../messages/message-audience';
 
 import {
   Status,
@@ -238,26 +239,22 @@ export class RealtimeService {
       message,
     };
 
-    this.gateway.emitToIntervention(
-      message.interventionId,
-      'message.created',
-      payload,
-    );
+    // Route by audience: a message goes to the people in that chat and nobody
+    // else. It used to go to the intervention room, the client AND the artisan
+    // whatever the audience, so a support message to the customer reached the
+    // artisan and the reverse. (The intervention room is not used for messages:
+    // everybody in it would see every chat.)
+    const parties = chatParties(message.audience);
 
-    this.gateway.emitToClient(
-      message.intervention.clientId,
-      'message.created',
-      payload,
-    );
-
-    if (message.intervention.artisanId) {
-      this.gateway.emitToArtisan(
-        message.intervention.artisanId,
-        'message.created',
-        payload,
-      );
+    if (parties?.client) {
+      this.gateway.emitToClient(message.intervention.clientId, 'message.created', payload);
     }
 
+    if (parties?.artisan && message.intervention.artisanId) {
+      this.gateway.emitToArtisan(message.intervention.artisanId, 'message.created', payload);
+    }
+
+    // The back office watches every chat from the dashboard.
     this.gateway.emitToAdmins('admin.message.created', payload);
 
     return payload;

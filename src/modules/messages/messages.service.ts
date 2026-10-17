@@ -2,12 +2,13 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 import { CreateMessageDto } from './dto/create-message.dto';
 
@@ -24,11 +25,12 @@ type AdminInternalNoteDto = {
 
 @Injectable()
 export class MessagesService {
+  private readonly logger = new Logger(MessagesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
-
-    @Optional()
-    private readonly realtime?: RealtimeService,
+    private readonly realtime: RealtimeService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ==========================================================
@@ -291,7 +293,15 @@ export class MessagesService {
       },
     });
 
-    await this.realtime?.emitNewMessage?.(message.id);
+    // The message is saved: a socket or notification problem must not fail the request.
+    try {
+      await this.realtime.emitNewMessage(message.id);
+    } catch (error: any) {
+      this.logger.error(`Live delivery of message #${message.id} failed: ${error?.message ?? error}`);
+    }
+
+    // One in-app notification for each person in this chat except the sender.
+    await this.notifications.notifyNewMessage(message.id);
 
     return message;
   }
@@ -559,37 +569,31 @@ export class MessagesService {
   }
 
   async countUnread(userId: number, role: Role) {
+    const allowed = this.getAllowedAudiencesForUser(role);
+
     const total = await this.prisma.message.count({
       where: this.unreadBaseWhere(userId, role),
     });
 
-    const clientArtisan = await this.prisma.message.count({
-      where: {
-        ...this.unreadBaseWhere(userId, role),
-        audience: MessageAudience.CLIENT_ARTISAN,
-      },
-    });
-
-    const clientSupport = await this.prisma.message.count({
-      where: {
-        ...this.unreadBaseWhere(userId, role),
-        audience: MessageAudience.CLIENT_SUPPORT,
-      },
-    });
-
-    const artisanSupport = await this.prisma.message.count({
-      where: {
-        ...this.unreadBaseWhere(userId, role),
-        audience: MessageAudience.ARTISAN_SUPPORT,
-      },
-    });
+    // Only the chats this role is part of are counted. A count for another chat
+    // (support messages for the artisan, say) would still tell the reader that
+    // such messages exist, so it is a flat 0 and no query is made.
+    const countFor = async (audience: MessageAudience) =>
+      allowed.includes(audience)
+        ? this.prisma.message.count({
+            where: {
+              ...this.unreadBaseWhere(userId, role),
+              audience,
+            },
+          })
+        : 0;
 
     return {
       total,
       byAudience: {
-        CLIENT_ARTISAN: clientArtisan,
-        CLIENT_SUPPORT: clientSupport,
-        ARTISAN_SUPPORT: artisanSupport,
+        CLIENT_ARTISAN: await countFor(MessageAudience.CLIENT_ARTISAN),
+        CLIENT_SUPPORT: await countFor(MessageAudience.CLIENT_SUPPORT),
+        ARTISAN_SUPPORT: await countFor(MessageAudience.ARTISAN_SUPPORT),
       },
     };
   }

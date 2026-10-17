@@ -14,6 +14,10 @@ import { NotificationsService } from './notifications.service';
 
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
+import {
+  RegisterPushTokenDto,
+  UpdateNotificationPreferencesDto,
+} from './dto/notification.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -27,44 +31,6 @@ type AuthenticatedUser = {
   role: Role;
 };
 
-type RegisterPushTokenBody = {
-  token: string;
-  platform?: string;
-  deviceId?: string;
-  deviceName?: string;
-};
-
-type UpdateNotificationPreferencesBody = {
-  inAppEnabled?: boolean;
-  emailEnabled?: boolean;
-  smsEnabled?: boolean;
-  pushEnabled?: boolean;
-  adminRealtimeEnabled?: boolean;
-
-  interventionUpdates?: boolean;
-  quoteUpdates?: boolean;
-  paymentUpdates?: boolean;
-  invoiceUpdates?: boolean;
-  complaintUpdates?: boolean;
-  marketingUpdates?: boolean;
-
-  newInterventionCreated?: boolean;
-  artisanAssigned?: boolean;
-  artisanAcceptedMission?: boolean;
-  artisanOnTheWay?: boolean;
-  artisanArrived?: boolean;
-  workStarted?: boolean;
-  workCompleted?: boolean;
-  quoteSent?: boolean;
-  quoteAccepted?: boolean;
-  paymentReceived?: boolean;
-  invoiceReady?: boolean;
-  complaintOpened?: boolean;
-  complaintUpdated?: boolean;
-  artisanApplicationApproved?: boolean;
-  artisanApplicationRejected?: boolean;
-};
-
 @Controller('notifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class NotificationsController {
@@ -72,21 +38,25 @@ export class NotificationsController {
 
   // ==========================================================
   // 1. ADMIN - CREATE NOTIFICATION MANUALLY
-  // Keeps your old POST /notifications route
+  // Keeps your old POST /notifications route. The sender is always the caller.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post()
-  create(@Body() createNotificationDto: CreateNotificationDto) {
-    return this.notificationsService.create(createNotificationDto);
+  create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() createNotificationDto: CreateNotificationDto,
+  ) {
+    return this.notificationsService.create(createNotificationDto, user);
   }
 
   // ==========================================================
   // 2. ADMIN - LIST ALL NOTIFICATIONS
-  // Keeps your old GET /notifications route
+  // Keeps your old GET /notifications route. Admin and super admin only: the
+  // text of a notification can quote a chat.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.ACCOUNTANT)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Get()
   findAll() {
     return this.notificationsService.findAll();
@@ -196,7 +166,7 @@ export class NotificationsController {
   @Patch('preferences/me')
   updateMyPreferences(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: UpdateNotificationPreferencesBody,
+    @Body() dto: UpdateNotificationPreferencesDto,
   ) {
     return this.notificationsService.updateMyPreferences(user, dto);
   }
@@ -218,7 +188,7 @@ export class NotificationsController {
   @Post('push-tokens')
   registerPushToken(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: RegisterPushTokenBody,
+    @Body() dto: RegisterPushTokenDto,
   ) {
     return this.notificationsService.registerPushToken(user, dto);
   }
@@ -261,16 +231,19 @@ export class NotificationsController {
 
   // ==========================================================
   // 10. ADMIN - OLD UPDATE ROUTE COMPATIBILITY
-  // Keeps your old PATCH /notifications/:id route
+  // Keeps your old PATCH /notifications/:id route. Only the admin who sent the
+  // notification, or a super admin, can correct it.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch(':notificationId')
   update(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('notificationId', ParseIntPipe) notificationId: number,
     @Body() updateNotificationDto: UpdateNotificationDto,
   ) {
     return this.notificationsService.update(
+      user,
       notificationId,
       updateNotificationDto,
     );

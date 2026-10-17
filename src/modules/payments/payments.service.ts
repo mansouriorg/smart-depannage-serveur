@@ -10,6 +10,7 @@ import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
+import { NotificationsService } from '../notifications/notifications.service';
 
 import {
   InterventionEventType,
@@ -28,6 +29,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: InterventionEventsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ==========================================================
@@ -542,6 +544,10 @@ export class PaymentsService {
         receiptNumber: updated.receiptNumber,
       },
     });
+
+    // One notification for the customer and one for each accountant/admin
+    // (the admin who confirmed it is not told about their own click). Never throws.
+    await this.notifications.notifyPaymentReceived(paymentId, adminId);
 
     return updated;
   }

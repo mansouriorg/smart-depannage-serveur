@@ -109,7 +109,7 @@ export class NotificationsGateway
     this.server.to(`user:${userId}`).emit(event, payload);
   }
 
-  emitToAdmins(event: string, payload: any) {
-    this.server.to('admins').emit(event, payload);
-  }
+  // There is deliberately no "emit to all admins": every admin has their own
+  // notification (own id, own read state), so each one is sent to that admin's
+  // room only. Broadcasting it to everyone would deliver N copies to each admin.
 }

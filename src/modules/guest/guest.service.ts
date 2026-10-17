@@ -409,6 +409,9 @@ export class GuestService {
       createdById: intervention.clientId,
     });
 
+    // Each dispatcher and admin gets their own notification (never throws).
+    await this.notifications.notifyQuoteAccepted(updatedQuote.id, intervention.clientId);
+
     return updatedQuote;
   }
 

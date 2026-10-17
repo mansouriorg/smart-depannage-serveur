@@ -3,7 +3,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -11,6 +10,11 @@ import { NotificationsGateway } from './notifications.gateway';
 
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
+import {
+  RegisterPushTokenDto,
+  UpdateNotificationPreferencesDto,
+} from './dto/notification.dto';
+import { messageRecipients } from '../messages/message-audience';
 
 import {
   NotificationChannel,
@@ -26,6 +30,22 @@ type AuthenticatedUser = {
   role: Role;
 };
 
+const ALL_ADMIN_ROLES: Role[] = [
+  Role.ADMIN,
+  Role.SUPER_ADMIN,
+  Role.SUPPORT,
+  Role.DISPATCHER,
+  Role.ACCOUNTANT,
+];
+
+/** Who handles what: money for the accountant, disputes and chats for support. */
+const MONEY_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT];
+const SUPPORT_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT];
+const DISPATCH_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER, Role.SUPPORT];
+
+/** The only roles that may look at, list or edit other people's notifications. */
+const AUDIT_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN];
+
 type NotifyPayload = {
   recipientId: number;
   actorId?: number;
@@ -39,44 +59,6 @@ type NotifyPayload = {
   data?: Prisma.InputJsonValue;
 };
 
-type RegisterPushTokenDto = {
-  token: string;
-  platform?: string;
-  deviceId?: string;
-  deviceName?: string;
-};
-
-type UpdateNotificationPreferencesDto = {
-  inAppEnabled?: boolean;
-  emailEnabled?: boolean;
-  smsEnabled?: boolean;
-  pushEnabled?: boolean;
-  adminRealtimeEnabled?: boolean;
-
-  interventionUpdates?: boolean;
-  quoteUpdates?: boolean;
-  paymentUpdates?: boolean;
-  invoiceUpdates?: boolean;
-  complaintUpdates?: boolean;
-  marketingUpdates?: boolean;
-
-  newInterventionCreated?: boolean;
-  artisanAssigned?: boolean;
-  artisanAcceptedMission?: boolean;
-  artisanOnTheWay?: boolean;
-  artisanArrived?: boolean;
-  workStarted?: boolean;
-  workCompleted?: boolean;
-  quoteSent?: boolean;
-  quoteAccepted?: boolean;
-  paymentReceived?: boolean;
-  invoiceReady?: boolean;
-  complaintOpened?: boolean;
-  complaintUpdated?: boolean;
-  artisanApplicationApproved?: boolean;
-  artisanApplicationRejected?: boolean;
-};
-
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -84,14 +66,16 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
 
-    @Optional()
-    private readonly gateway?: NotificationsGateway,
+    // Required on purpose: while this was @Optional() and the gateway was not
+    // provided, no notification ever reached a socket and nothing said so.
+    private readonly gateway: NotificationsGateway,
   ) {}
 
   // ==========================================================
   // Includes
   // ==========================================================
 
+  // Back office view (admin / super admin): who it went to, how it was delivered.
   private notificationInclude: Prisma.NotificationInclude = {
     recipient: {
       select: {
@@ -116,6 +100,28 @@ export class NotificationsService {
       },
     },
   };
+
+  // What the person a notification is for gets to see: no recipient record, no
+  // delivery log (destinations, provider errors), and no e-mail address of the
+  // person who triggered it (a client must not receive a staff member's e-mail).
+  private recipientInclude: Prisma.NotificationInclude = {
+    actor: {
+      select: {
+        id: true,
+        name: true,
+        role: true,
+      },
+    },
+  };
+
+  private forRecipient(notification: any) {
+    const { recipient, deliveries, actor, ...rest } = notification;
+
+    return {
+      ...rest,
+      actor: actor ? { id: actor.id, name: actor.name, role: actor.role } : null,
+    };
+  }
 
   // ==========================================================
   // Helpers
@@ -234,18 +240,15 @@ export class NotificationsService {
   }
 
   private async getOrCreatePreferences(userId: number) {
-    const existing = await this.prisma.notificationPreference.findUnique({
+    // upsert, not find-then-create: two notifications for a user who has no
+    // preferences yet (a payment confirmed while a message arrives) used to
+    // race on the unique userId, and the loser's notification was lost.
+    return this.prisma.notificationPreference.upsert({
       where: {
         userId,
       },
-    });
-
-    if (existing) {
-      return existing;
-    }
-
-    return this.prisma.notificationPreference.create({
-      data: {
+      update: {},
+      create: {
         userId,
       },
     });
@@ -301,11 +304,30 @@ export class NotificationsService {
     return notification;
   }
 
+  /**
+   * Reading: the recipient, or an admin / super admin. The text of a
+   * notification can quote a chat (a message preview), so the other back-office
+   * roles do not get to browse other people's notifications by id.
+   */
   private checkNotificationOwner(
     user: AuthenticatedUser,
     notification: { recipientId: number },
   ) {
-    if (notification.recipientId !== user.id && !this.isAdminRole(user.role)) {
+    if (notification.recipientId !== user.id && !AUDIT_ROLES.includes(user.role)) {
+      throw new ForbiddenException('Accès refusé.');
+    }
+  }
+
+  /**
+   * Changing: only the recipient. Every admin has their own copy of a
+   * notification with their own read state, so one admin cannot mark another
+   * admin's copy as read or delete it.
+   */
+  private checkNotificationRecipient(
+    user: AuthenticatedUser,
+    notification: { recipientId: number },
+  ) {
+    if (notification.recipientId !== user.id) {
       throw new ForbiddenException('Accès refusé.');
     }
   }
@@ -331,21 +353,33 @@ export class NotificationsService {
   // Compatible with your generated controller
   // ==========================================================
 
-  async create(createNotificationDto: CreateNotificationDto) {
-    const payload = createNotificationDto as any;
+  async create(createNotificationDto: CreateNotificationDto, user: AuthenticatedUser) {
+    const dto = createNotificationDto;
 
-    return this.createNotification({
-      recipientId: Number(payload.recipientId),
-      actorId: payload.actorId ? Number(payload.actorId) : undefined,
-      type: payload.type || NotificationType.GENERAL,
-      priority: payload.priority || NotificationPriority.NORMAL,
-      title: payload.title || 'Notification',
-      message: payload.message || payload.content || '',
-      channels: payload.channels,
-      entityType: payload.entityType,
-      entityId: payload.entityId ? Number(payload.entityId) : undefined,
-      data: payload.data,
+    const notification = await this.createNotification({
+      recipientId: dto.recipientId,
+      // Always the caller: the body cannot make a notification look like it
+      // came from somebody else (or from a user id that does not exist).
+      actorId: user.id,
+      type: dto.type,
+      priority: dto.priority,
+      title: dto.title,
+      message: dto.message,
+      channels: dto.channels,
+      entityType: dto.entityType,
+      entityId: dto.entityId,
+      data: dto.data as Prisma.InputJsonValue | undefined,
     });
+
+    // notify() answers null when the recipient is unknown or inactive, or has
+    // turned every channel of this kind off. Say so instead of returning an empty 201.
+    if (!notification) {
+      throw new NotFoundException(
+        'Notification non créée: destinataire introuvable ou inactif, ou notifications désactivées.',
+      );
+    }
+
+    return notification;
   }
 
   async findAll() {
@@ -357,6 +391,8 @@ export class NotificationsService {
       orderBy: {
         createdAt: 'desc',
       },
+      // Back-office overview: the most recent ones, not the whole history.
+      take: 500,
     });
   }
 
@@ -364,25 +400,43 @@ export class NotificationsService {
     return this.getNotificationOrFail(id);
   }
 
-  async update(id: number, updateNotificationDto: UpdateNotificationDto) {
-    await this.getNotificationOrFail(id);
+  /**
+   * Correcting a notification: the admin who sent it, or a super admin. The
+   * read state belongs to the recipient, so nobody else can change it here.
+   */
+  async update(
+    user: AuthenticatedUser,
+    id: number,
+    updateNotificationDto: UpdateNotificationDto,
+  ) {
+    const existing = await this.getNotificationOrFail(id);
 
-    const payload = updateNotificationDto as any;
+    if (existing.actorId !== user.id && user.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Accès refusé.');
+    }
+
+    const dto = updateNotificationDto;
+
+    if (dto.isRead !== undefined && existing.recipientId !== user.id) {
+      throw new ForbiddenException(
+        "Seul le destinataire peut changer l'état de lecture.",
+      );
+    }
 
     return this.prisma.notification.update({
       where: {
         id,
       },
       data: {
-        title: payload.title,
-        message: payload.message,
-        priority: payload.priority,
-        channels: payload.channels,
-        entityType: payload.entityType,
-        entityId: payload.entityId,
-        data: payload.data,
-        isRead: payload.isRead,
-        readAt: payload.isRead ? new Date() : undefined,
+        title: dto.title,
+        message: dto.message,
+        priority: dto.priority,
+        channels: dto.channels,
+        entityType: dto.entityType,
+        entityId: dto.entityId,
+        data: dto.data as Prisma.InputJsonValue | undefined,
+        isRead: dto.isRead,
+        readAt: dto.isRead === true ? new Date() : dto.isRead === false ? null : undefined,
       },
       include: this.notificationInclude,
     });
@@ -582,12 +636,32 @@ export class NotificationsService {
   }
 
   private async deliverNotification(notification: any) {
-    for (const channel of notification.channels as NotificationChannel[]) {
+    const channels = notification.channels as NotificationChannel[];
+
+    // The live (socket) copy goes to the recipient's own room, once, even when
+    // both IN_APP and ADMIN_REAL_TIME are asked for. Each admin has their own
+    // notification row, so each admin gets exactly one event for their own copy.
+    let liveSent = false;
+
+    const emitLive = () => {
+      if (liveSent) return;
+      liveSent = true;
+
+      try {
+        this.gateway?.emitToUser(notification.recipientId, 'notification.new', {
+          notification: this.forRecipient(notification),
+        });
+      } catch (error: any) {
+        this.logger.warn(
+          `Live delivery of notification #${notification.id} failed: ${error?.message ?? error}`,
+        );
+      }
+    };
+
+    for (const channel of channels) {
       try {
         if (channel === NotificationChannel.IN_APP) {
-          this.gateway?.emitToUser?.(notification.recipientId, 'notification.new', {
-            notification,
-          });
+          emitLive();
 
           await this.logDelivery({
             notificationId: notification.id,
@@ -602,9 +676,7 @@ export class NotificationsService {
         }
 
         if (channel === NotificationChannel.ADMIN_REAL_TIME) {
-          this.gateway?.emitToAdmins?.('admin.notification.new', {
-            notification,
-          });
+          emitLive();
 
           await this.logDelivery({
             notificationId: notification.id,
@@ -728,16 +800,12 @@ export class NotificationsService {
         deletedAt: null,
         ...(options?.unreadOnly ? { isRead: false } : {}),
       },
-      include: {
-        deliveries: {
-          orderBy: {
-            createdAt: 'desc',
-          },
-        },
-      },
+      // No delivery logs here: they hold provider errors and destinations that
+      // the person reading their notifications has no use for.
       orderBy: {
         createdAt: 'desc',
       },
+      take: 200,
     });
   }
 
@@ -754,16 +822,10 @@ export class NotificationsService {
         deletedAt: null,
         isRead: true,
       },
-      include: {
-        deliveries: {
-          orderBy: {
-            createdAt: 'desc',
-          },
-        },
-      },
       orderBy: {
         readAt: 'desc',
       },
+      take: 200,
     });
   }
 
@@ -772,13 +834,15 @@ export class NotificationsService {
 
     this.checkNotificationOwner(user, notification);
 
-    return notification;
+    // An admin looking at someone else's notification gets the back office view
+    // (recipient, delivery log); everybody else gets their own plain view.
+    return notification.recipientId !== user.id ? notification : this.forRecipient(notification);
   }
 
   async markAsRead(user: AuthenticatedUser, notificationId: number) {
     const notification = await this.getNotificationOrFail(notificationId);
 
-    this.checkNotificationOwner(user, notification);
+    this.checkNotificationRecipient(user, notification);
 
     return this.prisma.notification.update({
       where: {
@@ -788,7 +852,7 @@ export class NotificationsService {
         isRead: true,
         readAt: new Date(),
       },
-      include: this.notificationInclude,
+      include: this.recipientInclude,
     });
   }
 
@@ -813,7 +877,7 @@ export class NotificationsService {
   async deleteNotification(user: AuthenticatedUser, notificationId: number) {
     const notification = await this.getNotificationOrFail(notificationId);
 
-    this.checkNotificationOwner(user, notification);
+    this.checkNotificationRecipient(user, notification);
 
     return this.prisma.notification.update({
       where: {
@@ -910,44 +974,68 @@ export class NotificationsService {
   // 7. ADMIN RECIPIENTS
   // ==========================================================
 
-  private async getAdminUsers() {
+  private async getAdminUsers(roles: Role[] = ALL_ADMIN_ROLES) {
     return this.prisma.user.findMany({
       where: {
         isActive: true,
         role: {
-          in: [
-            Role.ADMIN,
-            Role.SUPER_ADMIN,
-            Role.SUPPORT,
-            Role.DISPATCHER,
-            Role.ACCOUNTANT,
-          ],
+          in: roles,
         },
+      },
+      select: {
+        id: true,
+        role: true,
       },
     });
   }
 
-  async notifyAdmins(payload: Omit<NotifyPayload, 'recipientId'>) {
-    const admins = await this.getAdminUsers();
+  /**
+   * One notification per admin, each with its own id and read state, sent live
+   * to that admin only. `roles` narrows who is concerned (payments go to the
+   * accountant, complaints to support...). The person who did the action is
+   * not told about it. One admin failing does not stop the others.
+   */
+  async notifyAdmins(
+    payload: Omit<NotifyPayload, 'recipientId'> & { roles?: Role[] },
+  ) {
+    const { roles, ...rest } = payload;
+    const admins = await this.getAdminUsers(roles);
 
-    const notifications: any[] = [];
+    // All admins at once: the request that caused this waits for the slowest
+    // one, not for the sum of them.
+    const results = await Promise.all(
+      admins
+        .filter((admin) => rest.actorId === undefined || admin.id !== rest.actorId)
+        .map(async (admin) => {
+          try {
+            return await this.notify({
+              ...rest,
+              recipientId: admin.id,
+              channels: rest.channels || [
+                NotificationChannel.IN_APP,
+                NotificationChannel.ADMIN_REAL_TIME,
+              ],
+            });
+          } catch (error: any) {
+            this.logger.error(
+              `Notification for admin #${admin.id} failed: ${error?.message ?? error}`,
+            );
+            return null;
+          }
+        }),
+    );
 
-    for (const admin of admins) {
-      const notification = await this.notify({
-        ...payload,
-        recipientId: admin.id,
-        channels: payload.channels || [
-          NotificationChannel.IN_APP,
-          NotificationChannel.ADMIN_REAL_TIME,
-        ],
-      });
+    return results.filter((notification) => notification !== null);
+  }
 
-      if (notification) {
-        notifications.push(notification);
-      }
+  /** A notification problem must never undo or break the action that caused it. */
+  private async guarded<T>(label: string, work: () => Promise<T>): Promise<T | null> {
+    try {
+      return await work();
+    } catch (error: any) {
+      this.logger.error(`Notification "${label}" failed: ${error?.message ?? error}`);
+      return null;
     }
-
-    return notifications;
   }
 
   // ==========================================================
@@ -1157,171 +1245,423 @@ export class NotificationsService {
     });
   }
 
-  async notifyQuoteSent(quoteId: number, actorId?: number) {
-    const quote = await this.prisma.quote.findUnique({
-      where: {
-        id: quoteId,
-      },
-      include: {
-        intervention: true,
-      },
-    });
+  async notifyQuoteSent(
+    quoteId: number,
+    actorId?: number,
+    channels?: NotificationChannel[],
+  ) {
+    return this.guarded('quote sent', async () => {
+      const quote = await this.prisma.quote.findUnique({
+        where: {
+          id: quoteId,
+        },
+        include: {
+          intervention: true,
+        },
+      });
 
-    if (!quote) {
-      return null;
-    }
+      if (!quote) {
+        return null;
+      }
 
-    return this.notify({
-      recipientId: quote.intervention.clientId,
-      actorId,
-      type: NotificationType.QUOTE_SENT,
-      title: 'Devis reçu',
-      message: `Un devis de ${quote.amountTTC} € TTC vous a été envoyé.`,
-      entityType: 'QUOTE',
-      entityId: quoteId,
-      data: {
-        quoteId,
-        interventionId: quote.interventionId,
-        amountTTC: quote.amountTTC,
-      },
+      return this.notify({
+        recipientId: quote.intervention.clientId,
+        actorId,
+        type: NotificationType.QUOTE_SENT,
+        title: 'Devis reçu',
+        message: `Un devis de ${quote.amountTTC} € TTC vous a été envoyé.`,
+        channels,
+        entityType: 'QUOTE',
+        entityId: quoteId,
+        data: {
+          quoteId,
+          interventionId: quote.interventionId,
+          amountTTC: quote.amountTTC,
+        },
+      });
     });
   }
 
   async notifyQuoteAccepted(quoteId: number, actorId?: number) {
-    const quote = await this.prisma.quote.findUnique({
-      where: {
-        id: quoteId,
-      },
-      include: {
-        intervention: true,
-      },
-    });
+    return this.guarded('quote accepted', async () => {
+      const quote = await this.prisma.quote.findUnique({
+        where: {
+          id: quoteId,
+        },
+        include: {
+          intervention: true,
+        },
+      });
 
-    if (!quote) {
-      return null;
-    }
+      if (!quote) {
+        return null;
+      }
 
-    return this.notifyAdmins({
-      actorId,
-      type: NotificationType.QUOTE_ACCEPTED,
-      title: 'Devis accepté',
-      message: `Le client a accepté le devis #${quoteId}.`,
-      entityType: 'QUOTE',
-      entityId: quoteId,
-      data: {
-        quoteId,
-        interventionId: quote.interventionId,
-      },
+      const payload = {
+        actorId,
+        type: NotificationType.QUOTE_ACCEPTED,
+        title: 'Devis accepté',
+        message: `Le client a accepté le devis #${quoteId}.`,
+        entityType: 'QUOTE',
+        entityId: quoteId,
+        data: {
+          quoteId,
+          interventionId: quote.interventionId,
+        },
+      };
+
+      const notifications: any[] = await this.notifyAdmins({
+        ...payload,
+        roles: DISPATCH_ROLES,
+      });
+
+      // The artisan on the job is waiting for exactly this answer.
+      const artisanId = quote.intervention?.artisanId;
+
+      if (artisanId && artisanId !== actorId) {
+        const toArtisan = await this.notify({ ...payload, recipientId: artisanId });
+
+        if (toArtisan) {
+          notifications.push(toArtisan);
+        }
+      }
+
+      return notifications;
     });
   }
 
   async notifyPaymentReceived(paymentId: number, actorId?: number) {
-    const payment = await this.prisma.payment.findUnique({
-      where: {
-        id: paymentId,
-      },
-      include: {
-        intervention: true,
-      },
-    });
+    return this.guarded('payment received', async () => {
+      const payment = await this.prisma.payment.findUnique({
+        where: {
+          id: paymentId,
+        },
+        include: {
+          intervention: true,
+        },
+      });
 
-    if (!payment) {
-      return null;
-    }
+      if (!payment) {
+        return null;
+      }
 
-    await this.notifyAdmins({
-      actorId,
-      type: NotificationType.PAYMENT_RECEIVED,
-      title: 'Paiement reçu',
-      message: `Paiement de ${payment.amount} ${payment.currency} reçu.`,
-      entityType: 'PAYMENT',
-      entityId: paymentId,
-    });
+      await this.notifyAdmins({
+        actorId,
+        roles: MONEY_ROLES,
+        type: NotificationType.PAYMENT_RECEIVED,
+        title: 'Paiement reçu',
+        message: `Paiement de ${payment.amount} ${payment.currency} reçu.`,
+        entityType: 'PAYMENT',
+        entityId: paymentId,
+        data: {
+          paymentId,
+          interventionId: payment.interventionId,
+        },
+      });
 
-    return this.notify({
-      recipientId: payment.intervention.clientId,
-      actorId,
-      type: NotificationType.PAYMENT_RECEIVED,
-      title: 'Paiement confirmé',
-      message: `Votre paiement de ${payment.amount} ${payment.currency} a été confirmé.`,
-      entityType: 'PAYMENT',
-      entityId: paymentId,
+      return this.notify({
+        recipientId: payment.intervention.clientId,
+        actorId,
+        type: NotificationType.PAYMENT_RECEIVED,
+        title: 'Paiement confirmé',
+        message: `Votre paiement de ${payment.amount} ${payment.currency} a été confirmé.`,
+        entityType: 'PAYMENT',
+        entityId: paymentId,
+        data: {
+          paymentId,
+          interventionId: payment.interventionId,
+        },
+      });
     });
   }
 
   async notifyInvoiceReady(invoiceId: number, actorId?: number) {
-    const invoice = await this.prisma.invoice.findUnique({
-      where: {
-        id: invoiceId,
-      },
-      include: {
-        intervention: true,
-      },
-    });
+    return this.guarded('invoice ready', async () => {
+      const invoice = await this.prisma.invoice.findUnique({
+        where: {
+          id: invoiceId,
+        },
+        include: {
+          intervention: true,
+        },
+      });
 
-    if (!invoice) {
-      return null;
-    }
+      if (!invoice) {
+        return null;
+      }
 
-    return this.notify({
-      recipientId: invoice.intervention.clientId,
-      actorId,
-      type: NotificationType.INVOICE_READY,
-      title: 'Facture disponible',
-      message: `Votre facture ${invoice.invoiceNumber} est disponible.`,
-      entityType: 'INVOICE',
-      entityId: invoiceId,
+      return this.notify({
+        recipientId: invoice.intervention.clientId,
+        actorId,
+        type: NotificationType.INVOICE_READY,
+        title: 'Facture disponible',
+        message: `Votre facture ${invoice.invoiceNumber} est disponible.`,
+        entityType: 'INVOICE',
+        entityId: invoiceId,
+        data: {
+          invoiceId,
+          interventionId: invoice.interventionId,
+        },
+      });
     });
   }
 
   async notifyComplaintOpened(complaintId: number, actorId?: number) {
-    const complaint = await this.prisma.complaint.findUnique({
-      where: {
-        id: complaintId,
-      },
-      include: {
-        intervention: true,
-      },
-    });
+    return this.guarded('complaint opened', async () => {
+      const complaint = await this.prisma.complaint.findUnique({
+        where: {
+          id: complaintId,
+        },
+      });
 
-    if (!complaint) {
-      return null;
-    }
+      if (!complaint) {
+        return null;
+      }
 
-    return this.notifyAdmins({
-      actorId,
-      type: NotificationType.COMPLAINT_OPENED,
-      priority: NotificationPriority.HIGH,
-      title: 'Nouvelle réclamation',
-      message: `Une réclamation a été ouverte: ${complaint.title}.`,
-      entityType: 'COMPLAINT',
-      entityId: complaintId,
+      return this.notifyAdmins({
+        actorId,
+        roles: SUPPORT_ROLES,
+        type: NotificationType.COMPLAINT_OPENED,
+        priority: NotificationPriority.HIGH,
+        title: 'Nouvelle réclamation',
+        message: `Une réclamation a été ouverte: ${complaint.title}.`,
+        entityType: 'COMPLAINT',
+        entityId: complaintId,
+        data: {
+          complaintId,
+          interventionId: complaint.interventionId,
+        },
+      });
     });
   }
 
+  /** The back office moved a complaint forward: tell the person who filed it. */
   async notifyComplaintUpdated(
     complaintId: number,
     recipientId: number,
     actorId?: number,
   ) {
-    const complaint = await this.prisma.complaint.findUnique({
-      where: {
-        id: complaintId,
-      },
+    return this.guarded('complaint updated', async () => {
+      const complaint = await this.prisma.complaint.findUnique({
+        where: {
+          id: complaintId,
+        },
+      });
+
+      if (!complaint || recipientId === actorId) {
+        return null;
+      }
+
+      return this.notify({
+        recipientId,
+        actorId,
+        type: NotificationType.COMPLAINT_UPDATED,
+        title: 'Réclamation mise à jour',
+        message: `Votre réclamation "${complaint.title}" a été mise à jour.`,
+        entityType: 'COMPLAINT',
+        entityId: complaintId,
+        data: {
+          complaintId,
+          interventionId: complaint.interventionId,
+        },
+      });
     });
+  }
 
-    if (!complaint) {
-      return null;
-    }
+  /** The customer or the artisan wrote on a complaint: tell whoever handles it. */
+  async notifyComplaintReply(complaintId: number, actorId?: number) {
+    return this.guarded('complaint reply', async () => {
+      const complaint = await this.prisma.complaint.findUnique({
+        where: {
+          id: complaintId,
+        },
+        include: {
+          intervention: {
+            select: {
+              artisanId: true,
+            },
+          },
+        },
+      });
 
-    return this.notify({
-      recipientId,
-      actorId,
-      type: NotificationType.COMPLAINT_UPDATED,
-      title: 'Réclamation mise à jour',
-      message: `Votre réclamation "${complaint.title}" a été mise à jour.`,
-      entityType: 'COMPLAINT',
-      entityId: complaintId,
+      if (!complaint) {
+        return null;
+      }
+
+      const payload = {
+        actorId,
+        type: NotificationType.COMPLAINT_UPDATED,
+        title: 'Nouveau message sur une réclamation',
+        message: `Nouveau message sur la réclamation "${complaint.title}".`,
+        entityType: 'COMPLAINT',
+        entityId: complaintId,
+        data: {
+          complaintId,
+          interventionId: complaint.interventionId,
+        },
+      };
+
+      const notifications: any[] = [];
+
+      // The other side of the dispute is waiting for this answer: the customer
+      // wrote, so the artisan is told, and the other way round.
+      const artisanId = complaint.intervention?.artisanId ?? null;
+      const otherSide =
+        actorId !== undefined && actorId === complaint.userId
+          ? artisanId
+          : actorId !== undefined && actorId === artisanId
+            ? complaint.userId
+            : null;
+
+      if (otherSide) {
+        const toOtherSide = await this.notify({ ...payload, recipientId: otherSide });
+
+        if (toOtherSide) {
+          notifications.push(toOtherSide);
+        }
+      }
+
+      // The back office: the person it is assigned to (if they are still
+      // active), or the whole support team when nobody has it.
+      const assignee = complaint.assignedToId
+        ? await this.prisma.user.findUnique({
+            where: { id: complaint.assignedToId },
+            select: { isActive: true },
+          })
+        : null;
+
+      if (complaint.assignedToId && assignee?.isActive) {
+        if (complaint.assignedToId !== actorId) {
+          const assigned = await this.notify({
+            ...payload,
+            recipientId: complaint.assignedToId,
+            channels: [NotificationChannel.IN_APP, NotificationChannel.ADMIN_REAL_TIME],
+          });
+
+          if (assigned) {
+            notifications.push(assigned);
+          }
+        }
+
+        return notifications;
+      }
+
+      notifications.push(...(await this.notifyAdmins({ ...payload, roles: SUPPORT_ROLES })));
+
+      return notifications;
+    });
+  }
+
+  async notifyComplaintAssigned(
+    complaintId: number,
+    assigneeId: number,
+    actorId?: number,
+  ) {
+    return this.guarded('complaint assigned', async () => {
+      const complaint = await this.prisma.complaint.findUnique({
+        where: {
+          id: complaintId,
+        },
+      });
+
+      if (!complaint || assigneeId === actorId) {
+        return null;
+      }
+
+      return this.notify({
+        recipientId: assigneeId,
+        actorId,
+        type: NotificationType.COMPLAINT_UPDATED,
+        priority: NotificationPriority.HIGH,
+        title: 'Réclamation assignée',
+        message: `La réclamation "${complaint.title}" vous a été assignée.`,
+        entityType: 'COMPLAINT',
+        entityId: complaintId,
+        data: {
+          complaintId,
+          interventionId: complaint.interventionId,
+        },
+        channels: [NotificationChannel.IN_APP, NotificationChannel.ADMIN_REAL_TIME],
+      });
+    });
+  }
+
+  /**
+   * A new chat message: one in-app notification for each person in that chat
+   * except the sender (see message-audience.ts for who is in which chat).
+   */
+  async notifyNewMessage(messageId: number) {
+    return this.guarded('new message', async () => {
+      const message = await this.prisma.message.findUnique({
+        where: {
+          id: messageId,
+        },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              name: true,
+              role: true,
+            },
+          },
+          intervention: {
+            select: {
+              id: true,
+              clientId: true,
+              artisanId: true,
+            },
+          },
+        },
+      });
+
+      if (!message || message.deletedAt) {
+        return [];
+      }
+
+      const targets = messageRecipients({
+        audience: message.audience,
+        senderId: message.senderId,
+        senderIsSupport: this.isAdminRole(message.sender.role),
+        clientId: message.intervention.clientId,
+        artisanId: message.intervention.artisanId,
+      });
+
+      const text = (message.content ?? '').trim().slice(0, 140) || 'Pièce jointe';
+      const from = message.sender.name ? `${message.sender.name}: ` : '';
+
+      const base = {
+        actorId: message.senderId,
+        type: NotificationType.GENERAL,
+        title: `Nouveau message (demande #${message.interventionId})`,
+        message: `${from}${text}`,
+        entityType: 'MESSAGE',
+        entityId: message.id,
+        data: {
+          messageId: message.id,
+          interventionId: message.interventionId,
+          audience: message.audience,
+        },
+      };
+
+      const created: any[] = [];
+
+      for (const recipientId of [targets.clientId, targets.artisanId]) {
+        if (recipientId === null) continue;
+
+        const notification = await this.notify({
+          ...base,
+          recipientId,
+          channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+        });
+
+        if (notification) created.push(notification);
+      }
+
+      if (targets.support) {
+        created.push(...(await this.notifyAdmins({ ...base, roles: SUPPORT_ROLES })));
+      }
+
+      return created;
     });
   }
 

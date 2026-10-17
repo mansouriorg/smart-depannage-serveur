@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClient } from 'generated/prisma/client'; // Your custom path
+import { PrismaClient } from '../../generated/prisma/client'; // relative like every other file, so jest can load it too
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 

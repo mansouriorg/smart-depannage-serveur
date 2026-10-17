@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 import {
   ComplaintDecision,
@@ -29,7 +30,24 @@ import {
 
 @Injectable()
 export class ComplaintsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  /** The back office moved a complaint forward: tell the person who filed it (never throws). */
+  private async tellComplainant(
+    complaint: { id: number; userId: number | null },
+    actorId: number,
+  ) {
+    if (complaint.userId) {
+      await this.notifications.notifyComplaintUpdated(
+        complaint.id,
+        complaint.userId,
+        actorId,
+      );
+    }
+  }
 
   // ==========================================================
   // Helpers
@@ -348,6 +366,9 @@ export class ComplaintsService {
       })
       .catch(() => null);
 
+    // Each support admin gets their own notification (never throws).
+    await this.notifications.notifyComplaintOpened(complaint.id, userId);
+
     return this.formatComplaintForUser(complaint, role);
   }
 
@@ -501,6 +522,12 @@ export class ComplaintsService {
           status: nextStatus,
         },
       });
+
+      if (this.isStaff(role)) {
+        await this.tellComplainant(complaint, userId);
+      } else {
+        await this.notifications.notifyComplaintReply(complaintId, userId);
+      }
     }
 
     return message;
@@ -554,6 +581,12 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    if (this.isStaff(role)) {
+      await this.tellComplainant(updated, userId);
+    } else {
+      await this.notifications.notifyComplaintReply(complaintId, userId);
+    }
 
     return {
       message,
@@ -705,7 +738,7 @@ export class ComplaintsService {
     await this.getComplaintOrFail(complaintId);
     await this.assertAssignableSupportUser(dto.assignedToId);
 
-    return this.prisma.complaint.update({
+    const updated = await this.prisma.complaint.update({
       where: {
         id: complaintId,
       },
@@ -715,6 +748,14 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    await this.notifications.notifyComplaintAssigned(
+      complaintId,
+      dto.assignedToId,
+      userId,
+    );
+
+    return updated;
   }
 
   async updateStatus(
@@ -727,7 +768,7 @@ export class ComplaintsService {
 
     await this.getComplaintOrFail(complaintId);
 
-    return this.prisma.complaint.update({
+    const updated = await this.prisma.complaint.update({
       where: {
         id: complaintId,
       },
@@ -742,6 +783,10 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    await this.tellComplainant(updated, userId);
+
+    return updated;
   }
 
   async adminDecision(
@@ -758,7 +803,7 @@ export class ComplaintsService {
       dto.decision === ComplaintDecision.PARTIAL_REFUND ||
       dto.decision === ComplaintDecision.FULL_REFUND;
 
-    return this.prisma.complaint.update({
+    const updated = await this.prisma.complaint.update({
       where: {
         id: complaintId,
       },
@@ -783,6 +828,10 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    await this.tellComplainant(updated, userId);
+
+    return updated;
   }
 
   async refundDecision(
@@ -804,7 +853,7 @@ export class ComplaintsService {
           ? ComplaintStatus.REFUNDED
           : ComplaintStatus.IN_REVIEW;
 
-    return this.prisma.complaint.update({
+    const updated = await this.prisma.complaint.update({
       where: {
         id: complaintId,
       },
@@ -820,6 +869,10 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    await this.tellComplainant(updated, userId);
+
+    return updated;
   }
 
   async resolveComplaint(
@@ -832,7 +885,7 @@ export class ComplaintsService {
 
     await this.getComplaintOrFail(complaintId);
 
-    return this.prisma.complaint.update({
+    const updated = await this.prisma.complaint.update({
       where: {
         id: complaintId,
       },
@@ -844,5 +897,9 @@ export class ComplaintsService {
       },
       include: this.complaintInclude(),
     });
+
+    await this.tellComplainant(updated, userId);
+
+    return updated;
   }
 }

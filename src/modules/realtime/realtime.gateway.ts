@@ -434,9 +434,12 @@ export class RealtimeGateway
   // Used by RealtimeService and other modules
   // ==========================================================
 
+  // Chained .to(): socket.io sends to the union of the rooms, once per socket.
+  // Two separate emits delivered every event twice to a socket in both rooms
+  // (every admin is in 'admins' and 'admin-dashboard', every client in
+  // both its client room and its user room).
   emitToAdmins(event: string, payload: any) {
-    this.server.to('admins').emit(event, payload);
-    this.server.to('admin-dashboard').emit(event, payload);
+    this.server.to('admins').to('admin-dashboard').emit(event, payload);
   }
 
   emitToUser(userId: number, event: string, payload: any) {
@@ -444,13 +447,11 @@ export class RealtimeGateway
   }
 
   emitToClient(clientId: number, event: string, payload: any) {
-    this.server.to(this.clientRoom(clientId)).emit(event, payload);
-    this.server.to(this.userRoom(clientId)).emit(event, payload);
+    this.server.to(this.clientRoom(clientId)).to(this.userRoom(clientId)).emit(event, payload);
   }
 
   emitToArtisan(artisanId: number, event: string, payload: any) {
-    this.server.to(this.artisanRoom(artisanId)).emit(event, payload);
-    this.server.to(this.userRoom(artisanId)).emit(event, payload);
+    this.server.to(this.artisanRoom(artisanId)).to(this.userRoom(artisanId)).emit(event, payload);
   }
 
   emitToIntervention(interventionId: number, event: string, payload: any) {

@@ -10,6 +10,7 @@ import { CreateQuoteDto } from './dto/create-quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
+import { NotificationsService } from '../notifications/notifications.service';
 
 import {
   InterventionEventType,
@@ -26,6 +27,7 @@ export class QuotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: InterventionEventsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ==========================================================
@@ -327,6 +329,9 @@ export class QuotesService {
       },
     });
 
+    // In-app notification to the customer (never throws).
+    await this.notifications.notifyQuoteSent(quote.id, createdById);
+
     return quote;
   }
 
@@ -503,6 +508,9 @@ export class QuotesService {
       },
     });
 
+    // In-app notification to the customer (never throws).
+    await this.notifications.notifyQuoteSent(quoteId, sentById);
+
     return updated;
   }
 
@@ -633,6 +641,9 @@ export class QuotesService {
         amountTTC: quote.amountTTC,
       },
     });
+
+    // The back office is told once each, with their own read state (never throws).
+    await this.notifications.notifyQuoteAccepted(quoteId, clientId);
 
     return updated;
   }
