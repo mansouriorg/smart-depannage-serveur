@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { setupApiDocs } from './common/api-docs/api-docs';
+import { apiDocsEnabled } from './common/api-docs/api-docs.config';
 import {
   getAllowedOrigins,
   getFrontendUrl,
@@ -39,6 +41,11 @@ async function bootstrap() {
   // ⚠️ ATTENTION : Vos routes commencent maintenant par /api
   // Exemple Web : http://localhost:3000/api/auth/login
   app.setGlobalPrefix('api');
+
+  // 2b. API documentation (P1-09): /api/docs. Off in production unless API_DOCS=true.
+  if (apiDocsEnabled(process.env)) {
+    setupApiDocs(app);
+  }
 
   // 3. Enable CORS (Cross-Origin Resource Sharing)
   // Allowed origins come from the environment: FRONTEND_URL, the optional

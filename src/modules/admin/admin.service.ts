@@ -1,3 +1,4 @@
+import { paginated } from '../../common/api-contract/envelope';
 import {
   BadRequestException,
   Injectable,
@@ -595,15 +596,7 @@ export class AdminService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   async getInterventionDetail(id: number) {
@@ -925,15 +918,7 @@ export class AdminService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   async getArtisanDetail(profileId: number) {
@@ -1421,15 +1406,7 @@ export class AdminService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   async getClientDetail(clientId: number) {
@@ -1652,15 +1629,7 @@ export class AdminService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   async getComplaintDetail(complaintId: number) {

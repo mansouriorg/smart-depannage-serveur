@@ -1,3 +1,4 @@
+import { offsetPaginated } from '../../common/api-contract/envelope';
 import {
   BadRequestException,
   ConflictException,
@@ -672,10 +673,12 @@ export class ProofsService {
       : [];
     const byId = new Map<number, any>(jobs.map((job: any) => [job.id, job]));
 
-    return {
-      data: rows.map((row: any) => this.staffView(row, byId.get(row.interventionId) ?? null)),
-      meta: { total, take, skip },
-    };
+    return offsetPaginated(
+      rows.map((row: any) => this.staffView(row, byId.get(row.interventionId) ?? null)),
+      take,
+      skip,
+      total,
+    );
   }
 
   private staffView(row: any, job: any) {

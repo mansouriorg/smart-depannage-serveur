@@ -1,3 +1,4 @@
+import { paginated } from '../../common/api-contract/envelope';
 import {
   BadRequestException,
   ForbiddenException,
@@ -1350,15 +1351,7 @@ export class ArtisansService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   async adminFindOne(profileId: number) {

@@ -96,3 +96,20 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+
+## API documentation and the shared package (P1-09)
+
+- **/api/docs** (and **/api/docs/json**) is the interactive documentation of every route. It is on
+  while developing and OFF in production unless `API_DOCS=true` is set. The routes and the request
+  bodies are described (the Nest plugin reads the `*.dto.ts` files when the server is built or
+  started with `nest build` / `nest start`); a body class declared inside a controller file is not.
+- **The types the apps use** do not come from the documentation. They come from the real code:
+  `npm run contract:generate` runs the views of `src/common/views` on rows built from
+  `prisma/schema.prisma` and writes the types, the status table and the `{ data, meta }` page type
+  to `../smart-depannage-shared/src/generated`. Then `npm run sync` in `smart-depannage-shared`
+  copies the package into the admin, the website and the mobile app (`lib/shared`).
+- `npm run contract:check` fails when the generated folder is out of date: run it after changing a
+  column, a view, the status table or the page type. When `smart-depannage-shared` sits next to the server, the test in `src/common/api-contract` fails too.
+- The page type (`paginated()` in `src/common/api-contract/envelope.ts`) is the only place that
+  writes a `meta`: a service that builds its own does not pass the tests.

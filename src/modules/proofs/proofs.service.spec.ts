@@ -1371,7 +1371,7 @@ describe('ProofsService.list', () => {
     const page = await w.service.list({ interventionId: job.id, take: 2, skip: 1 });
 
     expect(page.data.map((p: any) => p.id)).toEqual([2, 1]);
-    expect(page.meta).toEqual({ total: 3, take: 2, skip: 1 });
+    expect(page.meta).toEqual({ page: 1, limit: 2, total: 3, totalPages: 2, take: 2, skip: 1 });
   });
 
   it('never hands out more than 200 at a time, and at least one', async () => {

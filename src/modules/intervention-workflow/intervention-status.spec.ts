@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
 import {
   ActorKind,
   CANONICAL_STATUSES,
@@ -13,6 +16,8 @@ import {
   statusesInGroup,
   storageStatus,
   withAliases,
+  VISITOR_MAY_REPORT_ISSUE_IN,
+  visitorMayReportIssue,
 } from './intervention-status';
 
 const ok = (from: string, to: string, actor: ActorKind) =>
@@ -305,5 +310,25 @@ describe('actorKindFor', () => {
     expect(actorKindFor({ id: 5, role: 'ACCOUNTANT' }, job)).toBeNull();
     expect(actorKindFor({ id: 20, role: 'CLIENT' }, job)).toBeNull();
     expect(actorKindFor({ id: 20, role: 'ARTISAN' }, { clientId: 10, artisanId: null })).toBeNull();
+  });
+});
+
+describe('the statuses in which a visitor may report a problem (P1-09)', () => {
+  it('are the ones in which an artisan is on the job, in either spelling', () => {
+    for (const status of ['ARTISAN_ACCEPTED', 'ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS']) {
+      expect(visitorMayReportIssue(status)).toBe(true);
+    }
+
+    for (const status of ['CREATED', 'PENDING', 'WAITING_ADMIN_REVIEW', 'QUOTE_SENT', 'ASSIGNED', 'WAITING_CLIENT_VALIDATION', 'PAYMENT_PENDING', 'COMPLETED', 'PAID', 'CANCELLED', 'DISPUTED', 'NOPE', '', null, undefined]) {
+      expect(visitorMayReportIssue(status)).toBe(false);
+    }
+  });
+
+  it('is one list: the service reads it, it is not written out a second time', () => {
+    const service = fs.readFileSync(path.join(__dirname, '..', 'interventions', 'interventions.service.ts'), 'utf8');
+
+    expect(service).toContain('withAliases(VISITOR_MAY_REPORT_ISSUE_IN)');
+    expect(service).not.toMatch(/withAliases\(\[[^\]]*ARTISAN_ARRIVED/);
+    expect([...VISITOR_MAY_REPORT_ISSUE_IN]).toEqual(['ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS']);
   });
 });

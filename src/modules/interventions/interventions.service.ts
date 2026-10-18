@@ -35,6 +35,7 @@ import {
   initialStatus,
   statusesInGroup,
   withAliases,
+  VISITOR_MAY_REPORT_ISSUE_IN,
 } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
@@ -686,7 +687,7 @@ export class InterventionsService {
       where: { 
         id, 
         trackingToken: hashedToken, 
-        status: { in: withAliases(['ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS']) as Status[] } // Only allow while the artisan is on the job
+        status: { in: withAliases(VISITOR_MAY_REPORT_ISSUE_IN) as Status[] } // Only allow while the artisan is on the job
       }
     });
 

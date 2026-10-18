@@ -1,3 +1,4 @@
+import { paginated } from '../../common/api-contract/envelope';
 import {
   Injectable,
   ConflictException,
@@ -173,15 +174,7 @@ export class UsersService {
       }),
     ]);
 
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return paginated(data, page, limit, total);
   }
 
   // ==========================================================

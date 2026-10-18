@@ -109,10 +109,19 @@ export function withAliases(statuses: readonly string[]): string[] {
   return [...out];
 }
 
+/**
+ * The STATUS_STORAGE setting. Read through `globalThis`, not through a bare `process`, so this
+ * file also compiles where it is copied (the apps, P1-09): where there is no `process`, the
+ * answer is "not set".
+ */
+function configuredStorageMode(): string | undefined {
+  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.STATUS_STORAGE;
+}
+
 /** Which spelling to write. Identity until STATUS_STORAGE=canonical. */
 export function storageStatus(
   status: string,
-  mode: string | undefined = process.env.STATUS_STORAGE,
+  mode: string | undefined = configuredStorageMode(),
 ): string {
   if (String(mode ?? '').toLowerCase() !== 'canonical') {
     return status;
@@ -125,7 +134,7 @@ export function storageStatus(
  * Status of a brand new request, for `prisma.intervention.create`.
  * PENDING (the spelling the apps know) until STATUS_STORAGE=canonical, then CREATED.
  */
-export function initialStatus(mode: string | undefined = process.env.STATUS_STORAGE): string {
+export function initialStatus(mode: string | undefined = configuredStorageMode()): string {
   return storageStatus('PENDING', mode);
 }
 
@@ -153,6 +162,24 @@ export const STATUS_GROUPS = {
 } as const satisfies Record<string, readonly CanonicalStatus[]>;
 
 export type StatusGroup = keyof typeof STATUS_GROUPS;
+
+/**
+ * The statuses in which the visitor with the tracking link may report a delay or a problem: the
+ * artisan is on the job. The server refuses the report in any other status, and the website shows
+ * the buttons only in these (it reads this list from its copy of this file).
+ */
+export const VISITOR_MAY_REPORT_ISSUE_IN = [
+  'ARTISAN_ACCEPTED',
+  'ARTISAN_ON_THE_WAY',
+  'ARTISAN_ARRIVED',
+  'IN_PROGRESS',
+] as const satisfies readonly CanonicalStatus[];
+
+export function visitorMayReportIssue(status: string | null | undefined): boolean {
+  const canonical = canonicalStatus(status);
+
+  return canonical !== null && (VISITOR_MAY_REPORT_ISSUE_IN as readonly string[]).includes(canonical);
+}
 
 /** Stored spellings of a group, for `where: { status: { in: statusesInGroup('active') } }`. */
 export function statusesInGroup(group: StatusGroup): string[] {
