@@ -6,7 +6,7 @@ import { ArtisansService } from './artisans.service';
  * MissionActionsService (P1-06); the artisans service only hands them over, and the board
  * does not offer a mission the artisan refused.
  */
-function makeService() {
+function makeService(profile: Record<string, any> = { specialties: ['PLOMBIER'] }) {
   const calls: Array<{ name: string; input: any }> = [];
   const queries: any[] = [];
 
@@ -25,7 +25,7 @@ function makeService() {
 
   const prisma: any = {
     artisanProfile: {
-      findUnique: async () => ({ id: 7, userId: 4, verificationStatus: 'APPROVED', specialties: ['PLOMBIER'], availability: [] }),
+      findUnique: async () => ({ id: 7, userId: 4, verificationStatus: 'APPROVED', availability: [], ...profile }),
     },
     intervention: {
       findMany: async (args: any) => {
@@ -87,6 +87,42 @@ describe('the board of missions', () => {
 
     expect(open.where.missionRejections).toEqual({ none: { artisanProfileId: 7 } });
     expect(open.where.serviceType).toEqual({ in: ['PLOMBIER'] }); // the other conditions stay
+  });
+
+  // P1-10: the words of the profile used to be handed to the database as service types, so a profile
+  // that said "Plombier" (what every form writes) made the board fail.
+  describe('the jobs of the artisan\'s trades (P1-10)', () => {
+    const openJobs = async (profile: Record<string, any>) => {
+      const w = makeService(profile);
+
+      await w.service.getMissionBoard(4);
+
+      return w.queries.find((q) => q.where.artisanId === null).where;
+    };
+
+    it('reads the words as the forms write them', async () => {
+      const where = await openJobs({ specialty: 'Plombier', specialties: ['Plombier', 'Climatisation'], serviceTypes: [] });
+
+      expect(where.serviceType).toEqual({ in: ['PLOMBIER', 'CLIMATICIEN'] });
+    });
+
+    it('reads the service types written on the profile', async () => {
+      const where = await openJobs({ specialty: null, specialties: [], serviceTypes: ['VITRIER', 'CHAUFFAGISTE'] });
+
+      expect(where.serviceType).toEqual({ in: ['VITRIER', 'CHAUFFAGISTE'] });
+    });
+
+    it('a word that names no trade shows the jobs of "Autre", instead of failing', async () => {
+      const where = await openJobs({ specialty: 'Maçon', specialties: ['Maçon'], serviceTypes: [] });
+
+      expect(where.serviceType).toEqual({ in: ['AUTRE'] });
+    });
+
+    it('a profile that names no trade at all is offered every job, as before', async () => {
+      const where = await openJobs({ specialty: null, specialties: [], serviceTypes: [] });
+
+      expect('serviceType' in where).toBe(false);
+    });
   });
 
   it('the missions already given to the artisan are not filtered', async () => {

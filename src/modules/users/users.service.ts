@@ -20,6 +20,7 @@ import {
   rethrowContactConflict,
 } from '../../common/contact/phone';
 import { approvedProfileData } from '../artisans/approved-profile';
+import { tradeFieldsFor } from '../artisans/trade-fields';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -463,6 +464,13 @@ export class UsersService {
       throw new BadRequestException('Le nom est obligatoire.');
     }
 
+    // The trade must be one of the table, or absent: a name that is no trade is refused before
+    // the account is made (P1-10).
+    const trades =
+      data.specialty === undefined || data.specialty === null || data.specialty === ''
+        ? null
+        : tradeFieldsFor({ specialty: data.specialty });
+
     data = { ...data, email: this.normalizeEmail(data.email) };
 
     const existingUser = await this.prisma.user.findUnique({
@@ -495,7 +503,11 @@ export class UsersService {
         .catch(rethrowContactConflict);
 
       await tx.artisanProfile.create({
-        data: approvedProfileData({ userId: created.id, specialty: data.specialty }),
+        data: approvedProfileData({
+          userId: created.id,
+          specialty: trades?.specialty,
+          specialties: trades?.specialties,
+        }),
       });
 
       return created;

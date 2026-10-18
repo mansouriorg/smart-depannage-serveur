@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { BadRequestException, HttpException, NotFoundException } from '@nestjs/common';
 
+import { fakeSubServices } from '../../common/testing/catalog';
 import { FakeTable, withTransactions } from '../../common/testing/fake-tables';
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { GuestService } from './guest.service';
@@ -53,7 +54,8 @@ function makeWorld(
     },
   };
 
-  const prisma: any = withTransactions({ user: users, intervention, complaint: complaints }, [users, interventions, complaints]);
+  const catalog = fakeSubServices();
+  const prisma: any = withTransactions({ user: users, intervention, complaint: complaints, subService: catalog }, [users, interventions, complaints]);
 
   const sentSms: Array<{ to: string; body: string; options?: SendOptions }> = [];
   const sentEmails: Array<{ to: string; subject: string; body: string; options?: SendOptions }> = [];
@@ -133,6 +135,7 @@ function makeWorld(
     problems,
     stored,
     createdComplaints,
+    catalog,
     prisma,
     notifications,
     eventsService,
@@ -690,5 +693,52 @@ describe('a problem reported through the tracking link (P1-04)', () => {
 
     expect(answer.status).toBe('OPEN');
     expect(w.problems.length).toBe(1);
+  });
+});
+
+// P1-10: the sub-service is checked against the catalog before the visitor's profile is made.
+describe('the sub-service of a visitor\'s request (P1-10)', () => {
+  it('a sub-service of the trade asked for is kept, and the answer says whether photos are expected', async () => {
+    const w = makeWorld();
+
+    const plain: any = await w.service.createGuestIntervention(form({ subServiceId: 2 }));
+    const withPhotos: any = await w.service.createGuestIntervention(form({ subServiceId: 1, contactPhone: nextPhone() }));
+
+    expect(w.interventions.rows.map((row) => row.subServiceId)).toEqual([2, 1]);
+    expect(plain.photosRequired).toBe(false);
+    // the visitor's request cannot carry pictures: it is not refused for lacking them, the page asks next
+    expect(withPhotos.photosRequired).toBe(true);
+  });
+
+  it('a request with no sub-service answers that no photo is expected', async () => {
+    const w = makeWorld();
+
+    const answer: any = await w.service.createGuestIntervention(form());
+
+    expect(answer.photosRequired).toBe(false);
+    expect(w.catalog.calls).toEqual([]);
+  });
+
+  it('a sub-service of another trade is a 400, and no profile, request, alert or message is made', async () => {
+    const w = makeWorld();
+
+    const error = await failure(w.service.createGuestIntervention(form({ subServiceId: 4 })));
+
+    expect(error instanceof BadRequestException).toBe(true);
+    expect(error.message).toMatch(/relève de/);
+    expect(w.users.rows.length).toBe(0);
+    expect(w.interventions.rows.length).toBe(0);
+    expect(w.newRequests.length).toBe(0);
+    expect(w.sentSms.length).toBe(0);
+    expect(w.events.length).toBe(0);
+  });
+
+  it('a sub-service that does not exist or is switched off is a 400 too', async () => {
+    const w = makeWorld();
+
+    expect((await failure(w.service.createGuestIntervention(form({ subServiceId: 999 })))).getStatus()).toBe(400);
+    expect((await failure(w.service.createGuestIntervention(form({ subServiceId: 3 })))).getStatus()).toBe(400);
+    expect(w.users.rows.length).toBe(0);
+    expect(w.interventions.rows.length).toBe(0);
   });
 });

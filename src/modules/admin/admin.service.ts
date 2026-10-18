@@ -20,6 +20,7 @@ import {
   rethrowContactConflict,
 } from '../../common/contact/phone';
 import { statusesInGroup } from '../intervention-workflow/intervention-status';
+import { tradeFieldsFor, tradeFieldsForEdit } from '../artisans/trade-fields';
 import {
   transitionStatus,
   transitionStatusDetailed,
@@ -960,6 +961,9 @@ export class AdminService {
     adminId: number,
     dto: CreateArtisanManualDto,
   ) {
+    // The trades first: a name that is no trade is refused before anything is created (P1-10).
+    const trades = tradeFieldsFor({ specialty: dto.specialty, specialties: dto.specialties })!;
+
     const email = this.normalizeEmail(dto.email);
 
     const existingUser = await this.prisma.user.findFirst({
@@ -993,8 +997,9 @@ export class AdminService {
       return tx.artisanProfile.create({
         data: {
           userId: user.id,
-          specialty: dto.specialty,
-          specialties: dto.specialties,
+          specialty: trades.specialty,
+          specialties: trades.specialties,
+          serviceTypes: trades.serviceTypes,
           yearsExperience: dto.yearsExperience,
           companyName: dto.companyName,
           companyNumber: dto.companyNumber,
@@ -1026,11 +1031,14 @@ export class AdminService {
   }
 
   async editArtisanProfile(profileId: number, dto: EditArtisanProfileDto) {
-    await this.getArtisanDetail(profileId);
+    const stored = await this.getArtisanDetail(profileId);
+
+    // Trades are written together (the main one, the list, the service types); null = not sent (P1-10).
+    const trades = tradeFieldsForEdit({ specialty: dto.specialty, specialties: dto.specialties }, stored);
 
     return this.prisma.artisanProfile.update({
       where: { id: profileId },
-      data: dto,
+      data: trades ? { ...dto, ...trades } : dto,
       include: {
         user: {
           select: this.safeUserSelect,

@@ -38,6 +38,7 @@ import {
   VISITOR_MAY_REPORT_ISSUE_IN,
 } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
+import { checkRequestedService } from '../service-catalog/catalog-check';
 import {
   isUniqueViolation,
   phoneColumns,
@@ -469,6 +470,22 @@ export class InterventionsService {
       this.gateway.sendInterventionStatus(intervention);
 
       return intervention;
+    }
+
+    // A request that names a sub-service of the catalog keeps the trade of that sub-service
+    // (P1-10): changing the service type of such a request is checked like a new one.
+    if (rest.serviceType !== undefined) {
+      const stored = await this.prisma.intervention.findUnique({
+        where: { id },
+        select: { subServiceId: true },
+      });
+
+      if (stored?.subServiceId) {
+        await checkRequestedService(this.prisma, {
+          serviceType: rest.serviceType,
+          subServiceId: stored.subServiceId,
+        });
+      }
     }
 
     // 2. Prepare the columns for Prisma

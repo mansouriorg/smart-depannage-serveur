@@ -41,6 +41,7 @@ import { CollectSignatureDto } from './dto/collect-signature.dto';
 import { ReportProblemDto } from './dto/report-problem.dto';
 import { ContactMessageDto } from './dto/contact-message.dto';
 import { AdminReviewArtisanDto } from './dto/admin-review-artisan.dto';
+import { tradeFieldsFor, tradeFieldsForEdit, tradesOfProfile } from './trade-fields';
 
 import {
   ArtisanAvailabilityStatus,
@@ -52,6 +53,7 @@ import {
   MessageAudience,
   Prisma,
   Role,
+  ServiceType,
   Status,
 } from '../../../generated/prisma/client';
 import {
@@ -359,6 +361,9 @@ export class ArtisansService {
   // ==========================================================
 
   async apply(dto: ApplyArtisanDto) {
+    // A name that is no trade is refused before anything is created (P1-10).
+    const trades = tradeFieldsFor({ specialty: dto.specialty, specialties: dto.specialties })!;
+
     const email = this.normalizeEmail(dto.email);
     const phone = this.normalizePhone(dto.phone);
 
@@ -404,8 +409,9 @@ export class ArtisansService {
       const profile = await tx.artisanProfile.create({
         data: {
           userId: user.id,
-          specialty: dto.specialty,
-          specialties: dto.specialties,
+          specialty: trades.specialty,
+          specialties: trades.specialties,
+          serviceTypes: trades.serviceTypes,
           yearsExperience: dto.yearsExperience,
           companyName: dto.companyName,
           companyNumber: dto.companyNumber,
@@ -510,9 +516,12 @@ export class ArtisansService {
   async updateMyProfile(userId: number, dto: UpdateArtisanProfileDto) {
     const profile = await this.getArtisanProfileByUserId(userId);
 
+    // Trades are written together (the main one, the list, the service types); null = not sent (P1-10).
+    const trades = tradeFieldsForEdit({ specialty: dto.specialty, specialties: dto.specialties }, profile);
+
     return this.prisma.artisanProfile.update({
       where: { id: profile.id },
-      data: dto,
+      data: trades ? { ...dto, ...trades } : dto,
       include: {
         user: {
           select: this.safeUserSelect,
@@ -712,7 +721,9 @@ export class ArtisansService {
   async getMissionBoard(userId: number) {
     const profile = await this.ensureApprovedArtisan(userId);
 
-    const specialties = profile.specialties || [];
+    // The jobs of the artisan's trades. The words of the profile used to be handed to the database
+    // as if they were service types, so "Plombier" made the board fail (P1-10).
+    const trades = tradesOfProfile(profile);
 
     const availableWhere: Prisma.InterventionWhereInput = {
       artisanId: null,
@@ -727,9 +738,9 @@ export class ArtisansService {
       missionRejections: { none: { artisanProfileId: profile.id } },
     };
 
-    if (specialties.length) {
+    if (trades) {
       availableWhere.serviceType = {
-        in: specialties as any,
+        in: trades as ServiceType[],
       };
     }
 

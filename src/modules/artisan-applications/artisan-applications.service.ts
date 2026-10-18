@@ -8,6 +8,7 @@ import {
 } from '../auth/password-setup';
 import * as argon2 from 'argon2';
 import { approvedProfileData } from '../artisans/approved-profile';
+import { tradeFieldsFor } from '../artisans/trade-fields';
 import { Role } from '../../../generated/prisma/client'; // Adjust path if needed
 import {
   phoneColumns,
@@ -24,6 +25,10 @@ export class ArtisanApplicationsService {
 
   // 1. Submit Application (Public)
   async create(dto: CreateArtisanApplicationDto) {
+    // The applicant picks a trade of the table (the form offers them): what is stored is the trade,
+    // so the approval can give the artisan the jobs of that trade (P1-10).
+    const trades = tradeFieldsFor({ specialty: dto.specialty })!;
+
     const existing = await this.prisma.artisanApplication.findFirst({
       where: { email: dto.email },
     });
@@ -36,6 +41,8 @@ export class ArtisanApplicationsService {
     return this.prisma.artisanApplication.create({
       data: {
         ...dto,
+        // one trade, or "Plombier, Chauffagiste" when the text named two
+        specialty: trades.specialties.join(', '),
         status: 'PENDING',
       },
     });

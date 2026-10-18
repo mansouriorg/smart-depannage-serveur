@@ -73,11 +73,35 @@ describe('approving an artisan application (phone number rules)', () => {
     expect(profile.verificationStatus).toBe('APPROVED');
     expect(profile.verifiedAt instanceof Date).toBe(true);
     expect(profile.isAcceptingJobs).toBe(true);
-    expect(profile.specialty).toBe('Plomberie');
-    expect(profile.specialties).toEqual(['Plomberie']);
+    // "Plomberie" is the trade of the plumber: the profile says so as the table does (P1-10)
+    expect(profile.specialty).toBe('Plombier');
+    expect(profile.specialties).toEqual(['Plombier']);
+    expect(profile.serviceTypes).toEqual(['PLOMBIER']);
     expect(profile.yearsExperience).toBe(6);
     expect(profile.bio).toBe('Dépannage fuites');
     expect(profile.emergencyAvailable).toBe(true); // urgent jobs on, as the admin screen always allowed them
+  });
+
+  it('the trades the website offers each give the artisan the jobs of that trade (P1-10)', async () => {
+    for (const [typed, code] of [['Chauffagiste', 'CHAUFFAGISTE'], ['Vitrier', 'VITRIER'], ['Climatisation', 'CLIMATICIEN']]) {
+      const w = makeWorld();
+      const app = w.applications.insert(application({ specialty: typed }));
+
+      await w.service.approve(app.id);
+
+      expect(w.profiles.rows[0].serviceTypes).toEqual([code]);
+    }
+  });
+
+  it('an application written before the table, with a word that names no trade, is still approved: kept as written, counted as "Autre" (P1-10)', async () => {
+    const w = makeWorld();
+    const app = w.applications.insert(application({ specialty: 'Maçon' }));
+
+    await w.service.approve(app.id);
+
+    expect(w.profiles.rows[0].specialty).toBe('Maçon');
+    expect(w.profiles.rows[0].specialties).toEqual(['Maçon']);
+    expect(w.profiles.rows[0].serviceTypes).toEqual(['AUTRE']);
   });
 
   it('when the profile cannot be made, no account is left behind and the application stays pending', async () => {
@@ -163,6 +187,46 @@ describe('approving an artisan application (phone number rules)', () => {
     const w = makeWorld();
 
     expect((await failure(w.service.create({ name: 'X', email: 'x@mail.tn', phone: 'nope' } as any))).status).toBe(400);
+    expect(w.applications.rows.length).toBe(0);
+  });
+});
+
+// P1-10: what the website offers is what the server knows.
+describe('submitting an artisan application (P1-10)', () => {
+  const form = (extra: Record<string, unknown> = {}) =>
+    ({ name: 'Ali', email: 'ali@mail.tn', phone: '55 111 222', specialty: 'Climatisation', experience: 4, ...extra }) as any;
+
+  it('stores the trade as the table writes it, so the approval gives the artisan that trade\'s jobs', async () => {
+    const w = makeWorld();
+
+    await w.service.create(form());
+
+    expect(w.applications.rows[0].specialty).toBe('Climaticien');
+
+    await w.service.approve(w.applications.rows[0].id);
+
+    expect(w.profiles.rows[0].serviceTypes).toEqual(['CLIMATICIEN']);
+  });
+
+  it('keeps every trade the applicant named', async () => {
+    const w = makeWorld();
+
+    await w.service.create(form({ specialty: 'Plombier chauffagiste' }));
+
+    expect(w.applications.rows[0].specialty).toBe('Plombier, Chauffagiste');
+
+    await w.service.approve(w.applications.rows[0].id);
+
+    expect(w.profiles.rows[0].serviceTypes).toEqual(['PLOMBIER', 'CHAUFFAGISTE']);
+  });
+
+  it('refuses (400) a word that is no trade, and stores nothing', async () => {
+    const w = makeWorld();
+
+    const error = await failure(w.service.create(form({ specialty: 'Sorcier' })));
+
+    expect(error.getStatus()).toBe(400);
+    expect(error.message).toMatch(/Métier inconnu/);
     expect(w.applications.rows.length).toBe(0);
   });
 });

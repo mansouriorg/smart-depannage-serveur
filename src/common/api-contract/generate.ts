@@ -6,8 +6,8 @@ import { VARIANTS, buildRow } from './synthetic';
 /**
  * The files of the shared package that come from the server (P1-09).
  *
- * Nothing here is written by hand in the package: the page and error types and the status table are
- * copied as they are, the enums are read off the schema, and the type of each job a reader may
+ * Nothing here is written by hand in the package: the page and error types, the status table and the
+ * table of trades are copied as they are, the enums are read off the schema, and the type of each job a reader may
  * receive is read off the real views. `npm run contract:generate` writes them into
  * ../smart-depannage-shared/src/generated; `npm run contract:check` fails when they are out of date.
  */
@@ -24,6 +24,8 @@ export const HEADER = [
 export const COPIED_FILES: Array<{ from: string; to: string }> = [
   { from: 'src/common/api-contract/envelope.ts', to: 'envelope.ts' },
   { from: 'src/modules/intervention-workflow/intervention-status.ts', to: 'intervention-status.ts' },
+  // The trades (P1-10): the apps list them in their forms, and the table is the same one the server reads.
+  { from: 'src/common/trades/trades.ts', to: 'trades.ts' },
 ];
 
 export const SCHEMA_FILE = 'prisma/schema.prisma';
@@ -129,6 +131,7 @@ export function generateContract(read: (relativePath: string) => string): Record
     HEADER,
     "export * from './envelope';",
     "export * from './intervention-status';",
+    "export * from './trades';",
     "export * from './views';",
     "export * as Enums from './enums';",
     '',

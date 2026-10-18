@@ -7,6 +7,7 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
+import { normalizeTradeText, textPointsToTrade } from '../../common/trades/trades';
 import {
   WeeklySlot,
   checkWeeklySchedule,
@@ -180,53 +181,9 @@ export class MatchingService {
     return Math.ceil((distanceKm / speedKmH) * 60 + preparationMinutes);
   }
 
+  /** Compared the way the table of trades does it: no accents, no capitals, "chauffe-eau" = "chauffe eau". */
   private normalizeText(value?: string | null): string {
-    return (value || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim();
-  }
-
-  private serviceTypeKeywords(serviceType: ServiceType): string[] {
-    const map: Record<ServiceType, string[]> = {
-      [ServiceType.PLOMBIER]: [
-        'plombier',
-        'plomberie',
-        'fuite',
-        'canalisation',
-        'chauffe eau',
-      ],
-      [ServiceType.MENUISIER]: [
-        'menuisier',
-        'menuiserie',
-        'bois',
-        'porte',
-        'fenetre',
-      ],
-      [ServiceType.SERRURIER]: [
-        'serrurier',
-        'serrurerie',
-        'serrure',
-        'cle',
-        'porte bloquee',
-      ],
-      [ServiceType.ELECTRICIEN]: [
-        'electricien',
-        'electricite',
-        'panne electrique',
-        'tableau',
-        'prise',
-      ],
-      [ServiceType.AUTRE]: [
-        'autre',
-        'general',
-        'multi service',
-        'depannage',
-      ],
-    };
-
-    return map[serviceType];
+    return normalizeTradeText(value);
   }
 
   private specialtyMatches(params: {
@@ -246,16 +203,13 @@ export class MatchingService {
       };
     }
 
-    const keywords = this.serviceTypeKeywords(params.serviceType);
-
     const allSpecialties = [params.specialty, ...(params.specialties || [])]
       .filter(Boolean)
       .map((item) => this.normalizeText(item));
 
+    // The words that point to the service type of the job come from the one table of trades (P1-10).
     const keywordMatch = allSpecialties.some((specialty) =>
-      keywords.some((keyword) =>
-        specialty.includes(this.normalizeText(keyword)),
-      ),
+      textPointsToTrade(specialty, params.serviceType),
     );
 
     if (keywordMatch) {

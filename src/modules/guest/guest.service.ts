@@ -46,6 +46,7 @@ import {
 import { FilesService } from '../files/files.service';
 import { ComplaintsService } from '../complaints/complaints.service';
 import { buildTrackingUrl } from '../../common/links/tracking-url';
+import { checkRequestedService } from '../service-catalog/catalog-check';
 import { notesAfterReview } from '../interventions/feedback-notes';
 import { greetingName } from './greeting-name';
 import { KeyedLock } from '../../common/concurrency/limits';
@@ -326,6 +327,14 @@ export class GuestService {
   // ==========================================================
 
   async createGuestIntervention(dto: CreateGuestInterventionDto) {
+    // Before the visitor's profile exists: a request that cannot be taken leaves nothing behind (P1-10).
+    // The pictures of a visitor's request come afterwards, on the tracking link, so the answer says
+    // whether this service expects some.
+    const service = await checkRequestedService(this.prisma, {
+      serviceType: dto.serviceType,
+      subServiceId: dto.subServiceId,
+    });
+
     const guestUser = await this.findOrCreateGuestProfile(dto);
 
     const rawTrackingToken = this.generateRawToken();
@@ -336,7 +345,7 @@ export class GuestService {
         clientId: guestUser.id,
 
         serviceType: dto.serviceType,
-        subServiceId: dto.subServiceId,
+        subServiceId: service.subServiceId ?? undefined,
         description: dto.description,
         urgency: dto.urgency || UrgencyLevel.NORMAL,
 
@@ -409,6 +418,8 @@ export class GuestService {
       intervention: publicRequest,
       trackingUrl,
       rawTrackingToken,
+      // The service picked asks for photos of the problem: the page offers them next, on the tracking link.
+      photosRequired: service.photosRequired,
       // The link is also sent by SMS and e-mail when that is possible, but the
       // visitor is not told whether it was: this answer carries it either way.
       message: 'Demande créée avec succès. Conservez le lien de suivi.',

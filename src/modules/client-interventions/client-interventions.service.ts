@@ -12,6 +12,7 @@ import { StaffAlertsService } from '../interventions/staff-alerts.service';
 import { buildTrackingUrl } from '../../common/links/tracking-url';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
+import { checkRequestedService } from '../service-catalog/catalog-check';
 import { chatsOf, interventionForClient, interventionForTracking } from '../../common/views/views';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
@@ -62,13 +63,21 @@ export class ClientInterventionsService {
       }
     }
 
+    // The sub-service exists, is on offer and belongs to the trade asked for (P1-10). Its photos
+    // cannot be required here: a picture can only be uploaded once the request exists, so the
+    // answer says whether some are expected.
+    const service = await checkRequestedService(this.prisma, {
+      serviceType: dto.serviceType,
+      subServiceId: dto.subServiceId,
+    });
+
     const { rawToken, hashedToken } = this.generateTrackingToken();
 
     const intervention = await this.prisma.intervention.create({
       data: {
         clientId,
         serviceType: dto.serviceType,
-        subServiceId: dto.subServiceId,
+        subServiceId: service.subServiceId ?? undefined,
         description: dto.description,
         urgency: dto.urgency || UrgencyLevel.NORMAL,
         address: dto.address,
@@ -126,6 +135,7 @@ export class ClientInterventionsService {
     // link itself is the one thing that is given once, here.
     return {
       ...interventionForClient(intervention),
+      photosRequired: service.photosRequired,
       rawTrackingToken: rawToken,
       trackingUrl: buildTrackingUrl(intervention.id, rawToken),
     };

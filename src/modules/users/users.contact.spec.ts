@@ -254,7 +254,50 @@ describe('creating accounts: one number, one account', () => {
     expect(w.profiles.rows[0].verificationStatus).toBe('APPROVED');
     expect(w.profiles.rows[0].isAcceptingJobs).toBe(true);
     expect(w.profiles.rows[0].emergencyAvailable).toBe(true);
-    expect(w.profiles.rows[0].specialty).toBe('Électricité');
+    expect(w.profiles.rows[0].specialty).toBe('Électricien');
+    expect(w.profiles.rows[0].serviceTypes).toEqual(['ELECTRICIEN']);
+  });
+
+  it('a specialty that names two trades keeps both on the profile (P1-10 review)', async () => {
+    const w = await makeWorld();
+    (w.usersService as any).sendPasswordSetupLink = async () => undefined;
+
+    await w.usersService.createArtisanDirectly({
+      name: 'Karim',
+      email: 'karim@mail.tn',
+      phone: '55 123 456',
+      specialty: 'Plombier, Chauffagiste',
+    });
+
+    expect(w.profiles.rows[0].specialty).toBe('Plombier');
+    expect(w.profiles.rows[0].specialties).toEqual(['Plombier', 'Chauffagiste']);
+    expect(w.profiles.rows[0].serviceTypes).toEqual(['PLOMBIER', 'CHAUFFAGISTE']);
+  });
+
+  it('an artisan created with no specialty (or an empty one) is made without trades, as before (P1-10)', async () => {
+    for (const specialty of [undefined, '']) {
+      const w = await makeWorld();
+      (w.usersService as any).sendPasswordSetupLink = async () => undefined;
+
+      await w.usersService.createArtisanDirectly({ name: 'Karim', email: 'karim@mail.tn', phone: '55 123 456', specialty } as any);
+
+      expect(w.profiles.rows.length).toBe(1);
+      expect(w.profiles.rows[0].verificationStatus).toBe('APPROVED');
+      expect(w.profiles.rows[0].serviceTypes ?? []).toEqual([]);
+    }
+  });
+
+  it('a specialty that is no trade is refused before the account is made (P1-10)', async () => {
+    const w = await makeWorld();
+    (w.usersService as any).sendPasswordSetupLink = async () => undefined;
+    const accounts = w.users.rows.length;
+
+    await expect(
+      w.usersService.createArtisanDirectly({ name: 'Karim', email: 'karim@mail.tn', phone: '55 123 456', specialty: 'Sorcier' }),
+    ).rejects.toThrow(/Métier inconnu/);
+
+    expect(w.profiles.rows.length).toBe(0);
+    expect(w.users.rows.length).toBe(accounts);
   });
 
   it('a number already taken creates neither the account nor the profile', async () => {

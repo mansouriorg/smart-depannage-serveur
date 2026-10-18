@@ -3,11 +3,13 @@ import { ArrayMaxSize, IsEnum, IsNotEmpty, IsString, IsOptional, IsArray, MaxLen
 // ✅ Import from your custom generated location
 // Adjust the number of '../' if your file is located deeper or shallower
 import { ServiceType } from '../../../../generated/prisma/client'; 
+import { TRADE_CODES } from '../../../common/trades/trades';
 
 export class CreateInterventionDto {
   // 1. Service Type: Must match the Enum in your Schema (PLOMBIER, etc.)
   @IsEnum(ServiceType, {
-    message: 'Service type must be PLOMBIER, MENUISIER, SERRURIER, ELECTRICIEN, or AUTRE',
+    // The list comes from the table of trades, so a new trade is named here without touching this file (P1-10)
+    message: `Service type must be one of: ${TRADE_CODES.join(', ')}`,
   })
   serviceType: ServiceType;
 

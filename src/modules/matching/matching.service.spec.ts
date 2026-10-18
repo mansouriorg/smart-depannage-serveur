@@ -206,6 +206,43 @@ describe('the matching reads the availability with the shared rule', () => {
   });
 });
 
+// P1-10: the words that point to a service type come from the one table of trades.
+describe('the matching knows the trades of the table (P1-10)', () => {
+  const fits = async (profile: any, serviceType: string) => {
+    const world = makeWorld([artisan(1, { profile: { serviceTypes: [], ...profile } })]);
+    const [match] = await list(world, { serviceType });
+
+    return match.serviceFit;
+  };
+
+  it('an artisan with the service type written on the profile fits a job of that type, for each new trade', async () => {
+    expect(await fits({ serviceTypes: ['CHAUFFAGISTE'] }, 'CHAUFFAGISTE')).toBe(true);
+    expect(await fits({ serviceTypes: ['VITRIER'] }, 'VITRIER')).toBe(true);
+    expect(await fits({ serviceTypes: ['CLIMATICIEN'] }, 'CLIMATICIEN')).toBe(true);
+  });
+
+  it('an artisan of another trade does not fit', async () => {
+    expect(await fits({ serviceTypes: ['VITRIER'] }, 'PLOMBIER')).toBe(false);
+    expect(await fits({ serviceTypes: ['PLOMBIER'] }, 'CLIMATICIEN')).toBe(false);
+  });
+
+  it('a profile that has only words still fits through them, for each new trade', async () => {
+    expect(await fits({ specialty: 'Chauffagiste', specialties: ['Chauffagiste'] }, 'CHAUFFAGISTE')).toBe(true);
+    expect(await fits({ specialty: 'Vitrier', specialties: [] }, 'VITRIER')).toBe(true);
+    expect(await fits({ specialty: 'Climatisation', specialties: [] }, 'CLIMATICIEN')).toBe(true);
+    expect(await fits({ specialty: 'Plombier', specialties: ['Plombier'] }, 'VITRIER')).toBe(false);
+  });
+
+  it('"Chauffe-eau" with a hyphen is the same word as "chauffe eau"', async () => {
+    expect(await fits({ specialty: 'Spécialiste chauffe-eau', specialties: [] }, 'PLOMBIER')).toBe(true);
+  });
+
+  it('a word hidden inside another does not point to a trade ("entreprise" is not a "prise")', async () => {
+    expect(await fits({ specialty: 'Entreprise générale', specialties: [] }, 'ELECTRICIEN')).toBe(false);
+    expect(await fits({ specialty: 'Entreprise générale', specialties: [] }, 'AUTRE')).toBe(true);
+  });
+});
+
 describe('what the matching asks the database', () => {
   it('only approved, active artisans are ever looked at', async () => {
     const world = makeWorld([artisan(1)]);

@@ -23,6 +23,7 @@
     "proofs:migrate": "ts-node scripts/migrate-proofs.ts",
     "phones:backfill": "ts-node scripts/backfill-phone-keys.ts",
     "artisans:backfill": "ts-node scripts/backfill-artisan-profiles.ts",
+    "trades:migrate": "ts-node scripts/migrate-trades.ts",
     "contract:generate": "ts-node scripts/generate-contract.ts",
     "contract:check": "ts-node scripts/generate-contract.ts --check"
   },

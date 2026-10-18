@@ -64,3 +64,6 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+
+# Saved by `npm run trades:migrate -- --apply` before it rewrites the specialties
+trades-backup-*.json

@@ -7,6 +7,7 @@ import {
   PrismaClient,
   ServiceType,
 } from '../generated/prisma/client';
+import { SeedCategory, seedCatalog } from '../src/modules/service-catalog/catalog-seed';
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -23,23 +24,6 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({
   adapter,
 });
-
-type SeedSubService = {
-  name: string;
-  description: string;
-  estimatedDuration: number;
-  basePrice: number;
-  emergencyPrice: number;
-  requiresPhotos: boolean;
-  isActive?: boolean;
-};
-
-type SeedCategory = {
-  serviceType: ServiceType;
-  name: string;
-  description: string;
-  subServices: SeedSubService[];
-};
 
 const catalog: SeedCategory[] = [
   {
@@ -291,6 +275,138 @@ const catalog: SeedCategory[] = [
     ],
   },
   {
+    serviceType: ServiceType.CHAUFFAGISTE,
+    name: 'Chauffage',
+    description:
+      'Services de chauffage pour pannes de chaudière, radiateurs, thermostats et entretien.',
+    subServices: [
+      {
+        name: 'Panne de chauffage',
+        description:
+          'Diagnostic et réparation d’une installation qui ne chauffe plus ou chauffe mal.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+      {
+        name: 'Entretien de chaudière',
+        description:
+          'Contrôle, nettoyage et réglage d’une chaudière ou d’un appareil de chauffage.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: false,
+      },
+      {
+        name: 'Radiateur',
+        description:
+          'Purge, réparation ou remplacement d’un radiateur qui fuit ou ne chauffe pas.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+      {
+        name: 'Thermostat et régulation',
+        description:
+          'Remplacement ou réglage d’un thermostat, d’une sonde ou d’une régulation.',
+        estimatedDuration: 60,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+    ],
+  },
+  {
+    serviceType: ServiceType.VITRIER,
+    name: 'Vitrerie',
+    description:
+      'Services de vitrerie pour vitres cassées, double vitrage, miroirs et mises en sécurité.',
+    subServices: [
+      {
+        name: 'Vitre cassée',
+        description:
+          'Remplacement d’une vitre cassée ou fissurée, fenêtre, porte-fenêtre ou cloison vitrée.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+      {
+        name: 'Double vitrage',
+        description:
+          'Remplacement d’un vitrage isolant (buée entre les verres, vitrage fissuré).',
+        estimatedDuration: 120,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+      {
+        name: 'Miroir',
+        description:
+          'Pose ou remplacement d’un miroir, sur mesure ou standard.',
+        estimatedDuration: 60,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: false,
+      },
+      {
+        name: 'Urgence vitrerie',
+        description:
+          'Mise en sécurité après un bris de vitre (condamnation provisoire, remplacement rapide).',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+    ],
+  },
+  {
+    serviceType: ServiceType.CLIMATICIEN,
+    name: 'Climatisation',
+    description:
+      'Services de climatisation pour pannes, installation, entretien et recharge.',
+    subServices: [
+      {
+        name: 'Climatiseur en panne',
+        description:
+          'Diagnostic d’un climatiseur qui ne démarre plus, ne refroidit plus ou fait du bruit.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+      {
+        name: 'Installation de climatiseur',
+        description:
+          'Pose d’un climatiseur mural ou split, avec ou sans fourniture de l’appareil.',
+        estimatedDuration: 180,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: false,
+      },
+      {
+        name: 'Entretien de climatiseur',
+        description:
+          'Nettoyage des filtres et des unités, contrôle du fonctionnement.',
+        estimatedDuration: 60,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: false,
+      },
+      {
+        name: 'Recharge de gaz',
+        description:
+          'Recherche de fuite et recharge en gaz réfrigérant d’un climatiseur.',
+        estimatedDuration: 90,
+        basePrice: null,
+        emergencyPrice: null,
+        requiresPhotos: true,
+      },
+    ],
+  },
+  {
     serviceType: ServiceType.AUTRE,
     name: 'Autre',
     description:
@@ -327,65 +443,16 @@ const catalog: SeedCategory[] = [
   },
 ];
 
+// `--missing-only`: create what does not exist yet and touch nothing else (see catalog-seed.ts). Use it on a
+// database that is already in use: without it the list's prices are written over the existing ones.
 async function main() {
-  for (const categoryData of catalog) {
-    const category = await prisma.serviceCategory.upsert({
-      where: {
-        serviceType: categoryData.serviceType,
-      },
-      update: {
-        name: categoryData.name,
-        description: categoryData.description,
-        isActive: true,
-      },
-      create: {
-        serviceType: categoryData.serviceType,
-        name: categoryData.name,
-        description: categoryData.description,
-        isActive: true,
-      },
-    });
+  const report = await seedCatalog(prisma, catalog, {
+    missingOnly: process.argv.includes('--missing-only'),
+  });
 
-    for (const subServiceData of categoryData.subServices) {
-      const existingSubService = await prisma.subService.findFirst({
-        where: {
-          categoryId: category.id,
-          name: subServiceData.name,
-        },
-      });
-
-      if (existingSubService) {
-        await prisma.subService.update({
-          where: {
-            id: existingSubService.id,
-          },
-          data: {
-            description: subServiceData.description,
-            estimatedDuration: subServiceData.estimatedDuration,
-            basePrice: subServiceData.basePrice,
-            emergencyPrice: subServiceData.emergencyPrice,
-            requiresPhotos: subServiceData.requiresPhotos,
-            isActive: subServiceData.isActive ?? true,
-          },
-        });
-      } else {
-        await prisma.subService.create({
-          data: {
-            categoryId: category.id,
-            name: subServiceData.name,
-            description: subServiceData.description,
-            estimatedDuration: subServiceData.estimatedDuration,
-            basePrice: subServiceData.basePrice,
-            emergencyPrice: subServiceData.emergencyPrice,
-            requiresPhotos: subServiceData.requiresPhotos,
-            isActive: subServiceData.isActive ?? true,
-          },
-        });
-      }
-    }
-  }
-
-  console.log('✅ Service catalog seeded successfully.');
+  console.log(
+    `✅ Service catalog seeded successfully (${report.categoriesCreated} categories and ${report.subServicesCreated} services created, ${report.subServicesUpdated} updated).`,
+  );
 }
 
 main()
