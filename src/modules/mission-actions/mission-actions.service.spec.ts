@@ -1579,3 +1579,87 @@ describe('the visit of a job given back', () => {
     expect(w.appointments.rows[0]).toMatchObject({ status: 'CONFIRMED', artisanId: other });
   });
 });
+
+describe('taking an open mission is limited to the artisan\'s trades and zones (P1-11)', () => {
+  const TUNIS = { latitude: 36.8065, longitude: 10.1815 };
+  const SFAX = { latitude: 34.7406, longitude: 10.7603 };
+  const zone = (over: Record<string, unknown> = {}) => ({ ...TUNIS, radiusKm: 20, isActive: true, ...over });
+
+  it('a job outside every zone of the artisan is a 403, and nothing moves', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan({ serviceZones: [zone()] });
+    const id = w.addJob({ status: 'PENDING', serviceType: 'PLOMBIER', ...SFAX });
+
+    const error = await failure(accept(w, artisan, id));
+
+    expect(error.getStatus()).toBe(403);
+    expect(error.message).toContain('zones');
+    expect(w.job(id).artisanId).toBe(null);
+    expect(w.job(id).status).toBe('PENDING');
+    silent(w);
+  });
+
+  it('a job inside a zone is taken', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan({ serviceZones: [zone()] });
+    const id = w.addJob({ status: 'PENDING', serviceType: 'PLOMBIER', latitude: 36.85, longitude: 10.2 });
+
+    await accept(w, artisan, id);
+
+    expect(w.job(id).artisanId).toBe(artisan);
+  });
+
+  it('a job of another trade is a 403 too, even when it is next door', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan({ serviceTypes: ['PLOMBIER'] });
+    const id = w.addJob({ status: 'PENDING', serviceType: 'SERRURIER', ...TUNIS });
+
+    const error = await failure(accept(w, artisan, id));
+
+    expect(error.getStatus()).toBe(403);
+    expect(w.job(id).artisanId).toBe(null);
+  });
+
+  it('an artisan with no trade and no zone, and a job with no position, are not limited', async () => {
+    const w = makeWorld();
+    const free = w.addArtisan();
+    const zoned = w.addArtisan({ serviceZones: [zone()] });
+    const far = w.addJob({ status: 'PENDING', serviceType: 'VITRIER', ...SFAX });
+    const unplaced = w.addJob({ status: 'PENDING', serviceType: 'PLOMBIER', latitude: null, longitude: null });
+
+    await accept(w, free, far);
+    await accept(w, zoned, unplaced);
+
+    expect(w.job(far).artisanId).toBe(free);
+    expect(w.job(unplaced).artisanId).toBe(zoned);
+  });
+
+  it('a job the back office gave is accepted wherever it is: the dispatcher chose the artisan', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan({ serviceTypes: ['PLOMBIER'], serviceZones: [zone()] });
+    const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan, serviceType: 'SERRURIER', ...SFAX });
+
+    await accept(w, artisan, id);
+
+    expect(w.job(id).status).toBe('ACCEPTED');
+  });
+
+  it('the artisan\'s zones are read when the job is taken (the profile is loaded with them)', async () => {
+    const w = makeWorld();
+    const asked: any[] = [];
+    const original = (w.service as any).prisma.artisanProfile.findUnique;
+
+    (w.service as any).prisma.artisanProfile.findUnique = async (args: any) => {
+      asked.push(args);
+
+      return original(args);
+    };
+
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', serviceType: 'PLOMBIER' });
+
+    await accept(w, artisan, id);
+
+    expect(asked[0].include).toEqual({ availability: true, serviceZones: true });
+  });
+});

@@ -66,6 +66,8 @@ enum ApplicationStatus {
   PENDING
   APPROVED
   REJECTED
+  // Moved into the verification queue of the artisan profiles (P1-11); the row is kept for the record.
+  MIGRATED
 }
 
 enum AuthTokenType {
@@ -1561,12 +1563,18 @@ model ArtisanServiceZone {
   longitude  Float?
   radiusKm   Float @default(10)
 
+  // The zone of the platform this one was taken from (P1-11). The coordinates and the radius are
+  // copied, so changing the platform zone later does not move an artisan's zone.
+  adminZoneId Int?
+  adminZone   AdminServiceZone? @relation(fields: [adminZoneId], references: [id], onDelete: SetNull)
+
   isActive Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([artisanProfileId])
+  @@index([adminZoneId])
   @@index([isActive])
   @@index([postalCode])
   @@index([city])
@@ -2004,6 +2012,8 @@ model AdminServiceZone {
   radiusKm  Float @default(10)
 
   isActive Boolean @default(true)
+
+  artisanZones ArtisanServiceZone[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

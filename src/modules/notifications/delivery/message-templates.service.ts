@@ -27,6 +27,8 @@ const MUST_CONTAIN_ONE_OF: Record<string, string[]> = {
   'auth.email_verification': ['link'],
   'auth.password_reset': ['link'],
   'auth.password_setup': ['link'],
+  // The invitation of an applicant whose application was accepted (P1-11): the link is its point.
+  'artisan.application_approved': ['link'],
   'guest.activation_email': ['link'],
   // The SMS carries the code only. The link goes to the mailbox: a link that proves
   // "you own this e-mail" must not also travel by SMS (P1-03, step 4).
@@ -47,6 +49,7 @@ function mentions(text: string, placeholder: string): boolean {
  *   <NotificationType>.<CHANNEL>   e.g. QUOTE_SENT.EMAIL, PAYMENT_RECEIVED.SMS
  *   auth.email_verification  auth.phone_code  auth.password_reset
  *   auth.password_setup  guest.activation_email  guest.activation_sms
+ *   artisan.application_approved (the link that follows an accepted application)
  *   auth.email_change (link to the NEW address)  auth.email_changed_notice (to the OLD one)
  *   auth.phone_changed_notice  auth.phone_released_notice
  *   guest.tracking_sms  guest.tracking_email  (the link to follow a request made with no account)

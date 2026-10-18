@@ -20,6 +20,8 @@ import {
   AdminArtisanQueryDto,
   AdminClientQueryDto,
   AdminComplaintQueryDto,
+  AdminApproveArtisanDto,
+  AdminRejectArtisanDto,
   AdminReviewArtisanDto,
   AdminSendQuoteDto,
   AssignArtisanDto,
@@ -170,7 +172,7 @@ export class AdminController {
   approveArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
-    @Body() dto: AdminReviewArtisanDto,
+    @Body() dto: AdminApproveArtisanDto,
   ) {
     return this.adminService.approveArtisan(adminId, profileId, dto);
   }
@@ -180,7 +182,7 @@ export class AdminController {
   rejectArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
-    @Body() dto: AdminReviewArtisanDto,
+    @Body() dto: AdminRejectArtisanDto,
   ) {
     return this.adminService.rejectArtisan(adminId, profileId, dto);
   }

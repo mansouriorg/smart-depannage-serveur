@@ -7,13 +7,17 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  Query,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { ArtisansService } from './artisans.service';
+import { APPLICANT_DOCUMENT_MAX_MB } from '../files/files.service';
+import { parseApplication } from './apply-form';
 
-import { ApplyArtisanDto } from './dto/apply-artisan.dto';
 import { UpdateArtisanProfileDto } from './dto/update-artisan-profile.dto';
 import { UploadArtisanDocumentDto } from './dto/upload-artisan-document.dto';
 import { CreateServiceZoneDto } from './dto/create-service-zone.dto';
@@ -27,12 +31,8 @@ import { RequestExtraQuoteDto } from './dto/request-extra-quote.dto';
 import { CollectSignatureDto } from './dto/collect-signature.dto';
 import { ReportProblemDto } from './dto/report-problem.dto';
 import { ContactMessageDto } from './dto/contact-message.dto';
-import { AdminReviewArtisanDto } from './dto/admin-review-artisan.dto';
 
-import {
-  ArtisanVerificationStatus,
-  Role,
-} from '../../../generated/prisma/client';
+import { Role } from '../../../generated/prisma/client';
 
 import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -49,12 +49,41 @@ export class ArtisansController {
   // ==========================================================
 
   // Public, and it sends an e-mail and an SMS to what was typed: capped per visitor here
-  // and per destination in the service.
+  // and per destination in the service. One multipart request (P1-11): the form as JSON in the
+  // `data` field, and the documents as files (the identity document is required). The guard runs
+  // before the upload is read, so a visitor over the cap costs nothing.
   @UseGuards(RateLimitGuard)
   @RateLimit({ name: 'artisan-apply', limit: 5, windowMs: 60 * 60_000 })
   @Post('apply')
-  apply(@Body() dto: ApplyArtisanDto) {
-    return this.artisansService.apply(dto);
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'identityDocument', maxCount: 1 },
+        { name: 'companyDocument', maxCount: 1 },
+        { name: 'insuranceCertificate', maxCount: 1 },
+      ],
+      {
+        storage: memoryStorage(),
+        limits: { fileSize: APPLICANT_DOCUMENT_MAX_MB * 1024 * 1024, files: 3, fields: 2, fieldSize: 64 * 1024 },
+      },
+    ),
+  )
+  apply(
+    @Body('data') data: unknown,
+    @UploadedFiles()
+    files: {
+      identityDocument?: Express.Multer.File[];
+      companyDocument?: Express.Multer.File[];
+      insuranceCertificate?: Express.Multer.File[];
+    } = {},
+  ) {
+    const dto = parseApplication(data);
+
+    return this.artisansService.apply(dto, {
+      identity: files?.identityDocument?.[0],
+      company: files?.companyDocument?.[0],
+      insurance: files?.insuranceCertificate?.[0],
+    });
   }
 
   // ==========================================================
@@ -325,66 +354,5 @@ export class ArtisansController {
     @Body() dto: ContactMessageDto,
   ) {
     return this.artisansService.contactAdmin(userId, interventionId, dto);
-  }
-
-  // ==========================================================
-  // 6. ADMIN ARTISAN MANAGEMENT
-  // ==========================================================
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
-  @Get('admin')
-  adminFindAll(
-    @Query('status') status?: ArtisanVerificationStatus,
-    @Query('search') search?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.artisansService.adminFindAll({
-      status,
-      search,
-      page: page ? Number(page) : 1,
-      limit: limit ? Number(limit) : 20,
-    });
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
-  @Get('admin/:profileId')
-  adminFindOne(@Param('profileId', ParseIntPipe) profileId: number) {
-    return this.artisansService.adminFindOne(profileId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @Patch('admin/:profileId/approve')
-  approveArtisan(
-    @CurrentUser('id') adminId: number,
-    @Param('profileId', ParseIntPipe) profileId: number,
-    @Body() dto: AdminReviewArtisanDto,
-  ) {
-    return this.artisansService.approveArtisan(adminId, profileId, dto);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @Patch('admin/:profileId/reject')
-  rejectArtisan(
-    @CurrentUser('id') adminId: number,
-    @Param('profileId', ParseIntPipe) profileId: number,
-    @Body() dto: AdminReviewArtisanDto,
-  ) {
-    return this.artisansService.rejectArtisan(adminId, profileId, dto);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @Patch('admin/:profileId/suspend')
-  suspendArtisan(
-    @CurrentUser('id') adminId: number,
-    @Param('profileId', ParseIntPipe) profileId: number,
-    @Body() dto: AdminReviewArtisanDto,
-  ) {
-    return this.artisansService.suspendArtisan(adminId, profileId, dto);
   }
 }

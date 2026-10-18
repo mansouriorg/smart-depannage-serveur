@@ -36,13 +36,14 @@ function makeWorld(job: Record<string, unknown> = {}) {
     },
   };
   const events: any = { create: async (event: any) => { eventsWritten.push(event); } };
-  const service = new ArtisansService(prisma, {} as any, events, {} as any, {} as any);
+  const service = new ArtisansService(prisma, {} as any, events, {} as any, {} as any, {} as any);
 
   return { service, asked, created, eventsWritten };
 }
 
 const secretReader = 'SECRET<message.readByUserIds>';
-const open = { artisanId: null, status: 'CREATED' };
+// the artisan of this world is a plumber: an open job of another trade is not shown to them (P1-11)
+const open = { artisanId: null, status: 'CREATED', serviceType: 'PLOMBIER' };
 
 describe('what the artisan\'s mission routes answer (P1-08)', () => {
   it('the mission of the artisan: the artisan\'s copy, the customer to call, the distance and the link', async () => {

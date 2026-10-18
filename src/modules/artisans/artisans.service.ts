@@ -1,4 +1,3 @@
-import { paginated } from '../../common/api-contract/envelope';
 import {
   BadRequestException,
   ForbiddenException,
@@ -11,10 +10,11 @@ import * as crypto from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { MissionActionsService } from '../mission-actions/mission-actions.service';
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
+import { FilesService, ApplicantDocumentKind, StoredLocalFile } from '../files/files.service';
+import { ArtisanZoneRow, artisanZoneRowsFor } from '../service-zones/zone-pick';
 import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
 import { forMarketplace, withoutStaffFields } from '../interventions/intervention-redaction';
 import { chatsOf, messageForParties } from '../../common/views/views';
@@ -40,15 +40,15 @@ import { RequestExtraQuoteDto } from './dto/request-extra-quote.dto';
 import { CollectSignatureDto } from './dto/collect-signature.dto';
 import { ReportProblemDto } from './dto/report-problem.dto';
 import { ContactMessageDto } from './dto/contact-message.dto';
-import { AdminReviewArtisanDto } from './dto/admin-review-artisan.dto';
 import { tradeFieldsFor, tradeFieldsForEdit, tradesOfProfile } from './trade-fields';
+import { FitJob, misfitOf } from './job-fit';
+import { drawableZones } from '../../common/geo/zone-match';
 
 import {
   ArtisanAvailabilityStatus,
   ArtisanDocumentStatus,
   ArtisanDocumentType,
   ArtisanVerificationStatus,
-  AuthTokenType,
   InterventionEventType,
   MessageAudience,
   Prisma,
@@ -57,10 +57,16 @@ import {
   Status,
 } from '../../../generated/prisma/client';
 import {
+  PhoneColumns,
   phoneColumns,
   phoneWhere,
   rethrowContactConflict,
 } from '../../common/contact/phone';
+
+/** The files of an application, by what they are (the controller names them from the form fields). */
+export type ApplicantDocuments = Partial<Record<ApplicantDocumentKind, Express.Multer.File>>;
+
+const APPLICANT_DOCUMENT_KINDS: ApplicantDocumentKind[] = ['identity', 'company', 'insurance'];
 
 @Injectable()
 export class ArtisansService {
@@ -70,23 +76,12 @@ export class ArtisansService {
     private readonly events: InterventionEventsService,
     private readonly rateLimit: RateLimitService,
     private readonly missionActions: MissionActionsService,
+    private readonly files: FilesService,
   ) {}
 
   // ==========================================================
   // 1. HELPERS
   // ==========================================================
-
-  private getFrontendUrl(): string {
-    return getConfiguredFrontendUrl();
-  }
-
-  private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
-  }
-
-  private generateRandomToken(): string {
-    return crypto.randomBytes(32).toString('hex');
-  }
 
   private generateTemporaryPassword(): string {
     return `Artisan-Unusable-${crypto.randomBytes(64).toString('hex')}`;
@@ -112,70 +107,6 @@ export class ArtisansService {
     createdAt: true,
     updatedAt: true,
   };
-
-  private async createPasswordSetupToken(userId: number): Promise<string> {
-    const rawToken = this.generateRandomToken();
-
-    await this.prisma.authToken.updateMany({
-      where: {
-        userId,
-        type: AuthTokenType.PASSWORD_RESET,
-        usedAt: null,
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(),
-      },
-    });
-
-    await this.prisma.authToken.create({
-      data: {
-        userId,
-        type: AuthTokenType.PASSWORD_RESET,
-        tokenHash: this.hashToken(rawToken),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    });
-
-    return rawToken;
-  }
-
-  private async sendPasswordSetupEmail(userId: number) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('Utilisateur introuvable.');
-    }
-
-    const rawToken = await this.createPasswordSetupToken(user.id);
-    const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
-
-    // The link lives 24 h and a newer one revokes it: the message follows (see AuthService).
-    await this.notifications.sendEmail(
-      user.email,
-      'Votre compte artisan est approuvé',
-      `Votre compte artisan a été approuvé. Créez votre mot de passe ici: ${setupUrl}`,
-      {
-        userId: user.id,
-        validForMs: 24 * 60 * 60 * 1000,
-        replaces: `auth:PASSWORD_RESET:${user.id}`,
-      },
-    );
-
-    if (user.phone) {
-      await this.notifications.sendSms(
-        user.phone,
-        `Smart Dépannage: votre compte artisan est approuvé. Créez votre mot de passe: ${setupUrl}`,
-        {
-          userId: user.id,
-          validForMs: 24 * 60 * 60 * 1000,
-          replaces: `auth:PASSWORD_RESET_SMS:${user.id}`,
-        },
-      );
-    }
-  }
 
   private async getArtisanProfileByUserId(userId: number) {
     const profile = await this.prisma.artisanProfile.findUnique({
@@ -360,12 +291,28 @@ export class ArtisansService {
   // 2. ARTISAN ONBOARDING
   // ==========================================================
 
-  async apply(dto: ApplyArtisanDto) {
+  async apply(dto: ApplyArtisanDto, documents: ApplicantDocuments = {}) {
     // A name that is no trade is refused before anything is created (P1-10).
     const trades = tradeFieldsFor({ specialty: dto.specialty, specialties: dto.specialties })!;
 
+    // The documents are looked at before anything is stored or created (P1-11): the identity
+    // document is required, the others are optional, and each is checked by its first bytes.
+    for (const kind of APPLICANT_DOCUMENT_KINDS) {
+      if (kind === 'identity' || documents[kind]) this.files.assertApplicantDocument(documents[kind], kind);
+    }
+
+    // The zones come from the platform's list, with a centre and a radius; one at least.
+    const zones = await artisanZoneRowsFor(this.prisma, dto.zoneIds ?? []);
+
+    if (!zones.length) {
+      throw new BadRequestException('Choisissez au moins une zone d’intervention.');
+    }
+
     const email = this.normalizeEmail(dto.email);
     const phone = this.normalizePhone(dto.phone);
+
+    // A number that cannot be one is refused before any file is decoded or kept.
+    const phoneCols = phoneColumns(phone);
 
     const existingUser = await this.prisma.user.findFirst({
       where: {
@@ -390,97 +337,21 @@ export class ArtisansService {
 
     const hashedPassword = await argon2.hash(this.generateTemporaryPassword());
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const user =
-        existingUser ||
-        (await tx.user
-          .create({
-            data: {
-              email,
-              ...phoneColumns(phone),
-              name: dto.name,
-              password: hashedPassword,
-              role: Role.ARTISAN,
-              isActive: false,
-            },
-          })
-          .catch(rethrowContactConflict));
-
-      const profile = await tx.artisanProfile.create({
-        data: {
-          userId: user.id,
-          specialty: trades.specialty,
-          specialties: trades.specialties,
-          serviceTypes: trades.serviceTypes,
-          yearsExperience: dto.yearsExperience,
-          companyName: dto.companyName,
-          companyNumber: dto.companyNumber,
-          insuranceNumber: dto.insuranceNumber,
-          bio: dto.bio,
-          profilePhotoUrl: dto.profilePhotoUrl,
-          verificationStatus: ArtisanVerificationStatus.PENDING_REVIEW,
-        },
-        include: {
-          user: {
-            select: this.safeUserSelect,
-          },
-        },
-      });
-
-      if (dto.identityDocumentUrl) {
-        await tx.artisanDocument.create({
-          data: {
-            artisanProfileId: profile.id,
-            type: ArtisanDocumentType.IDENTITY,
-            fileUrl: dto.identityDocumentUrl,
-          },
-        });
-      }
-
-      if (dto.companyDocumentUrl) {
-        await tx.artisanDocument.create({
-          data: {
-            artisanProfileId: profile.id,
-            type: ArtisanDocumentType.COMPANY_LEGAL,
-            fileUrl: dto.companyDocumentUrl,
-          },
-        });
-      }
-
-      if (dto.insuranceCertificateUrl) {
-        await tx.artisanDocument.create({
-          data: {
-            artisanProfileId: profile.id,
-            type: ArtisanDocumentType.INSURANCE,
-            fileUrl: dto.insuranceCertificateUrl,
-          },
-        });
-      }
-
-      if (dto.profilePhotoUrl) {
-        await tx.artisanDocument.create({
-          data: {
-            artisanProfileId: profile.id,
-            type: ArtisanDocumentType.PROFILE_PHOTO,
-            fileUrl: dto.profilePhotoUrl,
-            status: ArtisanDocumentStatus.APPROVED,
-          },
-        });
-      }
-
-      if (dto.serviceAreas?.length) {
-        await tx.artisanServiceZone.createMany({
-          data: dto.serviceAreas.map((area) => ({
-            artisanProfileId: profile.id,
-            label: area,
-            city: area,
-            isActive: true,
-          })),
-        });
-      }
-
-      return profile;
+    const result = await this.storeApplication({
+      dto,
+      trades,
+      zones,
+      email,
+      phoneCols,
+      hashedPassword,
+      existingUser,
+      documents,
     });
+
+    // The back office is told there is something in its queue; a failure here never undoes the application.
+    await this.notifications
+      .notifyArtisanApplication({ profileId: result.id, name: dto.name, trades: trades.specialties })
+      .catch(() => undefined);
 
     // Public form: the destination is whatever the visitor typed, so each one
     // gets a few messages per hour at most.
@@ -503,6 +374,84 @@ export class ArtisansService {
       message: 'Candidature artisan envoyée avec succès.',
       profile: result,
     };
+  }
+
+  /**
+   * The files are written first, then the account, the profile, the zones and the documents in one
+   * transaction. If anything fails the files are taken away again, so a refused application leaves
+   * neither an account nor a file.
+   */
+  private async storeApplication(params: {
+    dto: ApplyArtisanDto;
+    trades: NonNullable<ReturnType<typeof tradeFieldsFor>>;
+    zones: ArtisanZoneRow[];
+    email: string;
+    phoneCols: PhoneColumns;
+    hashedPassword: string;
+    existingUser: { id: number; role: Role } | null;
+    documents: ApplicantDocuments;
+  }) {
+    const { dto, trades, zones, email, phoneCols, hashedPassword, existingUser, documents } = params;
+    const staged: Array<{ kind: ApplicantDocumentKind; file: Express.Multer.File; stored: StoredLocalFile }> = [];
+
+    try {
+      for (const kind of APPLICANT_DOCUMENT_KINDS) {
+        const file = documents[kind];
+
+        if (file) staged.push({ kind, file, stored: await this.files.stageApplicantDocument(file, kind) });
+      }
+
+      return await this.prisma.$transaction(async (tx) => {
+        const user =
+          existingUser ||
+          (await tx.user
+            .create({
+              data: {
+                email,
+                ...phoneCols,
+                name: dto.name,
+                password: hashedPassword,
+                role: Role.ARTISAN,
+                isActive: false,
+              },
+            })
+            .catch(rethrowContactConflict));
+
+        const profile = await tx.artisanProfile.create({
+          data: {
+            userId: user.id,
+            specialty: trades.specialty,
+            specialties: trades.specialties,
+            serviceTypes: trades.serviceTypes,
+            yearsExperience: dto.yearsExperience,
+            companyName: dto.companyName,
+            companyNumber: dto.companyNumber,
+            insuranceNumber: dto.insuranceNumber,
+            bio: dto.bio,
+            verificationStatus: ArtisanVerificationStatus.PENDING_REVIEW,
+          },
+          include: {
+            user: {
+              select: this.safeUserSelect,
+            },
+          },
+        });
+
+        await tx.artisanServiceZone.createMany({
+          data: zones.map((zone) => ({ ...zone, artisanProfileId: profile.id })),
+        });
+
+        for (const { kind, file, stored } of staged) {
+          await this.files.recordApplicantDocument(tx, { id: user.id, role: user.role }, file, stored, kind, profile.id);
+        }
+
+        return profile;
+      });
+    } catch (error) {
+      await Promise.all(staged.map((item) => this.files.discardStagedPhoto(item.stored)));
+
+      throw error;
+    }
   }
 
   // ==========================================================
@@ -555,6 +504,28 @@ export class ArtisansService {
   async addServiceZone(userId: number, dto: CreateServiceZoneDto) {
     const profile = await this.getArtisanProfileByUserId(userId);
 
+    // A zone of the platform's list: its centre and radius are copied (P1-11).
+    if (dto.zoneId !== undefined) {
+      const [row] = await artisanZoneRowsFor(this.prisma, [dto.zoneId]);
+
+      const already = (profile.serviceZones ?? []).some((zone: any) => zone.adminZoneId === row.adminZoneId);
+
+      if (already) {
+        throw new BadRequestException(`Vous travaillez déjà dans la zone « ${row.label} ».`);
+      }
+
+      return this.prisma.artisanServiceZone.create({
+        data: { ...row, artisanProfileId: profile.id },
+      });
+    }
+
+    // A circle of their own needs a centre: a name alone cannot be checked against a job.
+    if (typeof dto.latitude !== 'number' || typeof dto.longitude !== 'number') {
+      throw new BadRequestException(
+        'Choisissez une zone de la liste, ou indiquez le centre de votre zone (latitude et longitude).',
+      );
+    }
+
     return this.prisma.artisanServiceZone.create({
       data: {
         artisanProfileId: profile.id,
@@ -578,6 +549,16 @@ export class ArtisansService {
 
     if (!zone || zone.artisanProfileId !== profile.id) {
       throw new NotFoundException('Zone introuvable.');
+    }
+
+    // An artisan with no zone that can be drawn sees every job of their trades (zoneVerdict), so
+    // taking away the last one would be a way out of the zones they were approved for.
+    const others = (profile.serviceZones ?? []).filter((candidate: { id: number }) => candidate.id !== zone.id);
+
+    if (drawableZones([zone]).length && !drawableZones(others).length) {
+      throw new BadRequestException(
+        'Gardez au moins une zone d’intervention : ajoutez-en une autre avant de supprimer celle-ci.',
+      );
     }
 
     await this.prisma.artisanServiceZone.delete({
@@ -822,9 +803,13 @@ export class ArtisansService {
     // 409), so it is not offered here.
     const takable = await this.withoutFixedVisit(availableJobs);
 
+    // The trades are asked of the database above; the zones are circles, judged here with the same
+    // rule as the matching and as the taking of a job (P1-11).
+    const inReach = takable.filter((job) => !misfitOf(profile, job as FitJob));
+
     return {
       availableJobs: await Promise.all(
-        takable.map((job) =>
+        inReach.map((job) =>
           this.decorateMissionWithDistance(userId, this.asOpenMission(job)),
         ),
       ),
@@ -887,6 +872,12 @@ export class ArtisansService {
       });
 
       if (refused) {
+        throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
+      }
+
+      // Nor one the board does not list for them (another trade, or outside their zones): the
+      // client's phone and the messages that go with it are not for them either (P1-11).
+      if (misfitOf(profile, mission)) {
         throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
       }
     }
@@ -1291,219 +1282,5 @@ export class ArtisansService {
     });
 
     return messageForParties(message, userId);
-  }
-
-  // ==========================================================
-  // 8. ADMIN ARTISAN MANAGEMENT
-  // ==========================================================
-
-  async adminFindAll(params?: {
-    status?: ArtisanVerificationStatus;
-    search?: string;
-    page?: number;
-    limit?: number;
-  }) {
-    const page = params?.page || 1;
-    const limit = params?.limit || 20;
-    const skip = (page - 1) * limit;
-
-    const where: Prisma.ArtisanProfileWhereInput = {};
-
-    if (params?.status) {
-      where.verificationStatus = params.status;
-    }
-
-    if (params?.search) {
-      where.OR = [
-        {
-          user: {
-            email: {
-              contains: params.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-        {
-          user: {
-            name: {
-              contains: params.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-        {
-          companyName: {
-            contains: params.search,
-            mode: 'insensitive',
-          },
-        },
-      ];
-    }
-
-    const [data, total] = await Promise.all([
-      this.prisma.artisanProfile.findMany({
-        where,
-        include: {
-          user: {
-            select: this.safeUserSelect,
-          },
-          documents: true,
-          serviceZones: true,
-          availability: true,
-          bankDetails: true,
-        },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-
-      this.prisma.artisanProfile.count({
-        where,
-      }),
-    ]);
-
-    return paginated(data, page, limit, total);
-  }
-
-  async adminFindOne(profileId: number) {
-    const profile = await this.prisma.artisanProfile.findUnique({
-      where: { id: profileId },
-      include: {
-        user: {
-          select: this.safeUserSelect,
-        },
-        documents: true,
-        serviceZones: true,
-        availability: true,
-        bankDetails: true,
-        missionRejections: true,
-      },
-    });
-
-    if (!profile) {
-      throw new NotFoundException('Profil artisan introuvable.');
-    }
-
-    return profile;
-  }
-
-  async approveArtisan(
-    adminId: number,
-    profileId: number,
-    dto: AdminReviewArtisanDto,
-  ) {
-    const profile = await this.adminFindOne(profileId);
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const updatedProfile = await tx.artisanProfile.update({
-        where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.APPROVED,
-          verifiedAt: new Date(),
-          verifiedById: adminId,
-          rejectionReason: null,
-        },
-        include: {
-          user: true,
-        },
-      });
-
-      await tx.user.update({
-        where: { id: profile.userId },
-        data: {
-          role: Role.ARTISAN,
-          isActive: true,
-        },
-      });
-
-      await tx.artisanDocument.updateMany({
-        where: {
-          artisanProfileId: profileId,
-          status: ArtisanDocumentStatus.PENDING,
-        },
-        data: {
-          status: ArtisanDocumentStatus.APPROVED,
-          reviewedAt: new Date(),
-          reviewedById: adminId,
-        },
-      });
-
-      return updatedProfile;
-    });
-
-    await this.sendPasswordSetupEmail(profile.userId);
-
-    return {
-      message:
-        dto.note ||
-        'Artisan approuvé. Un email de création de mot de passe a été envoyé.',
-      profile: updated,
-    };
-  }
-
-  async rejectArtisan(
-    adminId: number,
-    profileId: number,
-    dto: AdminReviewArtisanDto,
-  ) {
-    const profile = await this.adminFindOne(profileId);
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const updatedProfile = await tx.artisanProfile.update({
-        where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.REJECTED,
-          rejectionReason: dto.note || 'Candidature refusée.',
-        },
-      });
-
-      await tx.user.update({
-        where: { id: profile.userId },
-        data: {
-          isActive: false,
-        },
-      });
-
-      return updatedProfile;
-    });
-
-    if (profile.user.email) {
-      await this.notifications.sendEmail(
-        profile.user.email,
-        'Candidature artisan refusée',
-        dto.note || 'Votre candidature artisan a été refusée.',
-      );
-    }
-
-    return updated;
-  }
-
-  async suspendArtisan(
-    adminId: number,
-    profileId: number,
-    dto: AdminReviewArtisanDto,
-  ) {
-    const profile = await this.adminFindOne(profileId);
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const updatedProfile = await tx.artisanProfile.update({
-        where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.SUSPENDED,
-          rejectionReason: dto.note || 'Profil suspendu.',
-        },
-      });
-
-      await tx.user.update({
-        where: { id: profile.userId },
-        data: {
-          isActive: false,
-        },
-      });
-
-      return updatedProfile;
-    });
-
-    return updated;
   }
 }

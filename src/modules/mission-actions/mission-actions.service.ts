@@ -41,6 +41,7 @@ import { describeError } from '../notifications/delivery/delivery-error';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { OPEN_CANONICAL, isOpenJob } from './open-job';
+import { MISFIT_MESSAGE, misfitOf } from '../artisans/job-fit';
 
 /** The statuses an open job (nobody has it) or a job given to the artisan can be accepted from. */
 const ACCEPTABLE: CanonicalStatus[] = ['CREATED', 'WAITING_ADMIN_REVIEW', 'QUOTE_ACCEPTED', 'ASSIGNED'];
@@ -500,7 +501,8 @@ export class MissionActionsService {
   private async approvedProfile(userId: number, withHours = false) {
     const profile = await (this.prisma as any).artisanProfile.findUnique({
       where: { userId },
-      include: withHours ? { availability: true } : undefined,
+      // Taking an open job also reads the trades and the zones of the profile (P1-11).
+      include: withHours ? { availability: true, serviceZones: true } : undefined,
     });
 
     if (!profile) {
@@ -530,7 +532,7 @@ export class MissionActionsService {
   private async jobOf(tx: any, userId: number, interventionId: number, other: 'forbidden' | 'taken' = 'forbidden') {
     const job = await tx.intervention.findUnique({
       where: { id: interventionId },
-      select: { id: true, status: true, artisanId: true, clientId: true, urgency: true },
+      select: { id: true, status: true, artisanId: true, clientId: true, urgency: true, serviceType: true, latitude: true, longitude: true },
     });
 
     if (!job) {
@@ -585,7 +587,12 @@ export class MissionActionsService {
    * the artisan gave it back) goes through the dispatcher: the time must be checked against the
    * calendar of whoever takes it, and the visit must follow the job, which only the assignment does.
    */
-  private async assertMayTake(tx: any, profile: any, job: { id: number; urgency: unknown }, visit: any) {
+  private async assertMayTake(
+    tx: any,
+    profile: any,
+    job: { id: number; urgency: unknown; serviceType?: string | null; latitude?: number | null; longitude?: number | null },
+    visit: any,
+  ) {
     const refused = await tx.artisanMissionRejection.findFirst({
       where: { artisanProfileId: profile.id, interventionId: job.id },
     });
@@ -594,6 +601,12 @@ export class MissionActionsService {
       throw new ForbiddenException(
         'Vous avez refusé cette mission. Le service client peut vous la confier à nouveau.',
       );
+    }
+
+    // The board lists only the jobs of the artisan's trades inside their zones; taking one by its
+    // number is refused the same way (P1-11). A job the back office gives is not judged here.
+    if (misfitOf(profile, job)) {
+      throw new ForbiddenException(MISFIT_MESSAGE);
     }
 
     if (isCurrentVisit(visit)) {

@@ -1519,6 +1519,26 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * A new application is waiting in the verification queue (P1-11). Only the name and the trades
+   * are in the text: the documents and the contact details are read in the queue. There is no
+   * notification type for it (a new one would need a migration), so GENERAL.
+   */
+  async notifyArtisanApplication(params: { profileId: number; name: string; trades: string[] }) {
+    const trades = params.trades.length ? ` (${params.trades.join(', ')})` : '';
+
+    return this.notifyAdmins({
+      type: NotificationType.GENERAL,
+      priority: NotificationPriority.NORMAL,
+      title: 'Nouvelle candidature artisan',
+      message: `${params.name} souhaite rejoindre la plateforme${trades}. Les pièces sont à vérifier.`,
+      entityType: 'ARTISAN_PROFILE',
+      entityId: params.profileId,
+      data: { profileId: params.profileId },
+      roles: [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT],
+    });
+  }
+
   /** The back office refused a proof the artisan thought was kept: they must take it again. */
   async notifyProofRefused(params: {
     interventionId: number;

@@ -37,7 +37,14 @@ export function matchesWhere(row: Row, where: any): boolean {
       if ('lt' in cond && !(value !== null && value < cond.lt)) return false;
       if ('gte' in cond && !(value !== null && value >= cond.gte)) return false;
       if ('lte' in cond && !(value !== null && value <= cond.lte)) return false;
-      if ('equals' in cond && value !== cond.equals) return false;
+      if ('equals' in cond) {
+        const same =
+          cond.mode === 'insensitive' && typeof value === 'string' && typeof cond.equals === 'string'
+            ? value.toLowerCase() === cond.equals.toLowerCase()
+            : value === cond.equals;
+
+        if (!same) return false;
+      }
       continue;
     }
 
@@ -157,6 +164,16 @@ export class FakeTable {
     for (const item of data) this.insert(item);
 
     return { count: data.length };
+  };
+
+  delete = async ({ where }: any) => {
+    const row = this.rows.find((candidate) => matchesWhere(candidate, where));
+
+    if (!row) throw Object.assign(new Error('Record to delete does not exist.'), { code: 'P2025' });
+
+    this.rows = this.rows.filter((candidate) => candidate !== row);
+
+    return { ...row };
   };
 
   deleteMany = async ({ where }: any = {}) => {

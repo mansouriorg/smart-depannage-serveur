@@ -1,68 +1,23 @@
-import {
-  IsArray,
-  IsEmail,
-  IsInt,
-  IsOptional,
-  IsString,
-  Min,
-} from 'class-validator';
-
-export class ApplyArtisanDto {
-  @IsString()
+/**
+ * What a visitor sends to join the platform (P1-11), as the JSON `data` field of a multipart
+ * request that also carries the documents. The documents are files, not addresses: an applicant
+ * used to type the URL of a document, and the back office opened whatever was typed. The zones
+ * are picked from the platform's list (GET /service-zones), not typed.
+ *
+ * A multipart request has no typed body for the global pipe to check, so the rules live in
+ * apply-form.ts (parseApplication), which is the only way to make one of these.
+ */
+export interface ApplyArtisanDto {
   name: string;
-
-  @IsEmail()
   email: string;
-
-  @IsString()
   phone: string;
-
-  @IsOptional()
-  @IsString()
   companyName?: string;
-
-  @IsOptional()
-  @IsString()
   companyNumber?: string;
-
-  @IsOptional()
-  @IsString()
   insuranceNumber?: string;
-
-  @IsOptional()
-  @IsString()
   specialty?: string;
-
-  @IsArray()
-  @IsString({ each: true })
   specialties: string[];
-
-  @IsInt()
-  @Min(0)
   yearsExperience: number;
-
-  @IsOptional()
-  @IsString()
   bio?: string;
-
-  @IsOptional()
-  @IsString()
-  profilePhotoUrl?: string;
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  serviceAreas?: string[];
-
-  @IsOptional()
-  @IsString()
-  identityDocumentUrl?: string;
-
-  @IsOptional()
-  @IsString()
-  companyDocumentUrl?: string;
-
-  @IsOptional()
-  @IsString()
-  insuranceCertificateUrl?: string;
+  /** Numbers from GET /service-zones: where the applicant accepts to work. */
+  zoneIds: number[];
 }

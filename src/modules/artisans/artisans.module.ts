@@ -4,6 +4,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { InterventionEventsModule } from '../intervention-events/intervention-events.module';
 import { MissionActionsModule } from '../mission-actions/mission-actions.module';
+import { FilesModule } from '../files/files.module';
 
 import { ArtisansController } from './artisans.controller';
 import { ArtisansService } from './artisans.service';
@@ -14,6 +15,7 @@ import { ArtisansService } from './artisans.service';
     NotificationsModule,
     InterventionEventsModule,
     MissionActionsModule,
+    FilesModule,
   ],
   controllers: [ArtisansController],
   providers: [ArtisansService],

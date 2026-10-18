@@ -18,13 +18,23 @@ function makeArtisans() {
     defaults: () => ({ specialty: null, specialties: [], serviceTypes: [], verificationStatus: 'PENDING_REVIEW' }),
   });
   const documents = new FakeTable();
+  // the platform's zone list the applicant picks from (P1-11)
+  const platformZones = new FakeTable();
+  platformZones.insert({ name: 'Tunis', city: 'Tunis', latitude: 36.8, longitude: 10.2, radiusKm: 20, isActive: true });
   const prisma: any = withTransactions(
-    { user: users, artisanProfile: { ...profiles, update: async ({ where, data }: any) => Object.assign(profiles.rows.find((row) => row.id === where.id)!, data) }, artisanDocument: documents, artisanServiceZone: { createMany: async () => ({ count: 0 }) } },
+    { user: users, artisanProfile: { ...profiles, update: async ({ where, data }: any) => Object.assign(profiles.rows.find((row) => row.id === where.id)!, data) }, artisanDocument: documents, adminServiceZone: platformZones, artisanServiceZone: { createMany: async () => ({ count: 0 }) } },
     [users, profiles, documents],
   );
-  const notifications: any = { sendEmail: async () => ({ queued: true }), sendSms: async () => ({ queued: true }) };
+  const notifications: any = { sendEmail: async () => ({ queued: true }), sendSms: async () => ({ queued: true }), notifyArtisanApplication: async () => [] };
   const rateLimit: any = { allowSendTo: () => true };
-  const service = new ArtisansService(prisma, notifications, {} as any, rateLimit, {} as any);
+  // the documents are tested with the real files service in artisans.apply.spec.ts
+  const files: any = {
+    assertApplicantDocument: () => undefined,
+    stageApplicantDocument: async () => ({ relativePath: 'private/x' }),
+    recordApplicantDocument: async () => ({}),
+    discardStagedPhoto: async () => undefined,
+  };
+  const service = new ArtisansService(prisma, notifications, {} as any, rateLimit, {} as any, files);
 
   // the profile of the signed-in artisan
   (service as any).getArtisanProfileByUserId = async (userId: number) => profiles.rows.find((row) => row.userId === userId);
@@ -33,13 +43,15 @@ function makeArtisans() {
 }
 
 const application = (extra: Record<string, unknown> = {}) =>
-  ({ name: 'Sami', email: 'sami@mail.tn', phone: '55 222 333', specialties: ['Plombier'], yearsExperience: 3, ...extra }) as any;
+  ({ name: 'Sami', email: 'sami@mail.tn', phone: '55 222 333', specialties: ['Plombier'], yearsExperience: 3, zoneIds: [1], ...extra }) as any;
+
+const identity = { identity: { originalname: 'cin.pdf' } as any };
 
 describe('an artisan who applies (P1-10)', () => {
   it('has the trades written as a set, from what the form sent', async () => {
     const w = makeArtisans();
 
-    await w.service.apply(application({ specialty: 'Climatisation', specialties: ['Climatisation', 'Électricité'] }));
+    await w.service.apply(application({ specialty: 'Climatisation', specialties: ['Climatisation', 'Électricité'] }), identity);
 
     const profile = w.profiles.rows[0];
 
@@ -51,7 +63,7 @@ describe('an artisan who applies (P1-10)', () => {
   it('is refused (400) for a word that is no trade, and no account is made', async () => {
     const w = makeArtisans();
 
-    await expect(w.service.apply(application({ specialties: ['Plombier', 'Sorcier'] }))).rejects.toThrow(/Métier inconnu/);
+    await expect(w.service.apply(application({ specialties: ['Plombier', 'Sorcier'] }), identity)).rejects.toThrow(/Métier inconnu/);
 
     expect(w.users.rows.length).toBe(0);
     expect(w.profiles.rows.length).toBe(0);
@@ -60,7 +72,7 @@ describe('an artisan who applies (P1-10)', () => {
   it('is refused (400) with no trade at all', async () => {
     const w = makeArtisans();
 
-    await expect(w.service.apply(application({ specialties: [] }))).rejects.toThrow(/au moins un métier/);
+    await expect(w.service.apply(application({ specialties: [] }), identity)).rejects.toThrow(/au moins un métier/);
 
     expect(w.profiles.rows.length).toBe(0);
   });
@@ -147,7 +159,7 @@ function makeAdmin() {
   );
   const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any);
 
-  (service as any).sendPasswordSetupEmail = async () => undefined;
+  (service as any).invite = async () => ({});
   (service as any).getArtisanDetail = async (profileId: number) => profiles.rows.find((row) => row.id === profileId);
 
   return { users, profiles, service };

@@ -295,3 +295,213 @@ describe('proof photos in the files module (P1-07)', () => {
     await expect(fs.stat(path.join(w.root, stored.relativePath))).rejects.toBeDefined();
   });
 });
+
+describe('the documents of an applicant (P1-11)', () => {
+  const pdf = (size?: number) => {
+    const buffer = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('1 0 obj <<>> endobj\n'), Buffer.alloc(200, 0x20)]);
+
+    return upload(buffer, 'application/pdf', size ?? buffer.length);
+  };
+
+  it('takes a PDF and a JPEG, a PNG and a WebP picture', async () => {
+    const { service } = await makeWorld();
+    const png = await sharp({ create: { width: 10, height: 10, channels: 3, background: '#000' } }).png().toBuffer();
+    const webp = await sharp({ create: { width: 10, height: 10, channels: 3, background: '#000' } }).webp().toBuffer();
+
+    expect(() => service.assertApplicantDocument(pdf(), 'identity')).not.toThrow();
+    expect(() => service.assertApplicantDocument(upload(Buffer.from(png), 'image/png'), 'company')).not.toThrow();
+    expect(() => service.assertApplicantDocument(upload(Buffer.from(webp), 'image/webp'), 'insurance')).not.toThrow();
+    // a PDF declared as a picture is not a picture
+    expect(() => service.assertApplicantDocument(upload(pdf().buffer, 'image/jpeg'), 'identity')).toThrow(/image valide/);
+  });
+
+  it('a file that says it is a PDF and starts with something else is refused (a page, a script, a renamed image)', async () => {
+    const { service } = await makeWorld();
+
+    for (const bytes of [Buffer.from('<html><script>alert(1)</script></html>'), Buffer.from('MZ\x90\x00 executable'), await jpeg()]) {
+      const error = (() => {
+        try {
+          service.assertApplicantDocument(upload(bytes, 'application/pdf'), 'identity');
+        } catch (caught) {
+          return caught as any;
+        }
+
+        return null;
+      })();
+
+      expect(error).not.toBeNull();
+      expect(error.getStatus()).toBe(400);
+      expect(error.message).toContain('PDF');
+    }
+  });
+
+  it('refuses what is missing, empty, too large (5 MB) or of another type, and says which document it is', async () => {
+    const { service } = await makeWorld();
+
+    expect(() => service.assertApplicantDocument(undefined, 'identity')).toThrow(/pièce d’identité est obligatoire/);
+    expect(() => service.assertApplicantDocument(upload(Buffer.alloc(0), 'application/pdf'), 'company')).toThrow(/Document de l’entreprise/);
+    expect(() => service.assertApplicantDocument(pdf(5 * 1024 * 1024 + 1), 'insurance')).toThrow(/Attestation d’assurance/);
+    expect(() => service.assertApplicantDocument(upload(Buffer.from('MZ'), 'application/zip'), 'identity')).toThrow(/Type de fichier/);
+    expect(() => service.assertApplicantDocument(upload(Buffer.from('<svg/>'), 'image/svg+xml'), 'identity')).toThrow(/Type de fichier/);
+  });
+
+  it('a stage goes to the private folder of its purpose, a PDF is kept as it is, a picture is re-encoded; nothing is in the database', async () => {
+    const w = await makeWorld();
+
+    const doc = await w.service.stageApplicantDocument(pdf(), 'identity');
+    const picture = await w.service.stageApplicantDocument(upload(await jpeg(800, 600)), 'insurance');
+    const papers = await w.service.stageApplicantDocument(pdf(), 'company');
+
+    expect(doc.relativePath.startsWith('private/identity_document/')).toBe(true);
+    expect(doc.relativePath.endsWith('.pdf')).toBe(true);
+    expect(doc.mimeType).toBe('application/pdf');
+    expect(picture.relativePath.startsWith('private/insurance_certificate/')).toBe(true);
+    expect(picture.mimeType).toBe('image/webp');
+    expect(papers.relativePath.startsWith('private/artisan_document/')).toBe(true);
+    expect(doc.publicUrl).toBeUndefined();
+    expect(w.assets.length).toBe(0);
+  });
+
+  it('is recorded in the transaction of the account: the file row for the new user, the document waiting for the back office', async () => {
+    const w = await makeWorld();
+    const file = { ...pdf(), originalname: 'cin-scan.pdf' };
+    const stored = await w.service.stageApplicantDocument(file, 'identity');
+    const rows: any = { assets: [], documents: [] };
+    const tx: any = {
+      fileAsset: { create: async ({ data }: any) => (rows.assets.push(data), { id: 41, ...data }) },
+      artisanDocument: { create: async ({ data }: any) => (rows.documents.push(data), { id: 5, ...data }) },
+    };
+
+    const { asset, document } = await w.service.recordApplicantDocument(tx, { id: 90, role: 'ARTISAN' as any }, file, stored, 'identity', 12);
+
+    expect(asset).toMatchObject({ uploadedById: 90, visibility: 'PRIVATE', entityType: 'ARTISAN_PROFILE', entityId: 12, purpose: 'IDENTITY_DOCUMENT', originalName: 'cin-scan.pdf' });
+    expect(document).toMatchObject({ artisanProfileId: 12, type: 'IDENTITY', status: 'PENDING', fileUrl: '/files/41/download', fileName: 'cin-scan.pdf', mimeType: 'application/pdf' });
+  });
+
+  it('the name the visitor gave the file is cut to 120 characters, the kinds map to their document types', async () => {
+    const w = await makeWorld();
+    const file = { ...pdf(), originalname: `${'a'.repeat(300)}.pdf` };
+    const types: string[] = [];
+    const tx: any = {
+      fileAsset: { create: async ({ data }: any) => ({ id: 1, ...data }) },
+      artisanDocument: { create: async ({ data }: any) => (types.push(data.type), { id: 1, ...data }) },
+    };
+
+    for (const kind of ['identity', 'company', 'insurance'] as const) {
+      const stored = await w.service.stageApplicantDocument(file, kind);
+      const { asset } = await w.service.recordApplicantDocument(tx, { id: 90, role: 'ARTISAN' as any }, file, stored, kind, 12);
+
+      expect(asset.originalName.length).toBe(120);
+    }
+
+    expect(types).toEqual(['IDENTITY', 'COMPANY_LEGAL', 'INSURANCE']);
+  });
+
+  it('pictures from applicants are decoded two at a time, however many applications arrive at once', async () => {
+    const w = await makeWorld();
+    let running = 0;
+    let peak = 0;
+
+    (w.service as any).storeLocalFile = async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running--;
+
+      return { relativePath: 'private/x/y.pdf', mimeType: 'application/pdf' };
+    };
+
+    await Promise.all(Array.from({ length: 8 }, () => w.service.stageApplicantDocument(pdf(), 'identity')));
+
+    expect(peak).toBe(2);
+  });
+});
+
+describe('who reads and who changes the papers of an applicant (P1-11 review)', () => {
+  const asset = (extra: Record<string, unknown> = {}) => ({
+    id: 5,
+    uploadedById: 90,
+    purpose: 'IDENTITY_DOCUMENT',
+    visibility: 'PRIVATE',
+    entityType: 'ARTISAN_PROFILE',
+    entityId: 12,
+    relativePath: 'private/x/id.webp',
+    isDeleted: false,
+    isImage: true,
+    mimeType: 'image/webp',
+    originalName: 'cin.webp',
+    ...extra,
+  });
+
+  function serviceWith(row: any) {
+    const prisma: any = {
+      fileAsset: {
+        findUnique: async () => row,
+        findMany: async () => [row],
+        update: async () => row,
+      },
+    };
+
+    return new FilesService(prisma, { create: async () => undefined } as any);
+  }
+
+  const as = (role: string, id = 1) => ({ id, role }) as any;
+
+  it('the team that verifies applicants reads them: admin, super admin, support', async () => {
+    for (const role of ['ADMIN', 'SUPER_ADMIN', 'SUPPORT']) {
+      const info = await serviceWith(asset()).getDownloadInfo(as(role), 5);
+
+      expect(info.asset.id).toBe(5);
+    }
+  });
+
+  it('whoever sent them reads them (the applicant once the account exists)', async () => {
+    const info = await serviceWith(asset()).getDownloadInfo(as('ARTISAN', 90), 5);
+
+    expect(info.asset.id).toBe(5);
+  });
+
+  it('a dispatcher or an accountant does not, nor does another artisan, a customer, or the same asset listed by its entity', async () => {
+    for (const user of [as('DISPATCHER'), as('ACCOUNTANT'), as('ARTISAN', 91), as('CLIENT', 92)]) {
+      const service = serviceWith(asset());
+
+      expect((await failure(service.getDownloadInfo(user, 5))).getStatus()).toBe(403);
+      expect((await failure(service.findOne(user, 5))).getStatus()).toBe(403);
+      expect((await failure(service.findByEntity(user, 'ARTISAN_PROFILE', 12))).getStatus()).toBe(403);
+    }
+  });
+
+  it('the other private files are still read by every back-office role', async () => {
+    const photo = asset({ entityType: 'COMPLAINT_PROOF_X', entityId: null, purpose: 'CLIENT_DAMAGE_PHOTO' });
+
+    for (const role of ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER', 'ACCOUNTANT']) {
+      expect((await serviceWith(photo).getDownloadInfo(as(role), 5)).asset.id).toBe(5);
+    }
+  });
+
+  it('a public file of an artisan (a profile photo) is open to everyone, as before', async () => {
+    const info = await serviceWith(asset({ visibility: 'PUBLIC', purpose: 'PROFILE_PHOTO' })).getDownloadInfo(as('CLIENT', 92), 5);
+
+    expect(info.asset.id).toBe(5);
+  });
+
+  it('the applicant cannot delete or replace what they sent; the verifying team can', async () => {
+    for (const user of [as('ARTISAN', 90), as('DISPATCHER'), as('ACCOUNTANT')]) {
+      const service = serviceWith(asset());
+      const deleting = await failure(service.deleteFile(user, 5));
+      const replacing = await failure(service.replaceFile(user, 5, upload(await jpeg())));
+
+      expect(deleting.getStatus()).toBe(403);
+      expect(replacing.getStatus()).toBe(403);
+      expect(String(deleting.message)).toMatch(/vérification/);
+    }
+
+    expect(await serviceWith(asset()).deleteFile(as('ADMIN'), 5)).toBeDefined();
+  });
+
+  it('the other files are deleted by their uploader as before', async () => {
+    const photo = asset({ entityType: 'INTERVENTION', entityId: 7, purpose: 'CLIENT_DAMAGE_PHOTO', uploadedById: 7 });
+
+    expect(await serviceWith(photo).deleteFile(as('CLIENT', 7), 5)).toBeDefined();
+  });
+});

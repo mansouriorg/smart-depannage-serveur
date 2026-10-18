@@ -269,13 +269,18 @@ describe('one artisan calendar, one lock (P1-05 review)', () => {
 });
 
 describe('an artisan the back office makes or approves can be given a job (P1-05 review)', () => {
-  it('"create an artisan" and "approve an application" make the profile with the account', () => {
-    for (const rel of ['modules/users/users.service.ts', 'modules/artisan-applications/artisan-applications.service.ts']) {
-      const text = stripComments(readSource(rel));
+  it('"add a technician" makes the profile with the account, in one transaction (the older ways to make an artisan are gone, P1-11)', () => {
+    const admin = stripComments(readSource('modules/admin/admin.service.ts'));
+    const create = admin.slice(admin.indexOf('async createArtisanManually('), admin.indexOf('async editArtisanProfile('));
 
-      expect(text.includes('approvedProfileData(')).toBe(true);
-      expect(/tx\.artisanProfile\.create\(/.test(text)).toBe(true);
-    }
+    expect(/\$transaction\(/.test(create)).toBe(true);
+    expect(/tx\.user\s*\.create\(/.test(create)).toBe(true);
+    expect(/tx\.artisanProfile\.create\(/.test(create)).toBe(true);
+
+    // the ways that made an artisan without going through the queue or the invitation no longer exist
+    expect(readSource('modules/users/users.service.ts').includes('createArtisanDirectly')).toBe(false);
+    expect(readSource('modules/users/users.controller.ts').includes("'artisans/create'")).toBe(false);
+    expect(readSource('app.module.ts').includes('ArtisanApplicationsModule')).toBe(false);
   });
 
   it('every approval by the back office switches missions on: manual creation, approval, reactivation', () => {

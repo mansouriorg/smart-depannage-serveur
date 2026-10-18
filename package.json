@@ -24,6 +24,9 @@
     "phones:backfill": "ts-node scripts/backfill-phone-keys.ts",
     "artisans:backfill": "ts-node scripts/backfill-artisan-profiles.ts",
     "trades:migrate": "ts-node scripts/migrate-trades.ts",
+    "zones:seed": "ts-node prisma/seed-service-zones.ts",
+    "zones:backfill": "ts-node scripts/backfill-artisan-zones.ts",
+    "applications:migrate": "ts-node scripts/migrate-applications.ts",
     "contract:generate": "ts-node scripts/generate-contract.ts",
     "contract:check": "ts-node scripts/generate-contract.ts --check"
   },

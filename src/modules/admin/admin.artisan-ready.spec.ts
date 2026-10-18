@@ -14,7 +14,7 @@ function makeWorld() {
   });
   const profiles = new FakeTable({
     unique: ['userId'],
-    defaults: () => ({ verificationStatus: 'PENDING_REVIEW', isAcceptingJobs: false, availabilityStatus: 'OFFLINE' }),
+    defaults: () => ({ verificationStatus: 'PENDING_REVIEW', isAcceptingJobs: false, availabilityStatus: 'OFFLINE', documents: [] }),
   });
   const prisma: any = withTransactions(
     { user: users, artisanProfile: profiles, artisanDocument: { updateMany: async () => ({ count: 0 }) } },
@@ -24,7 +24,7 @@ function makeWorld() {
   const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any);
   const notes: any[] = [];
 
-  (service as any).sendPasswordSetupEmail = async () => undefined;
+  (service as any).invite = async () => ({});
   (service as any).addInternalNote = async (note: any) => notes.push(note);
   (service as any).getArtisanDetail = async (profileId: number) => profiles.rows.find((row) => row.id === profileId);
 
@@ -53,7 +53,8 @@ describe('artisans the back office creates or approves are ready for a job (P1-0
   it('a pending profile that is approved starts accepting missions', async () => {
     const w = makeWorld();
     const user = w.users.insert({ email: 'a@mail.tn', role: 'ARTISAN', isActive: false });
-    const profile = w.profiles.insert({ userId: user.id });
+    // an application comes with its identity document (P1-11)
+    const profile = w.profiles.insert({ userId: user.id, documents: [{ type: 'IDENTITY', status: 'PENDING', fileUrl: '/files/5/download' }] });
 
     await w.service.approveArtisan(9, profile.id, {} as any);
 

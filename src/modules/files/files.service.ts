@@ -48,6 +48,24 @@ export const PROOF_MAX_MB = 10;
 /** The most pixels a proof photo may have once decoded. */
 const PROOF_MAX_PIXELS = 100_000_000;
 
+/**
+ * The documents an applicant sends with their application (P1-11): an identity document (required),
+ * the company's papers and the insurance certificate. The visitor has no account yet, so these
+ * files are the public form's attack surface: small, checked by their first bytes, kept private.
+ */
+export type ApplicantDocumentKind = 'identity' | 'company' | 'insurance';
+
+export const APPLICANT_DOCUMENT_MAX_MB = 5;
+
+/** A PDF scan can be large; an image this size would take a second to decode, a camera's 24 megapixels are fine. */
+const APPLICANT_MAX_PIXELS = 30_000_000;
+
+const APPLICANT_DOCUMENTS: Record<ApplicantDocumentKind, { type: ArtisanDocumentType; purpose: FileAssetPurpose; label: string }> = {
+  identity: { type: ArtisanDocumentType.IDENTITY, purpose: FileAssetPurpose.IDENTITY_DOCUMENT, label: 'pièce d’identité' },
+  company: { type: ArtisanDocumentType.COMPANY_LEGAL, purpose: FileAssetPurpose.ARTISAN_DOCUMENT, label: 'document de l’entreprise' },
+  insurance: { type: ArtisanDocumentType.INSURANCE, purpose: FileAssetPurpose.INSURANCE_CERTIFICATE, label: 'attestation d’assurance' },
+};
+
 type LocalUploadOptions = {
   purpose: FileAssetPurpose;
   visibility?: FileAssetVisibility;
@@ -129,6 +147,21 @@ export class FilesService {
     ];
 
     return adminRoles.includes(role);
+  }
+
+  /**
+   * The papers of a person who works or wants to work on the platform (identity, company,
+   * insurance). They are read by the team that verifies applicants, and by whoever sent them: not
+   * by every back-office role (a dispatcher or an accountant has no reason to see an identity card).
+   */
+  private isArtisanPaper(asset: { entityType?: string | null }): boolean {
+    return asset.entityType === 'ARTISAN_PROFILE';
+  }
+
+  private isVerifier(role: Role): boolean {
+    const verifiers: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT];
+
+    return verifiers.includes(role);
   }
 
   /**
@@ -441,6 +474,94 @@ export class FilesService {
     await fs.unlink(this.absolutePathFromAsset(stored)).catch(() => undefined);
   }
 
+  // ==========================================================
+  // Applicant documents (P1-11): the same two steps as the proof photos, so the rows are written
+  // in the transaction that creates the account. Private folder; the back office reads them
+  // through the download route, the applicant once their account exists.
+  // ==========================================================
+
+  private applicantOptions(kind: ApplicantDocumentKind, profileId?: number): LocalUploadOptions {
+    return {
+      purpose: APPLICANT_DOCUMENTS[kind].purpose,
+      visibility: FileAssetVisibility.PRIVATE,
+      entityType: 'ARTISAN_PROFILE',
+      entityId: profileId,
+      allowedMimeTypes: this.documentMimeTypes,
+      maxSizeMb: APPLICANT_DOCUMENT_MAX_MB,
+      compressImage: true,
+      maxInputPixels: APPLICANT_MAX_PIXELS,
+    };
+  }
+
+  /**
+   * Refuses a document that is too large, not a PDF or a JPEG, PNG or WebP picture, or whose first
+   * bytes say it is something else, before any of it is decoded or kept. The declared type is only
+   * a claim, for a PDF as for a picture.
+   */
+  assertApplicantDocument(file: Express.Multer.File | undefined | null, kind: ApplicantDocumentKind) {
+    const label = APPLICANT_DOCUMENTS[kind].label;
+
+    if (!file) {
+      throw new BadRequestException(`La ${label} est obligatoire.`);
+    }
+
+    try {
+      this.validateFile(file, this.documentMimeTypes, APPLICANT_DOCUMENT_MAX_MB);
+
+      if (this.pdfMimeTypes.includes(file.mimetype) && file.buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+        throw new BadRequestException('Le fichier n’est pas un PDF valide.');
+      }
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw new BadRequestException(`${label.charAt(0).toUpperCase()}${label.slice(1)} : ${error.message}`);
+      }
+
+      throw error;
+    }
+  }
+
+  /** Re-encodes the picture (a PDF is kept as it is) and writes it to the private folder. No database row yet. */
+  stageApplicantDocument(file: Express.Multer.File, kind: ApplicantDocumentKind) {
+    // Pictures from a visitor with no account are decoded two at a time, like the guest's photos.
+    return this.guestDecodeSlots.run(() => this.storeLocalFile(file, this.applicantOptions(kind)));
+  }
+
+  /**
+   * The file row and the document row of a staged file, written with the `db` (a transaction) of
+   * the caller, for the account that was just created in it. The document waits for the back
+   * office (PENDING), and the name the visitor gave the file is kept short.
+   */
+  async recordApplicantDocument(
+    db: {
+      fileAsset: { create: (args: { data: any }) => Promise<any> };
+      artisanDocument: { create: (args: { data: any }) => Promise<any> };
+    },
+    user: AuthenticatedUser,
+    file: Express.Multer.File,
+    stored: StoredLocalFile,
+    kind: ApplicantDocumentKind,
+    profileId: number,
+  ) {
+    const named = { ...file, originalname: String(file.originalname ?? '').slice(0, 120) } as Express.Multer.File;
+
+    const asset = await db.fileAsset.create({
+      data: this.assetData(user, named, this.applicantOptions(kind, profileId), stored),
+    });
+
+    const document = await db.artisanDocument.create({
+      data: {
+        artisanProfileId: profileId,
+        type: APPLICANT_DOCUMENTS[kind].type,
+        fileUrl: `/files/${asset.id}/download`,
+        fileName: asset.originalName,
+        mimeType: asset.mimeType,
+        status: ArtisanDocumentStatus.PENDING,
+      },
+    });
+
+    return { asset, document };
+  }
+
   /** The proof files cannot be changed by the people who may change the other files. */
   private refuseToTouchProof(asset: { purpose: FileAssetPurpose }) {
     if (PROOF_PURPOSES.includes(asset.purpose)) {
@@ -582,6 +703,14 @@ export class FilesService {
       return true;
     }
 
+    if (this.isArtisanPaper(asset)) {
+      if (this.isVerifier(user.role) || asset.uploadedById === user.id) {
+        return true;
+      }
+
+      throw new ForbiddenException('Accès refusé à ce fichier.');
+    }
+
     if (this.isAdminRole(user.role)) {
       return true;
     }
@@ -614,6 +743,18 @@ export class FilesService {
   }
 
   private async checkCanModifyFile(user: AuthenticatedUser, asset: any) {
+    // What was sent to be verified is not replaced or deleted by the person who sent it (it is
+    // the evidence of the decision): a new document is added instead, and the team decides.
+    if (this.isArtisanPaper(asset)) {
+      if (this.isVerifier(user.role)) {
+        return true;
+      }
+
+      throw new ForbiddenException(
+        'Un document de vérification ne peut être modifié que par l’équipe qui vérifie les dossiers.',
+      );
+    }
+
     if (this.isAdminRole(user.role)) {
       return true;
     }

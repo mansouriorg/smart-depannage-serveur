@@ -37,7 +37,7 @@ function makeService(profile: Record<string, any> = { specialties: ['PLOMBIER'] 
   };
 
   return {
-    service: new ArtisansService(prisma, {} as any, {} as any, {} as any, missionActions),
+    service: new ArtisansService(prisma, {} as any, {} as any, {} as any, missionActions, {} as any),
     calls,
     queries,
   };
@@ -155,13 +155,15 @@ function makeBoard(data: {
   jobs: any[];
   visits?: any[];
   refusals?: any[];
+  /** Fields of the artisan's profile, over the defaults (the zones, for instance). */
+  profile?: Record<string, unknown>;
 }) {
   const visitQueries: any[] = [];
   const lookups: any[] = [];
 
   const prisma: any = {
     artisanProfile: {
-      findUnique: async () => ({ id: 7, userId: 4, verificationStatus: 'APPROVED', specialties: [], availability: [] }),
+      findUnique: async () => ({ id: 7, userId: 4, verificationStatus: 'APPROVED', specialties: [], availability: [], ...data.profile }),
     },
     user: { findUnique: async () => ({ latitude: null, longitude: null }) },
     intervention: {
@@ -196,7 +198,7 @@ function makeBoard(data: {
     },
   };
 
-  return { service: new ArtisansService(prisma, {} as any, {} as any, {} as any, {} as any), visitQueries, lookups };
+  return { service: new ArtisansService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any), visitQueries, lookups };
 }
 
 const job = (id: number, fields: Record<string, unknown> = {}) => ({
@@ -243,6 +245,57 @@ describe('the board does not offer what the artisan cannot take', () => {
     await w.service.getMissionBoard(4);
 
     expect(w.visitQueries).toEqual([]);
+  });
+});
+
+// ----------------------------------------------------------
+// P1-11: the zones of the artisan
+// ----------------------------------------------------------
+
+describe('the board offers the jobs inside the artisan\'s zones (P1-11)', () => {
+  const TUNIS = { latitude: 36.8065, longitude: 10.1815 };
+  const SFAX = { latitude: 34.7406, longitude: 10.7603 };
+  const zone = (over: Record<string, unknown> = {}) => ({ ...TUNIS, radiusKm: 20, isActive: true, ...over });
+
+  const offered = async (profile: Record<string, unknown>, jobs: any[]) =>
+    (await makeBoard({ jobs, profile }).service.getMissionBoard(4)).availableJobs.map((row: any) => row.id);
+
+  it('an open job outside every zone is not offered, one inside is', async () => {
+    const ids = await offered({ serviceZones: [zone()] }, [job(1, TUNIS), job(2, SFAX), job(3, { latitude: 36.85, longitude: 10.2 })]);
+
+    expect(ids).toEqual([1, 3]);
+  });
+
+  it('with zones in two cities, the jobs of both are offered and the ones between are not', async () => {
+    const ids = await offered({ serviceZones: [zone(), zone({ ...SFAX })] }, [job(1, TUNIS), job(2, SFAX), job(3, { latitude: 35.8, longitude: 10.4 })]);
+
+    expect(ids).toEqual([1, 2]);
+  });
+
+  it('an artisan with no zone, or only zones that cannot be drawn, sees every job; so does a job with no position', async () => {
+    const jobs = [job(1, TUNIS), job(2, SFAX), job(3)];
+
+    expect(await offered({ serviceZones: [] }, jobs)).toEqual([1, 2, 3]);
+    expect(await offered({ serviceZones: [zone({ latitude: null, longitude: null })] }, jobs)).toEqual([1, 2, 3]);
+    expect(await offered({ serviceZones: [zone({ isActive: false })] }, jobs)).toEqual([1, 2, 3]);
+    expect(await offered({ serviceZones: [zone()] }, [job(1)])).toEqual([1]);
+  });
+
+  it('the jobs already given to the artisan are not filtered by the zones', async () => {
+    // given to the artisan by the back office, far from their zones: still theirs
+    const w = makeBoard({ profile: { serviceZones: [zone()] }, jobs: [job(1, { ...SFAX, artisanId: 4, status: 'ASSIGNED' })] });
+
+    const board = await w.service.getMissionBoard(4);
+
+    expect(board.assignedJobs.map((row: any) => row.id)).toEqual([1]);
+    expect(board.availableJobs).toEqual([]);
+  });
+
+  it('the details of an open job outside the zones are refused, like the details of one the artisan refused', async () => {
+    const w = makeBoard({ profile: { serviceZones: [zone()] }, jobs: [job(1, { ...SFAX, status: 'CREATED' }), job(2, { ...TUNIS, status: 'CREATED' })] });
+
+    await expect(w.service.getMissionDetails(4, 1)).rejects.toThrow(/ne vous est pas attribuée/);
+    expect(((await w.service.getMissionDetails(4, 2)) as any).id).toBe(2);
   });
 });
 
@@ -448,7 +501,7 @@ describe('what the other routes of the artisan answer carries no column of the b
       },
     };
 
-    return new ArtisansService(prisma, {} as any, {} as any, {} as any, {} as any);
+    return new ArtisansService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
   }
 
   it('the diagnostic and the materials', async () => {

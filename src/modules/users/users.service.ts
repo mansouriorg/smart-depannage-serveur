@@ -19,8 +19,6 @@ import {
   phoneWhere,
   rethrowContactConflict,
 } from '../../common/contact/phone';
-import { approvedProfileData } from '../artisans/approved-profile';
-import { tradeFieldsFor } from '../artisans/trade-fields';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -445,80 +443,6 @@ export class UsersService {
 
   async remove(id: number) {
     return this.deactivateAccount(id);
-  }
-
-  // ==========================================================
-  // 14. CREATE ARTISAN DIRECTLY
-  // Used by admin dashboard
-  // No fixed password. The account gets a random unusable password and the
-  // owner receives a one-time link to choose their own (P0-04).
-  // ==========================================================
-
-  async createArtisanDirectly(data: {
-    name: string;
-    email: string;
-    phone: string;
-    specialty?: string;
-  }) {
-    if (typeof data?.name !== 'string' || !data.name.trim()) {
-      throw new BadRequestException('Le nom est obligatoire.');
-    }
-
-    // The trade must be one of the table, or absent: a name that is no trade is refused before
-    // the account is made (P1-10).
-    const trades =
-      data.specialty === undefined || data.specialty === null || data.specialty === ''
-        ? null
-        : tradeFieldsFor({ specialty: data.specialty });
-
-    data = { ...data, email: this.normalizeEmail(data.email) };
-
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: data.email },
-    });
-
-    if (existingUser) {
-      throw new BadRequestException('Cet email est déjà utilisé.');
-    }
-
-    const phoneCols = await this.claimPhone(data.phone);
-
-    const temporaryPassword = this.generateTemporaryPassword();
-    const hashedPassword = await argon2.hash(temporaryPassword);
-
-    // The account and its profile together: an artisan without an approved profile
-    // cannot be given a job (P1-05).
-    const user = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.user
-        .create({
-          data: {
-            name: data.name,
-            email: data.email,
-            ...phoneCols,
-            password: hashedPassword,
-            role: Role.ARTISAN,
-            isActive: true,
-          },
-        })
-        .catch(rethrowContactConflict);
-
-      await tx.artisanProfile.create({
-        data: approvedProfileData({
-          userId: created.id,
-          specialty: trades?.specialty,
-          specialties: trades?.specialties,
-        }),
-      });
-
-      return created;
-    });
-
-    const passwordSetupUrl = await this.sendPasswordSetupLink(user);
-
-    return {
-      ...this.stripPassword(user),
-      ...(passwordSetupUrl ? { passwordSetupUrl } : {}),
-    };
   }
 
   // ==========================================================

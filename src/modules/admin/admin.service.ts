@@ -1,6 +1,7 @@
 import { paginated } from '../../common/api-contract/envelope';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,7 +11,6 @@ import * as crypto from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { getFrontendUrl as getConfiguredFrontendUrl } from '../../config/env';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { ContactChangeService } from '../users/contact-change.service';
 import { AssignmentService } from '../assignment/assignment.service';
@@ -21,6 +21,9 @@ import {
 } from '../../common/contact/phone';
 import { statusesInGroup } from '../intervention-workflow/intervention-status';
 import { tradeFieldsFor, tradeFieldsForEdit } from '../artisans/trade-fields';
+import { InviteReason, inviteArtisan } from '../auth/invite';
+import { artisanZoneRowsFor } from '../service-zones/zone-pick';
+import { isStoredFileUrl } from '../files/stored-file-url';
 import {
   transitionStatus,
   transitionStatusDetailed,
@@ -33,6 +36,8 @@ import {
   AdminArtisanQueryDto,
   AdminClientQueryDto,
   AdminComplaintQueryDto,
+  AdminApproveArtisanDto,
+  AdminRejectArtisanDto,
   AdminReviewArtisanDto,
   AdminSendQuoteDto,
   AssignArtisanDto,
@@ -58,8 +63,8 @@ import {
   AdminNoteTargetType,
   ArtisanAvailabilityStatus,
   ArtisanDocumentStatus,
+  ArtisanDocumentType,
   ArtisanVerificationStatus,
-  AuthTokenType,
   ComplaintStatus,
   InterventionEventType,
   MessageAudience,
@@ -70,6 +75,9 @@ import {
   Role,
   Status,
 } from '../../../generated/prisma/client';
+
+/** The answer when someone else decided the same profile first. */
+const ALREADY_DECIDED = 'Ce profil vient d’être traité par un autre membre de l’équipe: rechargez la liste.';
 
 @Injectable()
 export class AdminService {
@@ -85,20 +93,8 @@ export class AdminService {
   // 1. HELPERS
   // ==========================================================
 
-  private getFrontendUrl(): string {
-    return getConfiguredFrontendUrl();
-  }
-
   private normalizeEmail(email: string): string {
     return email.trim().toLowerCase();
-  }
-
-  private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
-  }
-
-  private generateRandomToken(): string {
-    return crypto.randomBytes(32).toString('hex');
   }
 
   private generateUnusablePassword(): string {
@@ -199,34 +195,12 @@ export class AdminService {
     review: true,
   };
 
-  private async createPasswordSetupToken(userId: number): Promise<string> {
-    const rawToken = this.generateRandomToken();
-
-    await this.prisma.authToken.updateMany({
-      where: {
-        userId,
-        type: AuthTokenType.PASSWORD_RESET,
-        usedAt: null,
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(),
-      },
-    });
-
-    await this.prisma.authToken.create({
-      data: {
-        userId,
-        type: AuthTokenType.PASSWORD_RESET,
-        tokenHash: this.hashToken(rawToken),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    });
-
-    return rawToken;
-  }
-
-  private async sendPasswordSetupEmail(userId: number) {
+  /**
+   * The one-time link that lets an artisan the back office accepted or added choose a password:
+   * one function for both (see auth/invite.ts). The link is in the answer only while the mails
+   * are simulated.
+   */
+  private async invite(userId: number, reason: InviteReason) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -235,34 +209,7 @@ export class AdminService {
       throw new NotFoundException('Utilisateur introuvable.');
     }
 
-    const rawToken = await this.createPasswordSetupToken(user.id);
-    const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
-
-    // A setup link is a password-reset token that lives 24 h and revokes the
-    // previous one: the message follows the same rules (see AuthService).
-    await this.notifications.sendEmail(
-      user.email,
-      'Création de votre mot de passe',
-      `Votre compte a été créé. Cliquez ici pour créer votre mot de passe: ${setupUrl}`,
-      {
-        userId: user.id,
-        template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
-        validForMs: 24 * 60 * 60 * 1000,
-        replaces: `auth:PASSWORD_RESET:${user.id}`,
-      },
-    );
-
-    if (user.phone) {
-      await this.notifications.sendSms(
-        user.phone,
-        `Smart Dépannage: créez votre mot de passe ici: ${setupUrl}`,
-        {
-          userId: user.id,
-          validForMs: 24 * 60 * 60 * 1000,
-          replaces: `auth:PASSWORD_RESET_SMS:${user.id}`,
-        },
-      );
-    }
+    return inviteArtisan({ prisma: this.prisma, notifications: this.notifications }, user, reason);
   }
 
   private async addInternalNote(data: {
@@ -957,12 +904,21 @@ export class AdminService {
     };
   }
 
+  /**
+   * "Add technician": an artisan the back office vouches for. The account exists at once and is
+   * approved, ready for a job (zones and trades included), and the artisan gets the one-time link
+   * to choose a password. The answer carries that link while the mails are simulated.
+   */
   async createArtisanManually(
     adminId: number,
     dto: CreateArtisanManualDto,
   ) {
     // The trades first: a name that is no trade is refused before anything is created (P1-10).
     const trades = tradeFieldsFor({ specialty: dto.specialty, specialties: dto.specialties })!;
+
+    // The zones are picked from the platform's list, like an applicant's (P1-11); none is allowed:
+    // the artisan is then not limited to a place.
+    const zones = await artisanZoneRowsFor(this.prisma, dto.zoneIds ?? []);
 
     const email = this.normalizeEmail(dto.email);
 
@@ -994,7 +950,7 @@ export class AdminService {
         })
         .catch(rethrowContactConflict);
 
-      return tx.artisanProfile.create({
+      const created = await tx.artisanProfile.create({
         data: {
           userId: user.id,
           specialty: trades.specialty,
@@ -1020,13 +976,22 @@ export class AdminService {
           },
         },
       });
+
+      if (zones.length) {
+        await tx.artisanServiceZone.createMany({
+          data: zones.map((zone) => ({ ...zone, artisanProfileId: created.id })),
+        });
+      }
+
+      return created;
     });
 
-    await this.sendPasswordSetupEmail(profile.userId);
+    const invitation = await this.invite(profile.userId, 'created');
 
     return {
-      message: 'Artisan créé manuellement avec succès.',
+      message: 'Artisan créé: un lien pour choisir son mot de passe lui a été envoyé.',
       profile,
+      ...invitation,
     };
   }
 
@@ -1051,14 +1016,70 @@ export class AdminService {
     });
   }
 
+  /**
+   * Accepts an application. Only an application that waits (or one that was refused and is looked
+   * at again) can be accepted; a suspended artisan is reactivated, not approved. The identity
+   * document must be there and not refused: without one, the approval needs the explicit waiver
+   * and a written reason, which is kept in the internal notes of the profile (the applications
+   * brought over from the older form have no documents at all).
+   */
   async approveArtisan(
     adminId: number,
     profileId: number,
-    dto: AdminReviewArtisanDto,
+    dto: AdminApproveArtisanDto,
   ) {
     const profile = await this.getArtisanDetail(profileId);
 
+    if (profile.verificationStatus === ArtisanVerificationStatus.APPROVED) {
+      throw new BadRequestException('Cet artisan est déjà approuvé.');
+    }
+
+    if (profile.verificationStatus === ArtisanVerificationStatus.SUSPENDED) {
+      throw new BadRequestException('Ce profil est suspendu: réactivez-le au lieu de l’approuver.');
+    }
+
+    const note = typeof dto.note === 'string' ? dto.note.trim() : '';
+    // A document counts when it is a file of the platform that the viewer can open: an address
+    // typed by the applicant (older form) proves nothing.
+    const hasIdentity = (profile.documents ?? []).some(
+      (document) =>
+        document.type === ArtisanDocumentType.IDENTITY &&
+        document.status !== ArtisanDocumentStatus.REJECTED &&
+        isStoredFileUrl(document.fileUrl),
+    );
+
+    if (!hasIdentity) {
+      if (!dto.waiveIdentityCheck) {
+        throw new BadRequestException(
+          'Aucune pièce d’identité valable: refusez la candidature, ou approuvez sans pièce d’identité en indiquant le motif.',
+        );
+      }
+
+      if (!note) {
+        throw new BadRequestException('Indiquez le motif pour approuver sans pièce d’identité.');
+      }
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
+      // The decision is taken on the state that was read above. Two staff members deciding the
+      // same application at once (one accepts, one refuses) cannot both win: the profile changes
+      // only if it is still in that state, and the loser changes nothing and sends nothing.
+      const claimed = await tx.artisanProfile.updateMany({
+        where: { id: profileId, verificationStatus: profile.verificationStatus },
+        data: {
+          verificationStatus: ArtisanVerificationStatus.APPROVED,
+          rejectionReason: null,
+          verifiedAt: new Date(),
+          verifiedById: adminId,
+          // approved means ready for a job (P1-05); the schema default would say "no" and the mobile app has no switch
+          isAcceptingJobs: true,
+          // urgent jobs too, as before: nothing could ever set this flag (turn it off from the profile)
+          emergencyAvailable: true,
+        },
+      });
+
+      if (claimed.count !== 1) throw new ConflictException(ALREADY_DECIDED);
+
       await tx.user.update({
         where: { id: profile.userId },
         data: {
@@ -1079,18 +1100,8 @@ export class AdminService {
         },
       });
 
-      return tx.artisanProfile.update({
+      return tx.artisanProfile.findUnique({
         where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.APPROVED,
-          rejectionReason: null,
-          verifiedAt: new Date(),
-          verifiedById: adminId,
-          // approved means ready for a job (P1-05); the schema default would say "no" and the mobile app has no switch
-          isAcceptingJobs: true,
-          // urgent jobs too, as before: nothing could ever set this flag (turn it off from the profile)
-          emergencyAvailable: true,
-        },
         include: {
           user: {
             select: this.safeUserSelect,
@@ -1100,28 +1111,56 @@ export class AdminService {
       });
     });
 
-    await this.sendPasswordSetupEmail(profile.userId);
+    const invitation = await this.invite(profile.userId, 'approved');
 
-    if (dto.note) {
+    if (note || !hasIdentity) {
       await this.addInternalNote({
         authorId: adminId,
         targetType: AdminNoteTargetType.ARTISAN,
         targetId: profileId,
-        content: dto.note,
+        content: hasIdentity ? note : `Approuvé sans pièce d’identité: ${note}`,
       });
     }
 
-    return updated;
+    return { ...updated, ...invitation };
   }
 
+  /**
+   * Refuses an application, with the reason in writing: the applicant is told it (they can fix
+   * what was wrong and talk to the team), and it stays on the profile. Only an application that
+   * waits can be refused; an artisan who is approved is suspended instead.
+   */
   async rejectArtisan(
     adminId: number,
     profileId: number,
-    dto: AdminReviewArtisanDto,
+    dto: AdminRejectArtisanDto,
   ) {
     const profile = await this.getArtisanDetail(profileId);
 
+    if (profile.verificationStatus !== ArtisanVerificationStatus.PENDING_REVIEW) {
+      throw new BadRequestException(
+        'Seule une candidature en attente peut être refusée (un artisan approuvé se suspend).',
+      );
+    }
+
+    const reason = typeof dto.reason === 'string' ? dto.reason.trim() : '';
+
+    if (reason.length < 5) {
+      throw new BadRequestException('Indiquez le motif du refus (5 caractères au moins).');
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Same rule as the acceptance: only an application that still waits can be refused.
+      const claimed = await tx.artisanProfile.updateMany({
+        where: { id: profileId, verificationStatus: ArtisanVerificationStatus.PENDING_REVIEW },
+        data: {
+          verificationStatus: ArtisanVerificationStatus.REJECTED,
+          rejectionReason: reason,
+        },
+      });
+
+      if (claimed.count !== 1) throw new ConflictException(ALREADY_DECIDED);
+
       await tx.user.update({
         where: { id: profile.userId },
         data: {
@@ -1129,12 +1168,8 @@ export class AdminService {
         },
       });
 
-      return tx.artisanProfile.update({
+      return tx.artisanProfile.findUnique({
         where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.REJECTED,
-          rejectionReason: dto.note || 'Candidature refusée.',
-        },
         include: {
           user: {
             select: this.safeUserSelect,
@@ -1146,7 +1181,7 @@ export class AdminService {
     await this.notifications.sendEmail(
       profile.user.email,
       'Candidature artisan refusée',
-      dto.note || 'Votre candidature artisan a été refusée.',
+      `Votre candidature artisan n’a pas été retenue.\n\nMotif: ${reason}`,
     );
 
     return updated;
@@ -1183,16 +1218,16 @@ export class AdminService {
   ) {
     const profile = await this.getArtisanDetail(profileId);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: profile.userId },
-        data: {
-          isActive: false,
-        },
-      });
+    // Only an approved artisan is suspended. A pending or refused application is decided with
+    // approve and reject; reactivating a suspended profile would otherwise be a way to approve
+    // one without the identity check.
+    if (profile.verificationStatus !== ArtisanVerificationStatus.APPROVED) {
+      throw new BadRequestException('Seul un artisan approuvé peut être suspendu.');
+    }
 
-      return tx.artisanProfile.update({
-        where: { id: profileId },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.artisanProfile.updateMany({
+        where: { id: profileId, verificationStatus: ArtisanVerificationStatus.APPROVED },
         data: {
           verificationStatus: ArtisanVerificationStatus.SUSPENDED,
           rejectionReason: dto.note || 'Profil suspendu.',
@@ -1200,6 +1235,17 @@ export class AdminService {
           isAcceptingJobs: false,
         },
       });
+
+      if (claimed.count !== 1) throw new ConflictException(ALREADY_DECIDED);
+
+      await tx.user.update({
+        where: { id: profile.userId },
+        data: {
+          isActive: false,
+        },
+      });
+
+      return tx.artisanProfile.findUnique({ where: { id: profileId } });
     });
 
     await this.addInternalNote({
@@ -1219,7 +1265,24 @@ export class AdminService {
   ) {
     const profile = await this.getArtisanDetail(profileId);
 
+    // Only a suspended artisan comes back this way (see suspendArtisan).
+    if (profile.verificationStatus !== ArtisanVerificationStatus.SUSPENDED) {
+      throw new BadRequestException('Seul un artisan suspendu peut être réactivé.');
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.artisanProfile.updateMany({
+        where: { id: profileId, verificationStatus: ArtisanVerificationStatus.SUSPENDED },
+        data: {
+          verificationStatus: ArtisanVerificationStatus.APPROVED,
+          rejectionReason: null,
+          // the suspension switched missions off; reactivating gives them back
+          isAcceptingJobs: true,
+        },
+      });
+
+      if (claimed.count !== 1) throw new ConflictException(ALREADY_DECIDED);
+
       await tx.user.update({
         where: { id: profile.userId },
         data: {
@@ -1228,15 +1291,7 @@ export class AdminService {
         },
       });
 
-      return tx.artisanProfile.update({
-        where: { id: profileId },
-        data: {
-          verificationStatus: ArtisanVerificationStatus.APPROVED,
-          rejectionReason: null,
-          // the suspension switched missions off; reactivating gives them back
-          isAcceptingJobs: true,
-        },
-      });
+      return tx.artisanProfile.findUnique({ where: { id: profileId } });
     });
 
     await this.addInternalNote({

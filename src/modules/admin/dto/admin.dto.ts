@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -12,6 +13,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -222,6 +224,13 @@ export class CreateArtisanManualDto {
   @IsOptional()
   @IsString()
   profilePhotoUrl?: string;
+
+  /** Numbers from GET /service-zones (P1-11). None: the artisan is not limited to a place. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(24)
+  @IsInt({ each: true })
+  zoneIds?: number[];
 }
 
 export class EditArtisanProfileDto {
@@ -284,6 +293,30 @@ export class AdminReviewArtisanDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+/** Accepting an application (P1-11). */
+export class AdminApproveArtisanDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+
+  /**
+   * Approve an applicant who has no valid identity document. The reason (`note`) is then required
+   * and is kept in the internal notes of the profile.
+   */
+  @IsOptional()
+  @IsBoolean()
+  waiveIdentityCheck?: boolean;
+}
+
+/** Refusing an application (P1-11): the reason is written, the applicant is told it. */
+export class AdminRejectArtisanDto {
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
 }
 
 export class VerifyArtisanDocumentDto {

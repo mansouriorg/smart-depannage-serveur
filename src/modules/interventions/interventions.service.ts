@@ -28,6 +28,7 @@ import * as crypto from 'crypto';
 import { Role, Status } from '../../../generated/prisma/client';
 import { isTicketStaff } from '../../common/auth/role-policy';
 import { forMarketplace, withoutStaffFields } from './intervention-redaction';
+import { misfitOf } from '../artisans/job-fit';
 import { interventionForClient, interventionForTracking } from '../../common/views/views';
 import {
   StatusActor,
@@ -260,10 +261,9 @@ export class InterventionsService {
   // 4. FIND AVAILABLE JOBS (For Market Place / Job Board)
   // ==========================================================
   async findAllPending(artisanUserId?: number) {
-    // A job this artisan refused is not offered to them again (P1-06).
-    const profile = artisanUserId
-      ? await this.prisma.artisanProfile.findUnique({ where: { userId: artisanUserId }, select: { id: true } })
-      : null;
+    // A job this artisan refused is not offered to them again (P1-06), nor one that is not for
+    // them: another trade, or outside their zones (P1-11, the same rule as the mission board).
+    const profile = artisanUserId ? await this.fitProfileOf(artisanUserId) : null;
 
     const rows = await this.prisma.intervention.findMany({
       where: {
@@ -276,9 +276,17 @@ export class InterventionsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Open jobs are visible to every artisan: no staff data, no way to reach
+    // Open jobs are visible to the artisans they are for: no staff data, no way to reach
     // the client before the job is assigned.
-    return rows.map((row) => forMarketplace(row));
+    return rows.filter((row) => !profile || !misfitOf(profile, row)).map((row) => forMarketplace(row));
+  }
+
+  /** What the "is this open job for this artisan" rule needs: the trades and the zones of the profile. */
+  private fitProfileOf(artisanUserId: number) {
+    return this.prisma.artisanProfile.findUnique({
+      where: { userId: artisanUserId },
+      select: { id: true, specialty: true, specialties: true, serviceTypes: true, serviceZones: true },
+    });
   }
 
   // ==========================================================
@@ -327,6 +335,14 @@ export class InterventionsService {
       }
 
       if (intervention.artisanId === null && canonicalStatus(intervention.status) === 'CREATED') {
+        // Nor one the board does not list for them (another trade, or outside their zones): the
+        // same answer as for a job that is not theirs (P1-11).
+        const profile = await this.fitProfileOf(actor.id);
+
+        if (profile && misfitOf(profile, intervention)) {
+          throw new NotFoundException(`Intervention #${id} not found`);
+        }
+
         // The board's copy: the customer's first name only, no id, no way to call or write.
         return forMarketplace(intervention);
       }

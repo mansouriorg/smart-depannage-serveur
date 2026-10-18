@@ -8,6 +8,8 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
 import { normalizeTradeText, textPointsToTrade } from '../../common/trades/trades';
+import { distanceKm } from '../../common/geo/distance';
+import { ZoneCircle, zoneVerdict } from '../../common/geo/zone-match';
 import {
   WeeklySlot,
   checkWeeklySchedule,
@@ -142,23 +144,7 @@ export class MatchingService {
     lat2: number;
     lng2: number;
   }): number {
-    const earthRadiusKm = 6371;
-
-    const toRad = (value: number) => (value * Math.PI) / 180;
-
-    const dLat = toRad(params.lat2 - params.lat1);
-    const dLng = toRad(params.lng2 - params.lng1);
-
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(params.lat1)) *
-        Math.cos(toRad(params.lat2)) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return earthRadiusKm * c;
+    return distanceKm(params.lat1, params.lng1, params.lat2, params.lng2);
   }
 
   private estimateArrivalMinutes(
@@ -285,65 +271,49 @@ export class MatchingService {
     };
   }
 
+  /**
+   * The zones of the artisan against the position of the job: the rule is the one of the mission
+   * board (common/geo/zone-match), only the score and the sentence are made here.
+   */
   private serviceZoneMatch(params: {
     clientLatitude?: number;
     clientLongitude?: number;
-    zones: {
-      latitude: number | null;
-      longitude: number | null;
-      radiusKm: number;
-      city: string | null;
-      postalCode: string | null;
-      isActive: boolean;
-    }[];
+    zones: ZoneCircle[];
   }) {
-    const activeZones = params.zones.filter((zone) => zone.isActive);
+    const verdict = zoneVerdict(params.zones, {
+      latitude: params.clientLatitude,
+      longitude: params.clientLongitude,
+    });
 
-    if (!activeZones.length) {
-      return {
-        matches: true,
-        score: 8,
-        reason: 'Aucune zone configurée, artisan accepté par défaut.',
-      };
-    }
+    switch (verdict.kind) {
+      case 'unrestricted':
+        return {
+          matches: true,
+          score: 8,
+          reason: 'Aucune zone configurée, artisan accepté par défaut.',
+        };
 
-    if (
-      params.clientLatitude === undefined ||
-      params.clientLongitude === undefined
-    ) {
-      return {
-        matches: true,
-        score: 5,
-        reason: 'Coordonnées client non disponibles.',
-      };
-    }
+      case 'unknown-position':
+        return {
+          matches: true,
+          score: 5,
+          reason: 'Coordonnées client non disponibles.',
+        };
 
-    for (const zone of activeZones) {
-      if (zone.latitude === null || zone.longitude === null) {
-        continue;
-      }
-
-      const distance = this.haversineKm({
-        lat1: params.clientLatitude,
-        lng1: params.clientLongitude,
-        lat2: zone.latitude,
-        lng2: zone.longitude,
-      });
-
-      if (distance <= zone.radiusKm) {
+      case 'inside':
         return {
           matches: true,
           score: 10,
-          reason: `Client dans la zone de service (${distance.toFixed(1)} km).`,
+          reason: `Client dans la zone de service (${verdict.distanceKm.toFixed(1)} km).`,
         };
-      }
-    }
 
-    return {
-      matches: false,
-      score: 0,
-      reason: 'Client hors zone de service.',
-    };
+      default:
+        return {
+          matches: false,
+          score: 0,
+          reason: 'Client hors zone de service.',
+        };
+    }
   }
 
   /**

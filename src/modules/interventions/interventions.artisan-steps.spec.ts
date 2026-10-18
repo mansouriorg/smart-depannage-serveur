@@ -186,3 +186,82 @@ describe('the marketplace of the old route does not offer again a job the artisa
     for (const key of [...Object.keys(secrets), 'contactPhone', 'contactEmail', 'contactName']) expect(key in row).toBe(false);
   });
 });
+
+describe('the older routes list and show only the open jobs that are for the artisan (P1-11)', () => {
+  // Tunis and Sfax are about 270 km apart.
+  const tunis = { latitude: 36.8065, longitude: 10.1815 };
+  const sfax = { latitude: 34.7406, longitude: 10.7603 };
+  const plumberInTunis = { userId: 4, specialty: 'Plombier', specialties: ['Plombier'], serviceTypes: ['PLOMBIER'], serviceZones: [{ ...tunis, radiusKm: 20, isActive: true }] };
+
+  function worldWithJobs() {
+    const w = makeWorld();
+
+    w.profiles.insert(plumberInTunis);
+
+    const jobs = {
+      mine: w.interventions.insert({ status: 'CREATED', serviceType: 'PLOMBIER', ...tunis }),
+      otherTrade: w.interventions.insert({ status: 'CREATED', serviceType: 'ELECTRICIEN', ...tunis }),
+      otherCity: w.interventions.insert({ status: 'CREATED', serviceType: 'PLOMBIER', ...sfax }),
+      noPosition: w.interventions.insert({ status: 'CREATED', serviceType: 'PLOMBIER' }),
+    };
+
+    return { w, jobs };
+  }
+
+  it('the list: the right trade inside a zone, and a job whose position is unknown; not another trade, not another city', async () => {
+    const { w, jobs } = worldWithJobs();
+    const answer: any[] = await w.service.findAllPending(4);
+
+    expect(answer.map((job) => job.id).sort()).toEqual([jobs.mine.id, jobs.noPosition.id].sort());
+  });
+
+  it('the list asks for the trades and the zones of the profile (so the rule has them to judge)', async () => {
+    const { w } = worldWithJobs();
+    let asked: any;
+    const original = (w.service as any).prisma.artisanProfile.findUnique;
+
+    (w.service as any).prisma.artisanProfile.findUnique = async (args: any) => {
+      asked = args;
+
+      return original(args);
+    };
+
+    await w.service.findAllPending(4);
+
+    expect(Object.keys(asked.select).sort()).toEqual(['id', 'serviceTypes', 'serviceZones', 'specialties', 'specialty']);
+  });
+
+  it('one open job: shown when it is for them, a 404 when it is another trade or another city', async () => {
+    const { w, jobs } = worldWithJobs();
+    const artisan = { id: 4, role: 'ARTISAN' } as any;
+
+    expect(((await w.service.findOneForActor(jobs.mine.id, artisan)) as any).id).toBe(jobs.mine.id);
+    expect(((await w.service.findOneForActor(jobs.noPosition.id, artisan)) as any).id).toBe(jobs.noPosition.id);
+
+    for (const job of [jobs.otherTrade, jobs.otherCity]) {
+      const error = await failure(w.service.findOneForActor(job.id, artisan));
+
+      expect(error.getStatus()).toBe(404);
+      expect(error.message).toBe(`Intervention #${job.id} not found`);
+    }
+  });
+
+  it('an artisan with no trade and no zone drawn is not limited, as before', async () => {
+    const w = makeWorld();
+
+    w.profiles.insert({ userId: 4, specialty: null, specialties: [], serviceTypes: [], serviceZones: [] });
+
+    const job = w.interventions.insert({ status: 'CREATED', serviceType: 'ELECTRICIEN', ...sfax });
+
+    expect(((await w.service.findAllPending(4)) as any[]).map((row) => row.id)).toEqual([job.id]);
+    expect(((await w.service.findOneForActor(job.id, { id: 4, role: 'ARTISAN' } as any)) as any).id).toBe(job.id);
+  });
+
+  it('the staff and the artisan who has the job are not judged', async () => {
+    const { w, jobs } = worldWithJobs();
+    const taken = w.interventions.insert({ status: 'ACCEPTED', artisanId: 4, serviceType: 'ELECTRICIEN', ...sfax });
+
+    expect(((await w.service.findOneForActor(jobs.otherCity.id, { id: 1, role: 'ADMIN' } as any)) as any).id).toBe(jobs.otherCity.id);
+    expect(((await w.service.findOneForActor(taken.id, { id: 4, role: 'ARTISAN' } as any)) as any).id).toBe(taken.id);
+  });
+});

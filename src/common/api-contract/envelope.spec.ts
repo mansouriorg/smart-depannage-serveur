@@ -67,7 +67,6 @@ describe('every paged list is built by the helper (P1-09)', () => {
     for (const rel of [
       'modules/admin/admin.service.ts',
       'modules/users/users.service.ts',
-      'modules/artisans/artisans.service.ts',
       'modules/proofs/proofs.service.ts',
     ]) {
       expect(stripComments(readSource(rel))).toMatch(/\b(?:offsetP|p)aginated\(/);

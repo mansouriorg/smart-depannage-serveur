@@ -195,22 +195,8 @@ export class UsersController {
     });
   }
 
-  // POST /users/artisans/create
-  // Used by the Admin Dashboard "Add Technician" modal
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @Post('artisans/create')
-  async createArtisan(
-    @Body()
-    body: {
-      name: string;
-      email: string;
-      phone: string;
-      specialty?: string;
-    },
-  ) {
-    return this.usersService.createArtisanDirectly(body);
-  }
+  // POST /users/artisans/create is gone (P1-11): "Add technician" is POST /admin/artisans, an invitation
+  // that takes the trades and the zones and sends the link to choose a password.
 
   // ==========================================================
   // 4. STAFF ROUTES

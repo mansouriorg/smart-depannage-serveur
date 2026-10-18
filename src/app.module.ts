@@ -25,7 +25,6 @@ import { UsersModule } from './modules/users/users.module';
 import { FilesModule } from './modules/files/files.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { InterventionsModule } from './modules/interventions/interventions.module';
-import { ArtisanApplicationsModule } from './modules/artisan-applications/artisan-applications.module';
 
 // ==========================================================
 // 3. CLIENT FEATURE MODULES
@@ -34,6 +33,7 @@ import { ArtisanApplicationsModule } from './modules/artisan-applications/artisa
 import { ClientAddressesModule } from './modules/client-addresses/client-addresses.module';
 import { NotificationPreferencesModule } from './modules/notification-preferences/notification-preferences.module';
 import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
+import { ServiceZonesModule } from './modules/service-zones/service-zones.module';
 import { InterventionEventsModule } from './modules/intervention-events/intervention-events.module';
 import { ClientInterventionsModule } from './modules/client-interventions/client-interventions.module';
 import { QuotesModule } from './modules/quotes/quotes.module';
@@ -126,7 +126,6 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     // ======================================================
 
     InterventionsModule,
-    ArtisanApplicationsModule,
 
     // ======================================================
     // F. CLIENT FEATURES
@@ -135,6 +134,7 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     ClientAddressesModule,
     NotificationPreferencesModule,
     ServiceCatalogModule,
+    ServiceZonesModule,
     InterventionEventsModule,
     ClientInterventionsModule,
     QuotesModule,
