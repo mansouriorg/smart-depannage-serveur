@@ -678,13 +678,26 @@ export class AdminService {
     );
 
     if (changed) {
+      // The line in the timeline is read by the customer and the artisan: it says what changed.
+      // The note the back office typed with it is for the back office, in a line of its own that
+      // the people of the job do not get (P1-08).
       await this.createInterventionEvent({
         interventionId,
         type: InterventionEventType.ADMIN_REVIEWING,
         title: 'Statut modifié par admin',
-        message: dto.note || `Nouveau statut: ${dto.status}`,
+        message: `Nouveau statut: ${dto.status}`,
         createdById: adminId,
       });
+
+      if (dto.note) {
+        await this.createInterventionEvent({
+          interventionId,
+          type: InterventionEventType.INTERNAL_NOTE_ADDED,
+          title: 'Note du changement de statut',
+          message: dto.note,
+          createdById: adminId,
+        });
+      }
     }
 
     return updated;

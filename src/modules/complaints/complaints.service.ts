@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { complaintForClient, complaintMessageForParties } from '../../common/views/views';
 import { NotificationsService } from '../notifications/notifications.service';
 
 import {
@@ -137,24 +138,13 @@ export class ComplaintsService {
     } satisfies Prisma.ComplaintInclude;
   }
 
+  /**
+   * The complaint as the customer or the artisan of the job reads it (P1-08): the decision and the
+   * public thread, with the people as names. The notes, the staff member who handles it, the
+   * internal messages and every address and number stay with the back office.
+   */
   private removeInternalFieldsForNonStaff(complaint: any) {
-    const messages = complaint.messages?.filter(
-      (message: any) => !message.isInternal && !message.deletedAt,
-    );
-
-    const {
-      adminNotes,
-      internalNotes,
-      adminDecisionNote,
-      adminDecisionById,
-      refundDecidedById,
-      ...safeComplaint
-    } = complaint;
-
-    return {
-      ...safeComplaint,
-      messages,
-    };
+    return complaintForClient(complaint);
   }
 
   private formatComplaintForUser(complaint: any, role: Role) {
@@ -540,7 +530,7 @@ export class ComplaintsService {
       }
     }
 
-    return message;
+    return this.isStaff(role) ? message : complaintMessageForParties(message);
   }
 
   async artisanResponse(
@@ -599,7 +589,7 @@ export class ComplaintsService {
     }
 
     return {
-      message,
+      message: this.isStaff(role) ? message : complaintMessageForParties(message),
       complaint: this.formatComplaintForUser(updated, role),
     };
   }

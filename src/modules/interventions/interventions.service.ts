@@ -28,6 +28,7 @@ import * as crypto from 'crypto';
 import { Role, Status } from '../../../generated/prisma/client';
 import { isTicketStaff } from '../../common/auth/role-policy';
 import { forMarketplace, withoutStaffFields } from './intervention-redaction';
+import { interventionForClient, interventionForTracking } from '../../common/views/views';
 import {
   StatusActor,
   canonicalStatus,
@@ -68,7 +69,7 @@ export class InterventionsService {
   // ==========================================================
   // 1. CREATE REQUEST (Handles Logged-in Users AND Guests)
   // ==========================================================
-  async create(userId: number | null, createInterventionDto: CreateInterventionDto) {
+  async create(userId: number | null, createInterventionDto: CreateInterventionDto, viewerRole?: string | null) {
     let finalClientId = userId;
 
     // A. GUEST LOGIC: no userId means a public request without account.
@@ -214,12 +215,15 @@ export class InterventionsService {
     // attached to: with an existing guest profile that would answer "whose
     // phone number is this?".
     if (!userId) {
-      const { client: _client, ...publicIntervention } = newIntervention;
-
-      return { ...publicIntervention, rawTrackingToken: rawToken };
+      return { ...interventionForTracking(newIntervention), rawTrackingToken: rawToken };
     }
 
-    return { ...newIntervention, rawTrackingToken: rawToken };
+    // Somebody of the back office who files a request through this route reads the row as it is.
+    if (isTicketStaff(viewerRole)) {
+      return { ...newIntervention, rawTrackingToken: rawToken };
+    }
+
+    return { ...interventionForClient(newIntervention), rawTrackingToken: rawToken };
   }
 
   // ==========================================================
@@ -247,7 +251,7 @@ export class InterventionsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return rows.map((row) => withoutStaffFields(row));
+    return rows.map((row) => interventionForClient(row));
   }
 
   // ==========================================================
@@ -312,7 +316,7 @@ export class InterventionsService {
     }
 
     if (actor.role === Role.CLIENT && intervention.clientId === actor.id) {
-      return withoutStaffFields(intervention);
+      return interventionForClient(intervention);
     }
 
     if (actor.role === Role.ARTISAN) {
@@ -321,12 +325,8 @@ export class InterventionsService {
       }
 
       if (intervention.artisanId === null && canonicalStatus(intervention.status) === 'CREATED') {
-        return {
-          ...forMarketplace(intervention),
-          client: intervention.client
-            ? { id: intervention.client.id, name: intervention.client.name }
-            : intervention.client,
-        };
+        // The board's copy: the customer's first name only, no id, no way to call or write.
+        return forMarketplace(intervention);
       }
     }
 
@@ -632,8 +632,9 @@ export class InterventionsService {
       throw new NotFoundException("Demande introuvable ou token invalide");
     }
 
-    // The link holder is the customer: no staff notes, no token hash.
-    return withoutStaffFields(intervention);
+    // The link holder is the customer without an account: their request, no staff notes, no token
+    // hash, no id of anybody.
+    return interventionForTracking(intervention);
   }
 
   // ==========================================================
@@ -656,7 +657,7 @@ export class InterventionsService {
       throw new NotFoundException("Action impossible ou demande introuvable");
     }
 
-    return this.prisma.intervention.update({
+    const reviewed = await this.prisma.intervention.update({
       where: { id },
       data: {
         rating: dto.rating,
@@ -670,6 +671,8 @@ export class InterventionsService {
         ),
       }
     });
+
+    return interventionForTracking(reviewed);
   }
 
   // ==========================================================
@@ -726,7 +729,7 @@ export class InterventionsService {
       issue: issueDescription
     });
 
-    return updatedIntervention;
+    return interventionForTracking(updatedIntervention);
   }
 
   // ==========================================================

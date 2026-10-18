@@ -12,6 +12,7 @@ import * as path from 'path';
 import sharp from 'sharp';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { fileForParties } from '../../common/views/views';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { Semaphore } from '../../common/concurrency/limits';
 
@@ -128,6 +129,14 @@ export class FilesService {
     ];
 
     return adminRoles.includes(role);
+  }
+
+  /**
+   * A file as this reader may read it. The back office gets the row; everybody else gets what the
+   * file is and where to fetch it, not where the server keeps it, nor the uploader's address.
+   */
+  private forReader(user: AuthenticatedUser, asset: any) {
+    return this.isAdminRole(user.role) ? asset : fileForParties(asset);
   }
 
   private isImage(mimeType: string): boolean {
@@ -672,7 +681,7 @@ export class FilesService {
       },
     });
 
-    return asset;
+    return this.forReader(user, asset);
   }
 
   // ==========================================================
@@ -784,7 +793,7 @@ export class FilesService {
     });
 
     return {
-      asset,
+      asset: this.forReader(user, asset),
       document,
     };
   }
@@ -837,7 +846,7 @@ export class FilesService {
       },
     });
 
-    return asset;
+    return this.forReader(user, asset);
   }
 
   // ==========================================================
@@ -888,7 +897,7 @@ export class FilesService {
       },
     });
 
-    return asset;
+    return this.forReader(user, asset);
   }
 
   // ==========================================================
@@ -935,7 +944,7 @@ export class FilesService {
       },
     });
 
-    return asset;
+    return this.forReader(user, asset);
   }
 
   // ==========================================================
@@ -962,7 +971,7 @@ export class FilesService {
       await this.checkFileAccess(user, file);
     }
 
-    return files;
+    return files.map((file) => this.forReader(user, file));
   }
 
   async findOne(user: AuthenticatedUser, fileId: number) {
@@ -970,7 +979,7 @@ export class FilesService {
 
     await this.checkFileAccess(user, asset);
 
-    return asset;
+    return this.forReader(user, asset);
   }
 
   async getDownloadInfo(user: AuthenticatedUser, fileId: number) {
@@ -1002,7 +1011,7 @@ export class FilesService {
       // File may already be missing on disk.
     }
 
-    return this.prisma.fileAsset.update({
+    const deleted = await this.prisma.fileAsset.update({
       where: {
         id: fileId,
       },
@@ -1011,6 +1020,8 @@ export class FilesService {
         deletedAt: new Date(),
       },
     });
+
+    return this.forReader(user, deleted);
   }
 
   // ==========================================================
@@ -1063,8 +1074,8 @@ export class FilesService {
     await this.replaceUrlReferences(oldAsset, newAsset);
 
     return {
-      oldFile: oldAsset,
-      newFile: newAsset,
+      oldFile: this.forReader(user, oldAsset),
+      newFile: this.forReader(user, newAsset),
     };
   }
 

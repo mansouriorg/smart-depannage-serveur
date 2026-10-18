@@ -3,7 +3,17 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from './realtime.gateway';
 import { chatParties } from '../messages/message-audience';
-import { withoutStaffFields } from '../interventions/intervention-redaction';
+import {
+  artisanPositionIsShared,
+  complaintForClient,
+  interventionForArtisan,
+  interventionForClient,
+  interventionForRoom,
+  messageForParties,
+  paymentForArtisan,
+  paymentForClient,
+  quoteForParties,
+} from '../../common/views/views';
 
 import {
   Status,
@@ -116,33 +126,29 @@ export class RealtimeService {
       changedAt: new Date(),
     };
 
-    // Only the dashboard gets the whole row. The client and the artisan (who also sit in the
-    // room of the job) get it without the back-office columns (staff notes, the hash of the
-    // tracking link): the same rule as every answer of the API.
-    // The id of whoever made the change goes to the dashboard only: when an artisan gives a job
-    // back, the client who reads this must not learn who it was.
-    const { actorId: _whoActed, ...withoutActor } = payload;
-    const forThePeopleOfTheJob = { ...withoutActor, intervention: withoutStaffFields(intervention) };
+    // Only the dashboard gets the whole row, with the id of whoever made the change (when an
+    // artisan gives a job back, the client must not learn who it was). Everybody else gets a copy
+    // of their own (P1-08): the customer their job (the artisan's name and number, nobody's
+    // e-mail), the artisan theirs (the customer to call), and the room of the job, where the
+    // customer, the artisan and the back office all sit, only the status and the dates.
+    const { actorId: _whoActed, intervention: _whole, ...base } = payload;
 
-    this.gateway.emitToIntervention(
-      params.interventionId,
-      'intervention.status.changed',
-      forThePeopleOfTheJob,
-    );
+    this.gateway.emitToIntervention(params.interventionId, 'intervention.status.changed', {
+      ...base,
+      intervention: interventionForRoom(intervention),
+    });
     this.gateway.emitToAdmins('admin.intervention.status.changed', payload);
 
-    this.gateway.emitToClient(
-      intervention.clientId,
-      'intervention.status.changed',
-      forThePeopleOfTheJob,
-    );
+    this.gateway.emitToClient(intervention.clientId, 'intervention.status.changed', {
+      ...base,
+      intervention: interventionForClient(intervention),
+    });
 
     if (intervention.artisanId) {
-      this.gateway.emitToArtisan(
-        intervention.artisanId,
-        'intervention.status.changed',
-        forThePeopleOfTheJob,
-      );
+      this.gateway.emitToArtisan(intervention.artisanId, 'intervention.status.changed', {
+        ...base,
+        intervention: interventionForArtisan(intervention),
+      });
     }
 
     return payload;
@@ -200,17 +206,21 @@ export class RealtimeService {
       updatedAt: new Date(),
     };
 
-    this.gateway.emitToIntervention(
-      params.interventionId,
-      'artisan.location.updated',
-      payload,
-    );
+    // The customer (and the room of the job) read the artisan's position only while the artisan
+    // is on the way; the back office follows it all the time (P1-08).
+    if (artisanPositionIsShared(intervention.status)) {
+      this.gateway.emitToIntervention(
+        params.interventionId,
+        'artisan.location.updated',
+        payload,
+      );
 
-    this.gateway.emitToClient(
-      intervention.clientId,
-      'artisan.location.updated',
-      payload,
-    );
+      this.gateway.emitToClient(
+        intervention.clientId,
+        'artisan.location.updated',
+        payload,
+      );
+    }
 
     this.gateway.emitToAdmins('admin.artisan.location.updated', payload);
 
@@ -267,14 +277,28 @@ export class RealtimeService {
     // whatever the audience, so a support message to the customer reached the
     // artisan and the reverse. (The intervention room is not used for messages:
     // everybody in it would see every chat.)
+    //
+    // The customer and the artisan get the message without the writer's e-mail and without the ids
+    // of the others who read it (P1-08); the dashboard gets the row as it is.
     const parties = chatParties(message.audience);
+    const forThePeople = {
+      event: payload.event,
+      messageId: message.id,
+      interventionId: message.interventionId,
+      audience: message.audience,
+      content: message.content,
+      attachments: message.attachments,
+      sender: messageForParties(message).sender,
+      createdAt: message.createdAt,
+      message: messageForParties(message),
+    };
 
     if (parties?.client) {
-      this.gateway.emitToClient(message.intervention.clientId, 'message.created', payload);
+      this.gateway.emitToClient(message.intervention.clientId, 'message.created', forThePeople);
     }
 
     if (parties?.artisan && message.intervention.artisanId) {
-      this.gateway.emitToArtisan(message.intervention.artisanId, 'message.created', payload);
+      this.gateway.emitToArtisan(message.intervention.artisanId, 'message.created', forThePeople);
     }
 
     // The back office watches every chat from the dashboard.
@@ -331,18 +355,18 @@ export class RealtimeService {
 
     this.gateway.emitToAdmins('admin.complaint.alert', payload);
 
-    this.gateway.emitToIntervention(
-      complaint.interventionId,
-      'complaint.alert',
-      payload,
-    );
+    // The room of the job (the customer, the artisan) is told that a complaint exists, not what
+    // it says; the person who made it gets their complaint without the notes and the people of
+    // the back office (P1-08).
+    const { complaint: _whole, userId: _author, ...announcement } = payload;
+
+    this.gateway.emitToIntervention(complaint.interventionId, 'complaint.alert', announcement);
 
     if (complaint.userId) {
-      this.gateway.emitToUser(
-        complaint.userId,
-        'complaint.alert',
-        payload,
-      );
+      this.gateway.emitToUser(complaint.userId, 'complaint.alert', {
+        ...announcement,
+        complaint: complaintForClient(complaint),
+      });
     }
 
     return payload;
@@ -393,24 +417,39 @@ export class RealtimeService {
 
     this.gateway.emitToAdmins('admin.payment.confirmed', payload);
 
-    this.gateway.emitToIntervention(
-      payment.interventionId,
-      'payment.confirmed',
-      payload,
-    );
+    // The customer gets their payment (how they paid, the receipt), the artisan and the room only
+    // that it was made: no reference, no provider, no note, nobody at the back office (P1-08).
+    const forTheClient = {
+      event: payload.event,
+      paymentId: payment.id,
+      interventionId: payment.interventionId,
+      quoteId: payment.quoteId,
+      invoiceId: payment.invoiceId,
+      amount: payment.amount,
+      amountRefunded: payment.amountRefunded,
+      currency: payment.currency,
+      method: payment.method,
+      status: payment.status,
+      confirmedAt: payment.confirmedAt,
+      payment: paymentForClient(payment),
+    };
+    const forTheOthers = {
+      event: payload.event,
+      paymentId: payment.id,
+      interventionId: payment.interventionId,
+      amount: payment.amount,
+      currency: payment.currency,
+      status: payment.status,
+      confirmedAt: payment.confirmedAt,
+      payment: paymentForArtisan(payment),
+    };
 
-    this.gateway.emitToClient(
-      payment.intervention.clientId,
-      'payment.confirmed',
-      payload,
-    );
+    this.gateway.emitToIntervention(payment.interventionId, 'payment.confirmed', forTheOthers);
+
+    this.gateway.emitToClient(payment.intervention.clientId, 'payment.confirmed', forTheClient);
 
     if (payment.intervention.artisanId) {
-      this.gateway.emitToArtisan(
-        payment.intervention.artisanId,
-        'payment.confirmed',
-        payload,
-      );
+      this.gateway.emitToArtisan(payment.intervention.artisanId, 'payment.confirmed', forTheOthers);
     }
 
     return payload;
@@ -459,24 +498,29 @@ export class RealtimeService {
 
     this.gateway.emitToAdmins('admin.quote.accepted', payload);
 
-    this.gateway.emitToIntervention(
-      quote.interventionId,
-      'quote.accepted',
-      payload,
-    );
+    // The customer gets the quote as they see it; the artisan and the room the amounts and the
+    // status (P1-08): not who wrote the quote, not the customer's note on it.
+    const forTheOthers = {
+      event: payload.event,
+      quoteId: quote.id,
+      interventionId: quote.interventionId,
+      amountHT: quote.amountHT,
+      taxRate: quote.taxRate,
+      taxAmount: quote.taxAmount,
+      amountTTC: quote.amountTTC,
+      status: quote.status,
+      acceptedAt: payload.acceptedAt,
+    };
 
-    this.gateway.emitToClient(
-      quote.intervention.clientId,
-      'quote.accepted',
-      payload,
-    );
+    this.gateway.emitToIntervention(quote.interventionId, 'quote.accepted', forTheOthers);
+
+    this.gateway.emitToClient(quote.intervention.clientId, 'quote.accepted', {
+      ...forTheOthers,
+      quote: quoteForParties(quote),
+    });
 
     if (quote.intervention.artisanId) {
-      this.gateway.emitToArtisan(
-        quote.intervention.artisanId,
-        'quote.accepted',
-        payload,
-      );
+      this.gateway.emitToArtisan(quote.intervention.artisanId, 'quote.accepted', forTheOthers);
     }
 
     return payload;

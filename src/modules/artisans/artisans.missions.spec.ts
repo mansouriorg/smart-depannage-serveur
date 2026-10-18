@@ -141,7 +141,7 @@ function makeBoard(data: {
 
         const job = data.jobs.find((row) => row.id === args.where.id);
 
-        return job ? { ...job, ...('events' in (args.include ?? {}) ? { events: [{ id: 1 }] } : {}), ...('messages' in (args.include ?? {}) ? { messages: [{ id: 1, content: 'bonjour' }] } : {}) } : null;
+        return job ? { ...job, ...('events' in (args.include ?? {}) ? { events: [{ id: 1 }] } : {}), ...('messages' in (args.include ?? {}) ? { messages: [{ id: 1, content: 'bonjour', audience: 'CLIENT_ARTISAN' }] } : {}) } : null;
       },
     },
     appointment: {
@@ -268,7 +268,7 @@ describe('the details of a mission that nobody has', () => {
     const row: any = await w.service.getMissionDetails(4, 2);
 
     expect(row.events).toEqual([{ id: 1 }]);
-    expect(row.messages).toEqual([{ id: 1, content: 'bonjour' }]);
+    expect(row.messages).toEqual([{ id: 1, content: 'bonjour', audience: 'CLIENT_ARTISAN' }]);
   });
 
   it('an artisan who refused or gave it back is not shown it again', async () => {

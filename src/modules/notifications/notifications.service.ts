@@ -147,12 +147,16 @@ export class NotificationsService {
     },
   };
 
+  /**
+   * A notification as the person it is for reads it (the list, the live copy): no delivery log, no
+   * recipient, and no id of whoever caused it (it may be somebody of the back office).
+   */
   private forRecipient(notification: any) {
-    const { recipient, deliveries, actor, ...rest } = notification;
+    const { recipient, deliveries, actor, actorId, ...rest } = notification;
 
     return {
       ...rest,
-      actor: actor ? { id: actor.id, name: actor.name, role: actor.role } : null,
+      ...(actor !== undefined ? { actor: actor ? { name: actor.name, role: actor.role } : null } : {}),
     };
   }
 
@@ -975,7 +979,7 @@ export class NotificationsService {
   // ==========================================================
 
   async findMine(user: AuthenticatedUser, options?: { unreadOnly?: boolean }) {
-    return this.prisma.notification.findMany({
+    const notifications = await this.prisma.notification.findMany({
       where: {
         recipientId: user.id,
         deletedAt: null,
@@ -988,6 +992,8 @@ export class NotificationsService {
       },
       take: 200,
     });
+
+    return notifications.map((notification) => this.forRecipient(notification));
   }
 
   async findUnread(user: AuthenticatedUser) {
@@ -997,7 +1003,7 @@ export class NotificationsService {
   }
 
   async findRead(user: AuthenticatedUser) {
-    return this.prisma.notification.findMany({
+    const notifications = await this.prisma.notification.findMany({
       where: {
         recipientId: user.id,
         deletedAt: null,
@@ -1008,6 +1014,8 @@ export class NotificationsService {
       },
       take: 200,
     });
+
+    return notifications.map((notification) => this.forRecipient(notification));
   }
 
   async findOne(user: AuthenticatedUser, notificationId: number) {
@@ -1025,7 +1033,7 @@ export class NotificationsService {
 
     this.checkNotificationRecipient(user, notification);
 
-    return this.prisma.notification.update({
+    const updated = await this.prisma.notification.update({
       where: {
         id: notificationId,
       },
@@ -1035,6 +1043,8 @@ export class NotificationsService {
       },
       include: this.recipientInclude,
     });
+
+    return this.forRecipient(updated);
   }
 
   async markAllAsRead(user: AuthenticatedUser) {

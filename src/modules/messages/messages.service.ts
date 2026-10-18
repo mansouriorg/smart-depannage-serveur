@@ -12,6 +12,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { describeError } from '../notifications/delivery/delivery-error';
 
 import { CreateMessageDto } from './dto/create-message.dto';
+import { messageForParties } from '../../common/views/views';
 
 import {
   AdminNoteTargetType,
@@ -48,6 +49,15 @@ export class MessagesService {
     ];
 
     return staffRoles.includes(role);
+  }
+
+  /**
+   * A message as the person who asked may read it. The back office reads the row as it is; the
+   * customer and the artisan get the message without the address of the writer, without the ids of
+   * the other readers and without the job's people (P1-08).
+   */
+  private forReader(userId: number, role: Role, message: any) {
+    return this.isStaff(role) ? message : messageForParties(message, userId);
   }
 
   private getAllowedAudiencesForUser(role: Role): MessageAudience[] {
@@ -304,7 +314,7 @@ export class MessagesService {
     // One in-app notification for each person in this chat except the sender.
     await this.notifications.notifyNewMessage(message.id);
 
-    return message;
+    return this.forReader(userId, role, message);
   }
 
   // ==========================================================
@@ -338,7 +348,7 @@ export class MessagesService {
       ? [audience]
       : this.getAllowedAudiencesForUser(role);
 
-    return this.prisma.message.findMany({
+    const messages = await this.prisma.message.findMany({
       where: {
         interventionId,
         audience: {
@@ -360,6 +370,8 @@ export class MessagesService {
         createdAt: 'asc',
       },
     });
+
+    return messages.map((message) => this.forReader(userId, role, message));
   }
 
   // ==========================================================
@@ -382,7 +394,7 @@ export class MessagesService {
       audience: message.audience,
     });
 
-    return message;
+    return this.forReader(userId, role, message);
   }
 
   // ==========================================================
@@ -407,7 +419,7 @@ export class MessagesService {
     });
 
     if (message.readByUserIds.includes(userId)) {
-      return message;
+      return this.forReader(userId, role, message);
     }
 
     const readByUserIds = [
@@ -415,7 +427,7 @@ export class MessagesService {
       userId,
     ];
 
-    return this.prisma.message.update({
+    const updated = await this.prisma.message.update({
       where: {
         id: messageId,
       },
@@ -443,6 +455,8 @@ export class MessagesService {
         },
       },
     });
+
+    return this.forReader(userId, role, updated);
   }
 
   // ==========================================================
@@ -633,7 +647,7 @@ export class MessagesService {
       );
     }
 
-    return this.prisma.message.update({
+    const removed = await this.prisma.message.update({
       where: {
         id: messageId,
       },
@@ -641,6 +655,8 @@ export class MessagesService {
         deletedAt: new Date(),
       },
     });
+
+    return this.forReader(userId, role, removed);
   }
 
   async deleteMessage(userId: number, role: Role, messageId: number) {

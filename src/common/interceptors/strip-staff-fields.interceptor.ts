@@ -13,7 +13,7 @@ import { stripStaffFields } from './strip-staff-fields';
 /**
  * Registered globally (see AppModule). Back-office users get responses as they
  * are; everybody else (clients, artisans, visitors with a tracking link) gets
- * them without the staff-only columns.
+ * them without the staff-only columns and without the other party's e-mail.
  */
 @Injectable()
 export class StripStaffFieldsInterceptor implements NestInterceptor {
@@ -28,6 +28,8 @@ export class StripStaffFieldsInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    return next.handle().pipe(map((body) => stripStaffFields(body)));
+    const viewer = { userId: request?.user?.id ?? null, role: request?.user?.role ?? null };
+
+    return next.handle().pipe(map((body) => stripStaffFields(body, viewer)));
   }
 }

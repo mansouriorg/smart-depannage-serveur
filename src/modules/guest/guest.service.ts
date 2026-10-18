@@ -37,7 +37,12 @@ import { isDeliverableEmail, isMadeUpGuestEmail } from '../notifications/deliver
 import { describeError } from '../notifications/delivery/delivery-error';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { StaffAlertsService } from '../interventions/staff-alerts.service';
-import { withoutStaffFields } from '../interventions/intervention-redaction';
+import {
+  interventionForTracking,
+  paymentForClient,
+  quoteForParties,
+  quotesForParties,
+} from '../../common/views/views';
 import { FilesService } from '../files/files.service';
 import { ComplaintsService } from '../complaints/complaints.service';
 import { buildTrackingUrl } from '../../common/links/tracking-url';
@@ -395,10 +400,10 @@ export class GuestService {
 
     await this.sendTrackingLink(guestUser.id, intervention.id, dto, trackingUrl);
 
-    // Without the staff columns (internal notes, hash of the tracking token) and
-    // without the profile or its id: a visitor who types somebody else's number
+    // The visitor's copy of the request: no column of the back office (internal notes, hash of the
+    // tracking token), and no profile nor its id: a visitor who types somebody else's number
     // must not be told whose profile it is (name, e-mail, id), nor whether one exists.
-    const { client: _profile, clientId: _owner, ...publicRequest } = withoutStaffFields(intervention);
+    const publicRequest = interventionForTracking(intervention);
 
     return {
       intervention: publicRequest,
@@ -485,9 +490,10 @@ export class GuestService {
   // ==========================================================
 
   async track(interventionId: number, rawTrackingToken: string) {
-    return this.findInterventionByPublicToken(
-      interventionId,
-      rawTrackingToken,
+    // What the link's holder may see: their request, the timeline without the back office's
+    // lines, the quotes that were sent, what they paid. Never the account behind the request.
+    return interventionForTracking(
+      await this.findInterventionByPublicToken(interventionId, rawTrackingToken),
     );
   }
 
@@ -694,7 +700,7 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    return intervention.quotes;
+    return quotesForParties(intervention.quotes);
   }
 
   async acceptQuote(
@@ -754,7 +760,7 @@ export class GuestService {
     // Each dispatcher and admin gets their own notification (never throws).
     await this.notifications.notifyQuoteAccepted(updatedQuote.id, intervention.clientId);
 
-    return updatedQuote;
+    return quoteForParties(updatedQuote);
   }
 
   async rejectQuote(
@@ -792,7 +798,7 @@ export class GuestService {
       createdById: intervention.clientId,
     });
 
-    return updatedQuote;
+    return quoteForParties(updatedQuote);
   }
 
   async requestQuoteModification(
@@ -831,7 +837,7 @@ export class GuestService {
       createdById: intervention.clientId,
     });
 
-    return updatedQuote;
+    return quoteForParties(updatedQuote);
   }
 
   // ==========================================================
@@ -904,7 +910,7 @@ export class GuestService {
     });
 
     return {
-      payment,
+      payment: paymentForClient(payment),
       instructions:
         dto.method === PaymentMethod.ONLINE
           ? 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente.'
@@ -958,7 +964,7 @@ export class GuestService {
       createdById: intervention.clientId,
     });
 
-    return updated;
+    return interventionForTracking(updated);
   }
 
   // ==========================================================

@@ -23,6 +23,13 @@ import {
   Status,
 } from '../../../generated/prisma/client';
 import { isBackOffice } from '../../common/auth/role-policy';
+import { pick } from '../../common/views/pick';
+import { paymentForArtisan, paymentForClient } from '../../common/views/views';
+
+/** The listed keys of a person (a name and a number, an address only where it is the reader's own). */
+function pickPerson(person: any, keys: string[]) {
+  return person ? pick(person, keys) : person;
+}
 
 @Injectable()
 export class PaymentsService {
@@ -396,7 +403,7 @@ export class PaymentsService {
     });
 
     return {
-      ...payment,
+      ...paymentForClient(payment),
       instructions: this.getPaymentInstructions(dto.method),
     };
   }
@@ -424,7 +431,7 @@ export class PaymentsService {
   async findForClient(clientId: number, interventionId: number) {
     await this.getClientIntervention(clientId, interventionId);
 
-    return this.prisma.payment.findMany({
+    const payments = await this.prisma.payment.findMany({
       where: {
         interventionId,
       },
@@ -433,6 +440,8 @@ export class PaymentsService {
         createdAt: 'desc',
       },
     });
+
+    return payments.map((payment) => paymentForClient(payment));
   }
 
   // ==========================================================
@@ -593,10 +602,13 @@ export class PaymentsService {
       interventionId: payment.interventionId,
       type: InterventionEventType.STATUS_CHANGED,
       title: 'Paiement échoué',
-      message: reason,
+      // The timeline is read by the customer and the artisan: what the back office wrote for itself
+      // stays on the payment (and here in the data, which only the back office reads).
+      message: 'Le paiement a échoué.',
       createdById: adminId,
       metadata: {
         paymentId,
+        reason,
       },
     });
 
@@ -633,10 +645,11 @@ export class PaymentsService {
       interventionId: payment.interventionId,
       type: InterventionEventType.CANCELLED,
       title: 'Paiement annulé',
-      message: reason,
+      message: 'Le paiement a été annulé.',
       createdById: adminId,
       metadata: {
         paymentId,
+        reason,
       },
     });
 
@@ -700,10 +713,11 @@ export class PaymentsService {
       title: isFullRefund
         ? 'Remboursement enregistré'
         : 'Remboursement partiel enregistré',
-      message: reason,
+      message: `Remboursement de ${refundAmount} ${payment.currency}.`,
       createdById: adminId,
       metadata: {
         paymentId,
+        reason,
         refundAmount,
         totalRefunded: newRefundedTotal,
         isFullRefund,
@@ -756,25 +770,45 @@ export class PaymentsService {
     const receiptDate =
       payment.receiptGeneratedAt ?? payment.confirmedAt ?? payment.createdAt;
 
+    // The back office reads the rows as they are. The customer and the artisan get the payment in
+    // their own copy, and each the other's name and number, not the other's e-mail.
+    const side = isOwnerClient ? 'client' : isAssignedArtisan ? 'artisan' : null;
+    const shownPayment =
+      side === 'client'
+        ? paymentForClient(payment)
+        : side === 'artisan'
+          ? paymentForArtisan(payment)
+          : payment;
+    const shownClient = side
+      ? pickPerson(payment.intervention.client, ['id', 'name', 'email', 'phone'])
+      : payment.intervention.client;
+    const shownArtisan =
+      side === 'client'
+        ? pickPerson(payment.intervention.artisan, ['id', 'name', 'phone'])
+        : side === 'artisan'
+          ? pickPerson(payment.intervention.artisan, ['id', 'name', 'email', 'phone'])
+          : payment.intervention.artisan;
+
     return {
       receiptNumber,
       receiptUrl: payment.receiptUrl,
       generatedAt: receiptDate,
-      payment,
+      payment: shownPayment,
       receipt: {
         number: receiptNumber,
         date: receiptDate,
         amount: payment.amount,
         amountRefunded: payment.amountRefunded,
         currency: payment.currency,
-        method: payment.method,
-        provider: payment.provider,
-        reference: payment.reference,
+        // How the customer paid is for the customer and the back office, not for the artisan.
+        ...(side === 'artisan'
+          ? {}
+          : { method: payment.method, provider: payment.provider, reference: payment.reference }),
         interventionId: payment.interventionId,
         quoteId: payment.quoteId,
         invoiceId: payment.invoiceId,
-        client: payment.intervention.client,
-        artisan: payment.intervention.artisan,
+        client: shownClient,
+        artisan: shownArtisan,
       },
       message:
         'Reçu généré côté backend. Vous pouvez utiliser ces données pour afficher ou imprimer le reçu côté frontend.',

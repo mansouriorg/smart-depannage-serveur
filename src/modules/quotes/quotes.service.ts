@@ -21,6 +21,7 @@ import {
   Status,
 } from '../../../generated/prisma/client';
 import { isBackOffice, isTicketStaff } from '../../common/auth/role-policy';
+import { quoteForArtisan, quoteForClient } from '../../common/views/views';
 
 @Injectable()
 export class QuotesService {
@@ -526,9 +527,12 @@ export class QuotesService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    return this.prisma.quote.findMany({
+    // A draft is the artisan's or the back office's work in progress: the customer is shown a
+    // quote once it is sent, and without the name or the address of who wrote it.
+    const quotes = await this.prisma.quote.findMany({
       where: {
         interventionId,
+        status: { not: QuoteStatus.DRAFT },
       },
       include: {
         items: {
@@ -536,18 +540,13 @@ export class QuotesService {
             id: 'asc',
           },
         },
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    return quotes.map((quote) => quoteForClient(quote));
   }
 
   // ==========================================================
@@ -567,6 +566,13 @@ export class QuotesService {
       if (!isAssignedArtisan) {
         throw new NotFoundException('Devis introuvable.');
       }
+
+      // A draft that somebody else wrote is not shown to the artisan (their own drafts are).
+      if (quote.status === QuoteStatus.DRAFT && quote.createdById !== actor.id) {
+        throw new NotFoundException('Devis introuvable.');
+      }
+
+      return quoteForArtisan(quote);
     }
 
     return quote;
@@ -645,7 +651,7 @@ export class QuotesService {
     // The back office is told once each, with their own read state (never throws).
     await this.notifications.notifyQuoteAccepted(quoteId, clientId);
 
-    return updated;
+    return quoteForClient(updated);
   }
 
   // ==========================================================
@@ -682,7 +688,7 @@ export class QuotesService {
       },
     });
 
-    return updated;
+    return quoteForClient(updated);
   }
 
   // ==========================================================
@@ -746,7 +752,7 @@ export class QuotesService {
       },
     });
 
-    return updated;
+    return quoteForClient(updated);
   }
 
   // ==========================================================
@@ -882,10 +888,14 @@ export class QuotesService {
 
     this.ensureClientOwnsQuote(clientId, quote);
 
+    if (quote.status === QuoteStatus.DRAFT) {
+      throw new NotFoundException('Devis introuvable.');
+    }
+
     return {
       quoteId: quote.id,
       pdfUrl: quote.pdfUrl,
-      quote,
+      quote: quoteForClient(quote),
       message: quote.pdfUrl
         ? 'PDF disponible.'
         : 'Aucun PDF généré pour le moment. Utilisez les données du devis pour afficher/imprimer le devis côté frontend.',

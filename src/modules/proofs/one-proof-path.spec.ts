@@ -40,6 +40,7 @@ describe('the proof columns of an intervention have one writer (P1-07)', () => {
     const files = listSourceFiles().filter((rel) => COLUMN.test(code(rel)));
 
     expect(files).toEqual([
+      'common/views/intervention-columns.ts', // says who may read each column (P1-08); writes nothing
       'modules/artisans/artisans.service.ts', // reads afterPhotoUrl: "add the after photo before finishing"
       'modules/proofs/legacy-proofs.ts', // the one-off migration of the photos taken before the rules
       'modules/proofs/proofs.service.ts',

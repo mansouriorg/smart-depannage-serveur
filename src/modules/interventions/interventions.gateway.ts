@@ -15,7 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
 import { Role } from '../../../generated/prisma/client';
 import { isTicketStaff } from '../../common/auth/role-policy';
-import { withoutStaffFields } from './intervention-redaction';
+import { interventionForArtisan, interventionForClient } from '../../common/views/views';
 
 type AccessTokenPayload = {
   sub: number;
@@ -146,14 +146,15 @@ export class InterventionsGateway
     // Staff get the whole row.
     this.server.to(STAFF_ROOM).emit(event, intervention);
 
-    // The client and the artisan of the ticket get it without staff notes and
-    // the tracking token hash.
-    const participants = [intervention.clientId, intervention.artisanId]
-      .filter((id): id is number => typeof id === 'number')
-      .map(userRoom);
+    // The client and the artisan of the ticket each get a copy of their own (P1-08): the client
+    // the artisan's name and number and nobody's e-mail, the artisan the customer to call; neither
+    // the staff notes nor the hash of the tracking token.
+    if (typeof intervention.clientId === 'number') {
+      this.server.to(userRoom(intervention.clientId)).emit(event, interventionForClient(intervention));
+    }
 
-    if (participants.length > 0) {
-      this.server.to(participants).emit(event, withoutStaffFields(intervention));
+    if (typeof intervention.artisanId === 'number') {
+      this.server.to(userRoom(intervention.artisanId)).emit(event, interventionForArtisan(intervention));
     }
   }
 

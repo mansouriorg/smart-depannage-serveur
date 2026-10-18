@@ -53,7 +53,7 @@ export class InterventionsController {
   @UseGuards(AuthGuard('jwt'), RateLimitGuard)
   @RateLimit({ name: 'secure-create', limit: 60, windowMs: 60 * 60_000 })
   createSecure(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
-    return this.interventionsService.create(req.user.id, createInterventionDto);
+    return this.interventionsService.create(req.user.id, createInterventionDto, req.user.role);
   }
 
   // ==========================================================

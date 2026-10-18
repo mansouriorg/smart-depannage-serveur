@@ -12,6 +12,7 @@ import { StaffAlertsService } from '../interventions/staff-alerts.service';
 import { buildTrackingUrl } from '../../common/links/tracking-url';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
+import { chatsOf, interventionForClient, interventionForTracking } from '../../common/views/views';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
   InterventionEventType,
@@ -121,15 +122,17 @@ export class ClientInterventionsService {
     // The back office hears about it (live event, notifications, alert text). Never throws.
     await this.staffAlerts.newRequest(intervention);
 
+    // The customer's copy of the job (no hash of the link, no column of the back office); the
+    // link itself is the one thing that is given once, here.
     return {
-      ...intervention,
+      ...interventionForClient(intervention),
       rawTrackingToken: rawToken,
       trackingUrl: buildTrackingUrl(intervention.id, rawToken),
     };
   }
 
   async findMine(clientId: number) {
-    return this.prisma.intervention.findMany({
+    const rows = await this.prisma.intervention.findMany({
       where: { clientId },
       include: {
         subService: true,
@@ -141,6 +144,8 @@ export class ClientInterventionsService {
           },
         },
         quotes: {
+          // The newest quote the customer has been sent: a draft is not theirs yet.
+          where: { status: { not: 'DRAFT' } },
           orderBy: { createdAt: 'desc' },
           take: 1,
         },
@@ -153,6 +158,8 @@ export class ClientInterventionsService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return rows.map((row) => interventionForClient(row));
   }
 
   async findOneMine(clientId: number, id: number) {
@@ -183,7 +190,11 @@ export class ClientInterventionsService {
         complaints: {
           orderBy: { createdAt: 'desc' },
         },
+        // The customer's two chats only (with the artisan, with the support), never the internal
+        // one of the back office nor the one between the artisan and the support.
         messages: {
+          where: { deletedAt: null, audience: { in: chatsOf('client') as any[] } },
+          include: { sender: { select: { id: true, name: true, role: true } } },
           orderBy: { createdAt: 'asc' },
         },
         review: true,
@@ -198,7 +209,7 @@ export class ClientInterventionsService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    return intervention;
+    return interventionForClient(intervention);
   }
 
   async tracking(clientId: number, id: number) {
@@ -245,7 +256,9 @@ export class ClientInterventionsService {
       throw new NotFoundException('Lien de suivi invalide.');
     }
 
-    return intervention;
+    // The visitor with the link is the customer without an account: the same copy as the customer's
+    // minus every id, and the artisan's position only while they are on the way.
+    return interventionForTracking(intervention);
   }
 
   async cancel(clientId: number, id: number) {
@@ -280,6 +293,6 @@ export class ClientInterventionsService {
       });
     }
 
-    return row;
+    return interventionForClient(row);
   }
 }

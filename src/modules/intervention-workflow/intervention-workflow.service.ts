@@ -17,6 +17,7 @@ import {
   allowedNextStatuses,
 } from './intervention-status';
 import { transitionStatusDetailed } from './transition-status';
+import { eventsForParties } from '../../common/views/views';
 
 import {
   InterventionEventType,
@@ -309,16 +310,6 @@ export class InterventionWorkflowService {
     }));
   }
 
-  private publicSafeEvent(event: any) {
-    return {
-      id: event.id,
-      type: event.type,
-      title: event.title,
-      message: event.message,
-      createdAt: event.createdAt,
-    };
-  }
-
   // ==========================================================
   // 2. TIMELINE
   // Visible to admin / client / artisan
@@ -336,7 +327,11 @@ export class InterventionWorkflowService {
       },
     });
 
-    const enrichedEvents = await this.enrichEventsWithActors(events);
+    // The back office reads the whole timeline, with who did what. The customer and the artisan
+    // read the lines meant for them: no note of the back office, no author, no metadata.
+    const enrichedEvents = this.isAdminRole(user.role)
+      ? await this.enrichEventsWithActors(events)
+      : eventsForParties(events);
 
     return {
       intervention: {
@@ -401,7 +396,7 @@ export class InterventionWorkflowService {
         createdAt: intervention.createdAt,
         updatedAt: intervention.updatedAt,
       },
-      timeline: events.map((event) => this.publicSafeEvent(event)),
+      timeline: eventsForParties(events),
     };
   }
 

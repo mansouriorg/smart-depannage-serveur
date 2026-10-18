@@ -19,11 +19,21 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
+import { isBackOffice } from '../../common/auth/role-policy';
+import { quoteForArtisan } from '../../common/views/views';
 
 @Controller('quotes')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class QuotesController {
   constructor(private readonly service: QuotesService) {}
+
+  /**
+   * The back office gets the quote as it is; an artisan gets the copy built for them (no name or
+   * address of who wrote it, the job inside in the artisan's shape).
+   */
+  private forReader(role: Role, quote: any) {
+    return isBackOffice(role) ? quote : quoteForArtisan(quote);
+  }
 
   // ==========================================================
   // 1. ADMIN / ARTISAN - CREATE QUOTE
@@ -42,12 +52,13 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Post('interventions/:interventionId')
-  createForIntervention(
+  async createForIntervention(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('interventionId', ParseIntPipe) interventionId: number,
     @Body() dto: CreateQuoteDto,
   ) {
-    return this.service.createForIntervention(interventionId, userId, dto);
+    return this.forReader(role, await this.service.createForIntervention(interventionId, userId, dto));
   }
 
   /**
@@ -63,15 +74,15 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Post('interventions/:interventionId/draft')
-  createDraftForIntervention(
+  async createDraftForIntervention(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('interventionId', ParseIntPipe) interventionId: number,
     @Body() dto: CreateQuoteDto,
   ) {
-    return this.service.createDraftForIntervention(
-      interventionId,
-      userId,
-      dto,
+    return this.forReader(
+      role,
+      await this.service.createDraftForIntervention(interventionId, userId, dto),
     );
   }
 
@@ -111,12 +122,13 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Patch(':quoteId')
-  updateQuote(
+  async updateQuote(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('quoteId', ParseIntPipe) quoteId: number,
     @Body() dto: Partial<CreateQuoteDto>,
   ) {
-    return this.service.updateQuote(quoteId, userId, dto);
+    return this.forReader(role, await this.service.updateQuote(quoteId, userId, dto));
   }
 
   /**
@@ -132,11 +144,12 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Post(':quoteId/send')
-  sendQuote(
+  async sendQuote(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('quoteId', ParseIntPipe) quoteId: number,
   ) {
-    return this.service.sendQuote(quoteId, userId);
+    return this.forReader(role, await this.service.sendQuote(quoteId, userId));
   }
 
   /**
@@ -152,12 +165,13 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Post(':quoteId/cancel')
-  cancelQuote(
+  async cancelQuote(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('quoteId', ParseIntPipe) quoteId: number,
     @Body() dto: ClientQuoteActionDto,
   ) {
-    return this.service.cancelQuote(quoteId, userId, dto);
+    return this.forReader(role, await this.service.cancelQuote(quoteId, userId, dto));
   }
 
   /**
@@ -192,12 +206,13 @@ export class QuotesController {
     Role.ARTISAN,
   )
   @Patch(':quoteId/pdf')
-  setPdfUrl(
+  async setPdfUrl(
     @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
     @Param('quoteId', ParseIntPipe) quoteId: number,
     @Body('pdfUrl') pdfUrl: string,
   ) {
-    return this.service.setPdfUrl(quoteId, pdfUrl, userId);
+    return this.forReader(role, await this.service.setPdfUrl(quoteId, pdfUrl, userId));
   }
 
   // ==========================================================

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { reviewForAuthor, reviewForPublic, reviewForSubject } from '../../common/views/views';
 
 import {
   Prisma,
@@ -106,6 +107,17 @@ export class ReviewsService {
     }
 
     return intervention;
+  }
+
+  /**
+   * A review that has been approved, as somebody who is not the back office and did not write it
+   * reads it: the artisan it is about sees the customer's name; anybody else sees stars, words
+   * and a first name, never a number, an e-mail or an address.
+   */
+  private forReader(userId: number, role: Role, review: any) {
+    return role === Role.ARTISAN && review.artisanId === userId
+      ? reviewForSubject(review)
+      : reviewForPublic(review);
   }
 
   private reviewInclude() {
@@ -303,7 +315,7 @@ export class ReviewsService {
     return {
       message:
         'Votre avis a été envoyé. Il sera visible après validation par l’administration.',
-      review,
+      review: reviewForAuthor(review),
     };
   }
 
@@ -334,14 +346,14 @@ export class ReviewsService {
     }
 
     if (role === Role.CLIENT && review.clientId === userId) {
-      return review;
+      return reviewForAuthor(review);
     }
 
     if (
       review.isVisible &&
       review.status === ReviewModerationStatus.APPROVED
     ) {
-      return review;
+      return this.forReader(userId, role, review);
     }
 
     return null;
@@ -356,7 +368,7 @@ export class ReviewsService {
       throw new ForbiddenException('Accès réservé au client.');
     }
 
-    return this.prisma.review.findMany({
+    const reviews = await this.prisma.review.findMany({
       where: {
         clientId: userId,
       },
@@ -365,6 +377,8 @@ export class ReviewsService {
         createdAt: 'desc',
       },
     });
+
+    return reviews.map((review) => reviewForAuthor(review));
   }
 
   // ==========================================================
@@ -385,7 +399,7 @@ export class ReviewsService {
       throw new NotFoundException('Artisan introuvable.');
     }
 
-    return this.prisma.review.findMany({
+    const reviews = await this.prisma.review.findMany({
       where: {
         artisanId,
         status: ReviewModerationStatus.APPROVED,
@@ -411,6 +425,8 @@ export class ReviewsService {
         createdAt: 'desc',
       },
     });
+
+    return reviews.map((review) => reviewForPublic(review));
   }
 
   async getArtisanRatingSummary(artisanId: number) {
@@ -655,23 +671,14 @@ export class ReviewsService {
     }
 
     if (role === Role.CLIENT && review.clientId === userId) {
-      return review;
-    }
-
-    if (
-      role === Role.ARTISAN &&
-      review.artisanId === userId &&
-      review.status === ReviewModerationStatus.APPROVED &&
-      review.isVisible
-    ) {
-      return review;
+      return reviewForAuthor(review);
     }
 
     if (
       review.status === ReviewModerationStatus.APPROVED &&
       review.isVisible
     ) {
-      return review;
+      return this.forReader(userId, role, review);
     }
 
     throw new ForbiddenException('Accès refusé.');

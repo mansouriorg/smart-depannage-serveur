@@ -16,6 +16,7 @@ import { MissionActionsService } from '../mission-actions/mission-actions.servic
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
 import { forMarketplace, withoutStaffFields } from '../interventions/intervention-redaction';
+import { chatsOf, messageForParties } from '../../common/views/views';
 import { withAliases } from '../intervention-workflow/intervention-status';
 import { isOpenJob } from '../mission-actions/open-job';
 import {
@@ -890,7 +891,10 @@ export class ArtisansService {
               events: {
                 orderBy: { createdAt: 'asc' },
               },
+              // The artisan's two chats only (with the customer, with the support): not the
+              // customer's chat with the support, nor a message that was deleted.
               messages: {
+                where: { deletedAt: null, audience: { in: chatsOf('artisan') as any[] } },
                 include: {
                   sender: {
                     select: {
@@ -1206,6 +1210,8 @@ export class ArtisansService {
       title: 'Problème signalé par artisan',
       message: dto.notes || `Type: ${dto.problemType}`,
       createdById: userId,
+      // What the artisan tells the back office is not for the customer's timeline (P1-08).
+      metadata: { internal: true },
     });
 
     return withoutStaffFields(updated);
@@ -1223,7 +1229,7 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    return this.prisma.message.create({
+    const message = await this.prisma.message.create({
       data: {
         interventionId,
         senderId: userId,
@@ -1241,6 +1247,8 @@ export class ArtisansService {
         },
       },
     });
+
+    return messageForParties(message, userId);
   }
 
   async contactAdmin(
@@ -1251,7 +1259,7 @@ export class ArtisansService {
     await this.ensureApprovedArtisan(userId);
     await this.getMissionForArtisan(userId, interventionId);
 
-    return this.prisma.message.create({
+    const message = await this.prisma.message.create({
       data: {
         interventionId,
         senderId: userId,
@@ -1269,6 +1277,8 @@ export class ArtisansService {
         },
       },
     });
+
+    return messageForParties(message, userId);
   }
 
   // ==========================================================

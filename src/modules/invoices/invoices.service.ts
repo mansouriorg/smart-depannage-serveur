@@ -12,6 +12,7 @@ import { InterventionEventsService } from '../intervention-events/intervention-e
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 import { isDeliverableEmail } from '../notifications/delivery/contact';
+import { invoiceForArtisan, invoiceForClient } from '../../common/views/views';
 
 import {
   InterventionEventType,
@@ -205,6 +206,24 @@ export class InvoicesService {
     if (!isAdmin && !isClient && !isArtisan) {
       throw new ForbiddenException('Accès refusé à cette facture.');
     }
+  }
+
+  /**
+   * The invoice as this reader may read it. The back office gets the row; the customer gets the
+   * invoice once it is out of draft, with their own details; the artisan gets it without the
+   * customer's details on it. Neither has the record of where it was e-mailed, nor why it was
+   * cancelled.
+   */
+  private forReader(user: AuthenticatedUser, invoice: any) {
+    if (this.isAdminRole(user.role)) return invoice;
+
+    if (invoice.status === InvoiceStatus.DRAFT) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    return invoice.intervention.clientId === user.id
+      ? invoiceForClient(invoice)
+      : invoiceForArtisan(invoice);
   }
 
   private calculateTotalsFromAmount(amountHT: number, taxRate = 20) {
@@ -509,8 +528,10 @@ export class InvoicesService {
   // ==========================================================
 
   async findMine(clientId: number) {
-    return this.prisma.invoice.findMany({
+    const invoices = await this.prisma.invoice.findMany({
       where: {
+        // A draft is the back office's work in progress; the customer's invoice starts when it is issued.
+        status: { not: InvoiceStatus.DRAFT },
         intervention: {
           clientId,
         },
@@ -540,6 +561,8 @@ export class InvoicesService {
         createdAt: 'desc',
       },
     });
+
+    return invoices.map((invoice) => invoiceForClient(invoice));
   }
 
   // ==========================================================
@@ -563,7 +586,11 @@ export class InvoicesService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    return invoice;
+    if (invoice.status === InvoiceStatus.DRAFT) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    return invoiceForClient(invoice);
   }
 
   // ==========================================================
@@ -575,7 +602,7 @@ export class InvoicesService {
 
     this.checkCanAccessInvoice(user, invoice);
 
-    return invoice;
+    return this.forReader(user, invoice);
   }
 
   // ==========================================================
@@ -596,7 +623,7 @@ export class InvoicesService {
 
     this.checkCanAccessInvoice(user, invoice);
 
-    return invoice;
+    return this.forReader(user, invoice);
   }
 
   // ==========================================================
@@ -808,11 +835,14 @@ Cordialement.`;
       interventionId: invoice.interventionId,
       type: InterventionEventType.CANCELLED,
       title: 'Facture annulée',
-      message: dto.reason || `La facture ${invoice.invoiceNumber} a été annulée.`,
+      // The reason the back office gives is kept on the invoice and here in the data, not in the
+      // line that the customer reads.
+      message: `La facture ${invoice.invoiceNumber} a été annulée.`,
       createdById: user.id,
       metadata: {
         invoiceId,
         invoiceNumber: invoice.invoiceNumber,
+        reason: dto.reason,
       },
     });
 

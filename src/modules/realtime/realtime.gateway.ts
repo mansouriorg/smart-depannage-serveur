@@ -14,6 +14,7 @@ import { Server, Socket } from 'socket.io';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
+import { artisanPositionIsShared } from '../../common/views/views';
 
 import {
   ArtisanLocationUpdateDto,
@@ -415,11 +416,15 @@ export class RealtimeGateway
       updatedAt: new Date(),
     };
 
-    this.emitToIntervention(
-      interventionId,
-      'artisan.location.updated',
-      payload,
-    );
+    // The back office follows the artisan all the time; the customer (and everybody else in the
+    // room of the job) only while the artisan is on the way (P1-08).
+    if (artisanPositionIsShared(intervention.status)) {
+      this.emitToIntervention(
+        interventionId,
+        'artisan.location.updated',
+        payload,
+      );
+    }
 
     this.emitToAdmins('admin.artisan.location.updated', payload);
 
@@ -475,10 +480,14 @@ export class RealtimeGateway
     actorId?: number;
     changedAt?: Date;
   }) {
+    // The room of the job has the customer and the artisan in it: the id of whoever made the
+    // change goes to the dashboard only.
+    const { actorId: _whoActed, ...forTheRoom } = payload;
+
     this.emitToIntervention(
       payload.interventionId,
       'intervention.status.changed',
-      payload,
+      forTheRoom,
     );
 
     this.emitToAdmins('admin.intervention.status.changed', payload);

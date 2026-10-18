@@ -282,6 +282,8 @@ describe('the artisan\'s mission actions are made in one place (P1-06)', () => {
       'modules/mission-actions/mission-actions.service.ts',
       // Back-office only (its routes are for ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER).
       'modules/intervention-workflow/intervention-workflow.service.ts',
+      // Names the columns to say who may read them (P1-08); writes nothing.
+      'common/views/intervention-columns.ts',
     ];
     const offenders = listSourceFiles().filter(
       (rel) => !allowed.includes(rel) && /artisanOnTheWayAt|artisanArrivedAt/.test(stripComments(readSource(rel))),

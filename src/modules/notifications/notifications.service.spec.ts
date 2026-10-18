@@ -72,6 +72,13 @@ function makeWorld(extra: Partial<{
         return row;
       },
       findUnique: async ({ where }: any) => byId(notifications, where.id),
+      findMany: async ({ where }: any) =>
+        notifications.filter(
+          (row) =>
+            row.recipientId === where.recipientId &&
+            (where.deletedAt === undefined || row.deletedAt === where.deletedAt) &&
+            (where.isRead === undefined || row.isRead === where.isRead),
+        ),
       update: async ({ where, data }: any) => {
         const row = byId(notifications, where.id);
         Object.assign(row, data);
@@ -450,6 +457,29 @@ describe('a notification problem never breaks the action that caused it', () => 
 });
 
 describe('the notification centre', () => {
+  it('the lists a person reads, and a notification just marked read, do not say who of the back office caused it (P1-08)', async () => {
+    const { service } = makeWorld();
+    await service.notify({ recipientId: 10, actorId: 2, type: 'GENERAL' as any, title: 'x', message: 'y' });
+    await service.notify({ recipientId: 10, actorId: 2, type: 'GENERAL' as any, title: 'z', message: 'w' });
+
+    const mine = (await service.findMine({ id: 10, role: 'CLIENT' as any })) as any[];
+    const unread = (await service.findUnread({ id: 10, role: 'CLIENT' as any })) as any[];
+    const marked = (await service.markAsRead({ id: 10, role: 'CLIENT' as any }, mine[0].id)) as any;
+    const read = (await service.findRead({ id: 10, role: 'CLIENT' as any })) as any[];
+
+    expect([mine.length, unread.length, read.length]).toEqual([2, 2, 1]);
+
+    for (const row of [...mine, ...unread, marked, ...read]) {
+      expect(row.actorId).toBe(undefined);
+      expect(row.recipient).toBe(undefined);
+      expect(row.deliveries).toBe(undefined);
+      expect(row.actor === undefined || row.actor.id === undefined).toBe(true);
+    }
+
+    expect(marked.isRead).toBe(true);
+    expect(marked.title).toBe('x');
+  });
+
   it('the recipient can mark their own notification as read, an admin cannot mark someone else’s', async () => {
     const { service, notifications } = makeWorld();
     await service.notifyAdmins({ type: 'GENERAL' as any, title: 'x', message: 'y' });
@@ -509,13 +539,17 @@ describe('the notification centre', () => {
     const mine = (await service.findOne({ id: 10, role: 'CLIENT' as any }, row.id)) as any;
     expect(mine.recipient).toBe(undefined);
     expect(mine.deliveries).toBe(undefined);
-    expect(mine.actor).toEqual({ id: 2, name: 'Sam', role: 'SUPPORT' });
+    // a name and a role, not the id of the member of the back office
+    expect(mine.actor).toEqual({ name: 'Sam', role: 'SUPPORT' });
+    expect(mine.actorId).toBe(undefined);
 
     // and so does the live event
     const pushed = live[0].notification;
     expect(pushed.recipient).toBe(undefined);
     expect(pushed.deliveries).toBe(undefined);
     expect(pushed.actor.email).toBe(undefined);
+    expect(pushed.actor.id).toBe(undefined);
+    expect(pushed.actorId).toBe(undefined);
     expect(pushed.title).toBe('x');
   });
 
