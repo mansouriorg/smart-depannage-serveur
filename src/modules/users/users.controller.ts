@@ -188,7 +188,7 @@ export class UsersController {
     // ?assignable=true: only the artisans a job can be given to (P1-05)
     @Query('assignable') assignable?: string,
   ) {
-    return this.usersService.findAll({
+    return this.usersService.findArtisans({
       where: artisanListWhere({ search, assignable }) as any,
       page: page ? Number(page) : 1,
       limit: artisanPageSize(limit),

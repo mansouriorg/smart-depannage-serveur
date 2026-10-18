@@ -139,12 +139,16 @@ export class AdminController {
   // 3. ARTISAN MANAGEMENT
   // ==========================================================
 
+  // The applications queue (P1-12): applicants' identities and papers are for the people who check
+  // them, not for every back-office role. A dispatcher assigns from GET /users/artisans.
   @Get('artisans')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   findAllArtisans(@Query() query: AdminArtisanQueryDto) {
     return this.adminService.findAllArtisans(query);
   }
 
   @Get('artisans/:profileId')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   getArtisanDetail(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanDetail(profileId);
   }

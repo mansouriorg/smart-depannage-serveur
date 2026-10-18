@@ -167,7 +167,7 @@ describe('the files that come from the server (P1-09)', () => {
 
   it('the generated set is the same every time, and every file says where it comes from', () => {
     expect(generateContract(read)).toEqual(files);
-    expect(Object.keys(files).sort()).toEqual(['enums.ts', 'envelope.ts', 'index.ts', 'intervention-status.ts', 'trades.ts', 'views.ts']);
+    expect(Object.keys(files).sort()).toEqual(['enums.ts', 'envelope.ts', 'index.ts', 'intervention-status.ts', 'staff-pages.ts', 'trades.ts', 'views.ts']);
 
     for (const text of Object.values(files)) {
       expect(text.startsWith(HEADER)).toBe(true);
@@ -183,6 +183,8 @@ describe('the files that come from the server (P1-09)', () => {
     expect(files['intervention-status.ts']).toContain('export const CANONICAL_STATUSES');
     expect(files['trades.ts']).toContain('export const TRADE_CODES');
     expect(files['index.ts']).toContain("export * from './trades';");
+    expect(files['staff-pages.ts']).toContain('export const DASHBOARD_PAGES');
+    expect(files['index.ts']).toContain("export * from './staff-pages';");
   });
 
   it('the copied files import nothing, so they compile wherever they are copied', () => {

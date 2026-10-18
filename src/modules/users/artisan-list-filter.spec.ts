@@ -1,7 +1,9 @@
 import { ArtisanVerificationStatus, Role } from '../../../generated/prisma/client';
 import {
+  ARTISAN_LIST_PROFILE_SELECT,
   DEFAULT_ARTISAN_PAGE_SIZE,
   MAX_ARTISAN_PAGE_SIZE,
+  artisanFeedback,
   artisanListWhere,
   artisanPageSize,
   isTruthyFlag,
@@ -49,5 +51,26 @@ describe('GET /users/artisans: who the dropdown of the dashboard may offer (P1-0
     expect(artisanPageSize('200')).toBe(MAX_ARTISAN_PAGE_SIZE);
     expect(artisanPageSize('100000')).toBe(MAX_ARTISAN_PAGE_SIZE);
     expect(artisanPageSize('Infinity')).toBe(50);
+  });
+});
+
+describe('GET /users/artisans: what each artisan carries (P1-12)', () => {
+  it('the profile summary is the trade and the real rating, nothing that is private to the profile', () => {
+    expect(Object.keys(ARTISAN_LIST_PROFILE_SELECT).sort()).toEqual(['averageRating', 'ratingCount', 'specialty']);
+    expect(Object.values(ARTISAN_LIST_PROFILE_SELECT).every((value) => value === true)).toBe(true);
+  });
+
+  it('the feedback of the customers: the average to two decimals and how many answered', () => {
+    expect(artisanFeedback(4.333333, 3)).toEqual({ average: 4.33, count: 3 });
+    expect(artisanFeedback(5, 1)).toEqual({ average: 5, count: 1 });
+    expect(artisanFeedback('4.5' as any, 2)).toEqual({ average: 4.5, count: 2 });
+  });
+
+  it('nobody answered: no average (never a made-up 0 or 5)', () => {
+    expect(artisanFeedback(null, 0)).toEqual({ average: null, count: 0 });
+    expect(artisanFeedback(undefined, undefined)).toEqual({ average: null, count: 0 });
+    expect(artisanFeedback(4, 0)).toEqual({ average: null, count: 0 });
+    expect(artisanFeedback(null, 2)).toEqual({ average: null, count: 0 });
+    expect(artisanFeedback(Number.NaN, 2)).toEqual({ average: null, count: 0 });
   });
 });

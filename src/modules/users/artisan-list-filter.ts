@@ -4,6 +4,34 @@ import { ArtisanVerificationStatus, Role } from '../../../generated/prisma/clien
 export const MAX_ARTISAN_PAGE_SIZE = 200;
 export const DEFAULT_ARTISAN_PAGE_SIZE = 50;
 
+/**
+ * What the technicians page shows of an artisan's profile besides the account (P1-12): the trade and
+ * the real rating. The page showed "5.0" for everybody because the list carried no rating at all.
+ */
+export const ARTISAN_LIST_PROFILE_SELECT = {
+  specialty: true,
+  averageRating: true,
+  ratingCount: true,
+} as const;
+
+/**
+ * What customers answered after the jobs of an artisan (the rating from the tracking link): the
+ * average, rounded to two decimals like the profile's, and how many answered. `average` is null when
+ * nobody did.
+ */
+export function artisanFeedback(
+  average: number | null | undefined,
+  count: number | null | undefined,
+): { average: number | null; count: number } {
+  const answers = Number(count ?? 0);
+
+  if (!Number.isFinite(answers) || answers < 1 || average === null || average === undefined || !Number.isFinite(Number(average))) {
+    return { average: null, count: 0 };
+  }
+
+  return { average: Number(Number(average).toFixed(2)), count: answers };
+}
+
 /** `?assignable=true`, `?assignable=1`: the query string is text. */
 export function isTruthyFlag(value: unknown): boolean {
   return value === true || (typeof value === 'string' && ['true', '1'].includes(value.trim().toLowerCase()));

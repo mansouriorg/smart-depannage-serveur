@@ -19,6 +19,7 @@ import {
   phoneWhere,
   rethrowContactConflict,
 } from '../../common/contact/phone';
+import { ARTISAN_LIST_PROFILE_SELECT, artisanFeedback } from './artisan-list-filter';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -152,6 +153,7 @@ export class UsersService {
     where?: Prisma.UserWhereInput;
     page?: number;
     limit?: number;
+    select?: Prisma.UserSelect;
   }) {
     const page = params?.page || 1;
     const limit = params?.limit || 20;
@@ -162,7 +164,7 @@ export class UsersService {
     const [data, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
-        select: this.safeUserSelect,
+        select: params?.select ?? this.safeUserSelect,
         orderBy: { id: 'desc' },
         skip,
         take: limit,
@@ -174,6 +176,43 @@ export class UsersService {
     ]);
 
     return paginated(data, page, limit, total);
+  }
+
+  // ==========================================================
+  // 3b. FIND ARTISANS (the technicians page, the assignment dropdown)
+  // The account as everywhere (never the password), plus the trade and the rating of the profile, and
+  // what customers answered after their jobs (`feedback`): the profile's rating counts the reviews a
+  // moderator approved, and nothing in the dashboard approves them yet, so alone it would say "not rated" for everybody.
+  // ==========================================================
+
+  async findArtisans(params: { where: Prisma.UserWhereInput; page?: number; limit?: number }) {
+    const page = await this.findAll({
+      ...params,
+      select: { ...this.safeUserSelect, artisanProfile: { select: ARTISAN_LIST_PROFILE_SELECT } },
+    });
+
+    const ids = (page.data as Array<{ id: number }>).map((row) => row.id);
+
+    if (ids.length === 0) return page;
+
+    // Typed by hand: Prisma's own type for a grouped query is a conditional one that depends on every option.
+    const groups = (await this.prisma.intervention.groupBy({
+      by: ['artisanId'],
+      where: { artisanId: { in: ids }, rating: { not: null } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    })) as unknown as Array<{ artisanId: number | null; _avg: { rating: number | null }; _count: { rating: number } }>;
+
+    const feedbackOf = new Map(groups.map((group) => [group.artisanId, group]));
+
+    return {
+      ...page,
+      data: (page.data as Array<{ id: number }>).map((row) => {
+        const group = feedbackOf.get(row.id);
+
+        return { ...row, feedback: artisanFeedback(group?._avg.rating, group?._count.rating) };
+      }),
+    };
   }
 
   // ==========================================================

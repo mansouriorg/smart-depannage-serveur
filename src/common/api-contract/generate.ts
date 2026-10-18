@@ -26,6 +26,8 @@ export const COPIED_FILES: Array<{ from: string; to: string }> = [
   { from: 'src/modules/intervention-workflow/intervention-status.ts', to: 'intervention-status.ts' },
   // The trades (P1-10): the apps list them in their forms, and the table is the same one the server reads.
   { from: 'src/common/trades/trades.ts', to: 'trades.ts' },
+  // Who opens which page of the dashboard, and who sees which button (P1-12): the menu and the route guard read it.
+  { from: 'src/common/auth/staff-pages.ts', to: 'staff-pages.ts' },
 ];
 
 export const SCHEMA_FILE = 'prisma/schema.prisma';
@@ -131,6 +133,7 @@ export function generateContract(read: (relativePath: string) => string): Record
     HEADER,
     "export * from './envelope';",
     "export * from './intervention-status';",
+    "export * from './staff-pages';",
     "export * from './trades';",
     "export * from './views';",
     "export * as Enums from './enums';",
