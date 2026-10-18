@@ -35,6 +35,9 @@ export class NoPushProvider implements PushProvider {
 
 const EXPO_TOKEN = /^(Exponent|Expo)PushToken\[[^\]]+\]$/;
 const EXPO_URL = 'https://exp.host/--/api/v2/push/send';
+
+/** The Android notification channel of the phone app (services/push.ts of the app: CHANNEL). */
+export const ANDROID_CHANNEL = 'default';
 const EXPO_CHUNK = 100;
 
 /** Expo push service: https://docs.expo.dev/push-notifications/sending-notifications/ */
@@ -88,6 +91,9 @@ export class ExpoPushProvider implements PushProvider {
             data: message.data ?? undefined,
             sound: 'default',
             priority: 'high',
+            // The channel the phone app creates at start-up (services/push.ts): on Android 8 and later a push
+            // without a channel falls on a fallback one with the system's default importance (P1-15).
+            channelId: ANDROID_CHANNEL,
           })),
         ),
       });

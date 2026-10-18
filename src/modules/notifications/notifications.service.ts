@@ -19,6 +19,7 @@ import { messageRecipients } from '../messages/message-audience';
 import { OutboxService } from './delivery/outbox.service';
 import { MessageTemplatesService } from './delivery/message-templates.service';
 import { flattenVars } from './delivery/render-template';
+import { pushPayload } from './delivery/push-payload';
 import { isDeliverableEmail } from './delivery/contact';
 import { describeError } from './delivery/delivery-error';
 
@@ -928,7 +929,8 @@ export class NotificationsService {
         recipient: destination ?? undefined,
         subject: rendered.subject ?? notification.title,
         body: rendered.content,
-        data: channel === NotificationChannel.PUSH ? notification.data : undefined,
+        // The phone needs the kind and the job to open the right screen on a tap (P1-15).
+        data: channel === NotificationChannel.PUSH ? pushPayload(notification) : undefined,
         notificationId: notification.id,
         deliveryLogId: log.id,
       });

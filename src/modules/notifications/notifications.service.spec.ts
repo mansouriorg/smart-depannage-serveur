@@ -702,14 +702,45 @@ describe('e-mail, SMS and push go through the outbox', () => {
   });
 
   it('a push is queued for the user, with the data of the notification', async () => {
-    const { service, queued } = makeWorld();
+    const { service, queued, notifications } = makeWorld();
 
     await service.notify(channelsOf('PUSH'));
 
     expect(queued[0].channel).toBe('PUSH');
     expect(queued[0].userId).toBe(10);
     expect(queued[0].recipient).toBe(undefined);
-    expect(queued[0].data).toEqual({ quoteId: 7 });
+    // What the notification carries, plus the kind and the notification (P1-15).
+    expect(queued[0].data).toEqual({ quoteId: 7, type: 'QUOTE_SENT', notificationId: notifications[0].id });
+  });
+
+  it('the push of an assignment names the job, so that a tap opens the mission (P1-15)', async () => {
+    const { service, queued } = makeWorld({ pushConfigured: true });
+
+    await service.notify({
+      recipientId: 20,
+      type: 'ARTISAN_ASSIGNED' as any,
+      title: 'Nouvelle mission assignée',
+      message: 'Une mission vous a été assignée.',
+      channels: ['PUSH'] as any,
+      entityType: 'INTERVENTION',
+      entityId: 905,
+    });
+
+    expect(queued.length).toBe(1);
+    expect(queued[0].data.type).toBe('ARTISAN_ASSIGNED');
+    expect(queued[0].data.interventionId).toBe(905);
+    expect(queued[0].data.entityType).toBe('INTERVENTION');
+  });
+
+  it('only a push carries the payload: an e-mail or a text never gets it (P1-15)', async () => {
+    const { service, queued } = makeWorld({
+      users: [{ id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com', phone: '22123456' }],
+    });
+
+    await service.notify(channelsOf('EMAIL', 'SMS'));
+
+    expect(queued.map((q) => q.channel)).toEqual(['EMAIL', 'SMS']);
+    expect(queued.map((q) => q.data)).toEqual([undefined, undefined]);
   });
 
   it('in-app notifications do not touch the outbox', async () => {

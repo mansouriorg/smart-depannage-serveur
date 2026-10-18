@@ -19,6 +19,7 @@ import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability'
 import { forMarketplace, withoutStaffFields } from '../interventions/intervention-redaction';
 import { chatsOf, messageForParties } from '../../common/views/views';
 import { withAliases } from '../intervention-workflow/intervention-status';
+import { ARTISAN_DONE_STATUSES } from './artisan-done';
 import { isOpenJob } from '../mission-actions/open-job';
 import {
   transitionStatus,
@@ -459,7 +460,17 @@ export class ArtisansService {
   // ==========================================================
 
   async getMyProfile(userId: number) {
-    return this.getArtisanProfileByUserId(userId);
+    const profile = await this.getArtisanProfileByUserId(userId);
+
+    // The jobs this artisan really did. The stored counter is only moved by the old manual "complete"
+    // route, not by the photo proof, so it would say 0 for a job done the new way (P1-15). A job whose work
+    // is done but that is waiting for the customer's validation or payment is done for the artisan: these
+    // are the statuses of the "Terminées" pile of the phone app (mission-flow.ts of the shared package).
+    const completedMissions = await this.prisma.intervention.count({
+      where: { artisanId: userId, status: { in: withAliases(ARTISAN_DONE_STATUSES) as Status[] } },
+    });
+
+    return { ...profile, completedMissions };
   }
 
   async updateMyProfile(userId: number, dto: UpdateArtisanProfileDto) {
@@ -655,9 +666,12 @@ export class ArtisansService {
         where: { id: profile.id },
         data: {
           lastSeenAt: new Date(),
-          availabilityStatus:
-            dto.availabilityStatus || ArtisanAvailabilityStatus.ONLINE,
-          isAcceptingJobs: dto.isAcceptingJobs ?? profile.isAcceptingJobs,
+          // A position is not a decision to work: an artisan who went offline stays offline when
+          // the phone reports where it is (P1-15). Online and offline have their own routes. What is not
+          // sent is not written, so a status changed a moment ago (by the dispatcher, by a job that began)
+          // is not put back to the value read a moment before.
+          availabilityStatus: dto.availabilityStatus,
+          isAcceptingJobs: dto.isAcceptingJobs,
         },
       }),
     ]);

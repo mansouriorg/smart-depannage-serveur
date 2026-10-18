@@ -229,7 +229,7 @@ describe('Expo push', () => {
 
     const sent = JSON.parse(calls[0].body!);
     expect(sent.length).toBe(2);
-    expect(sent[0]).toEqual({ to: token(1), title: 'Titre', body: 'Corps', data: { interventionId: 5 }, sound: 'default', priority: 'high' });
+    expect(sent[0]).toEqual({ to: token(1), title: 'Titre', body: 'Corps', data: { interventionId: 5 }, sound: 'default', priority: 'high', channelId: 'default' });
     expect(calls[0].url).toBe('https://exp.host/--/api/v2/push/send');
     expect(calls[0].headers!.Authorization).toBe(undefined);
   });
