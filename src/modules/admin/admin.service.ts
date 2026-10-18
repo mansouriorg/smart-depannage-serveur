@@ -23,6 +23,13 @@ import {
 import { appFacingStatus, canonicalStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
 import { cancelVisit } from '../assignment/appointment-release';
 import { RealtimeService } from '../realtime/realtime.service';
+import {
+  CaseFilePerson,
+  INTERVENTION_NOTE_MAX,
+  caseFileOf,
+  caseNoteOf,
+  peopleToLookUp,
+} from '../../common/views/case-file';
 import { describeError } from '../notifications/delivery/delivery-error';
 import {
   interventionListSelect,
@@ -59,6 +66,7 @@ import {
   DecideRefundDto,
   EditArtisanProfileDto,
   EditClientDto,
+  InterventionNoteDto,
   UpdateAdminServiceZoneDto,
   UpdateCompanySettingsDto,
   UpdateComplaintStatusDto,
@@ -88,6 +96,9 @@ import {
 
 /** The last page the list can be asked for: with 100 rows a page, the offset stays far below what the database holds. */
 const MAX_PAGE = 1_000_000;
+
+/** The largest job number the database stores (a 32-bit integer): a bigger one is no job's, and asking for it would be a database error. */
+const MAX_ROW_ID = 2_147_483_647;
 
 /** The answer when someone else decided the same profile first. */
 const ALREADY_DECIDED = 'Ce profil vient d’être traité par un autre membre de l’équipe: rechargez la liste.';
@@ -503,30 +514,75 @@ export class AdminService {
     return paginated(data, page, limit, total);
   }
 
+  /**
+   * The case file of a job (P1-14): what the back office needs to follow it from the request to
+   * its end without leaving the page. It is built from an explicit list (see views/case-file.ts),
+   * not from the rows: the customer's tracking link, the artisan's position and the other readers
+   * of a message do not leave. A number that is no job's (zero, negative, beyond what the database
+   * stores) is a 404, not a database error.
+   */
   async getInterventionDetail(id: number) {
-    const intervention = await this.prisma.intervention.findUnique({
+    this.refuseUnknownJob(id);
+
+    const job = await this.prisma.intervention.findUnique({
       where: { id },
-      include: this.interventionInclude,
+      include: {
+        client: { select: { id: true, name: true, phone: true, email: true } },
+        artisan: { select: { id: true, name: true, phone: true, email: true } },
+        subService: { select: { id: true, name: true } },
+      },
     });
 
-    if (!intervention) {
+    if (!job) {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const internalNotes = await this.prisma.adminInternalNote.findMany({
-      where: {
-        targetType: AdminNoteTargetType.INTERVENTION,
-        targetId: id,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
+    const [events, messages, notes] = await Promise.all([
+      this.prisma.interventionEvent.findMany({
+        where: { interventionId: id },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      }),
+      this.prisma.message.findMany({
+        where: { interventionId: id },
+        include: { sender: { select: { id: true, name: true, role: true } } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      }),
+      this.prisma.adminInternalNote.findMany({
+        where: {
+          targetType: AdminNoteTargetType.INTERVENTION,
+          targetId: id,
+          deletedAt: null,
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    ]);
+
+    const people = await this.peopleByIds(peopleToLookUp(job, events, notes));
+
+    return caseFileOf({ job, events, messages, notes, people });
+  }
+
+  /** A job number the database could hold; anything else cannot be a job. */
+  private refuseUnknownJob(id: number) {
+    if (!Number.isInteger(id) || id < 1 || id > MAX_ROW_ID) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+  }
+
+  /** The name and role of these accounts, by id. */
+  private async peopleByIds(ids: number[]): Promise<Map<number, CaseFilePerson>> {
+    const people = new Map<number, CaseFilePerson>();
+
+    if (ids.length === 0) return people;
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true, role: true },
     });
 
-    return {
-      ...intervention,
-      internalNotes,
-    };
+    for (const user of users) people.set(user.id, { id: user.id, name: user.name ?? null, role: user.role ?? null });
+
+    return people;
   }
 
   /**
@@ -737,19 +793,42 @@ export class AdminService {
     return updated;
   }
 
+  /**
+   * A note on a job that only the back office reads (P1-14). Blank is refused (a note nobody can read
+   * says nothing) and so is a text longer than the form allows; the text is kept as it was written,
+   * without the spaces around it. The answer is the note as the case file lists it, with its author.
+   */
   async addInterventionInternalNote(
     adminId: number,
     interventionId: number,
-    dto: AdminInternalNoteDto,
+    dto: InterventionNoteDto,
   ) {
-    await this.getInterventionDetail(interventionId);
+    this.refuseUnknownJob(interventionId);
 
-    return this.addInternalNote({
+    const content = typeof dto?.content === 'string' ? dto.content.trim() : '';
+
+    if (content.length === 0) {
+      throw new BadRequestException('La note est vide.');
+    }
+
+    if (content.length > INTERVENTION_NOTE_MAX) {
+      throw new BadRequestException(`La note est trop longue (${INTERVENTION_NOTE_MAX} caractères au plus).`);
+    }
+
+    const job = await this.prisma.intervention.findUnique({ where: { id: interventionId }, select: { id: true } });
+
+    if (!job) {
+      throw new NotFoundException('Intervention introuvable.');
+    }
+
+    const note = await this.addInternalNote({
       authorId: adminId,
       targetType: AdminNoteTargetType.INTERVENTION,
       targetId: interventionId,
-      content: dto.content,
+      content,
     });
+
+    return caseNoteOf(note, await this.peopleByIds([adminId]));
   }
 
   async sendQuote(

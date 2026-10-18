@@ -16,6 +16,7 @@ import { AdminService } from './admin.service';
 import {
   AdminContactDto,
   AdminInternalNoteDto,
+  InterventionNoteDto,
   AdminInterventionQueryDto,
   AdminArtisanQueryDto,
   AdminClientQueryDto,
@@ -84,7 +85,9 @@ export class AdminController {
     return this.adminService.findAllInterventions(query);
   }
 
+  // The case file of a job (P1-14): the whole history for the people who work on jobs, not for the accountant.
   @Get('interventions/:id')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   getInterventionDetail(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.getInterventionDetail(id);
   }
@@ -129,11 +132,13 @@ export class AdminController {
     return this.adminService.sendQuote(adminId, id, dto);
   }
 
+  // A note on a job: written by the roles that can read the case file it appears in.
   @Post('interventions/:id/internal-notes')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   addInterventionInternalNote(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: AdminInternalNoteDto,
+    @Body() dto: InterventionNoteDto,
   ) {
     return this.adminService.addInterventionInternalNote(adminId, id, dto);
   }

@@ -87,7 +87,8 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     calls: [
       // The dispatcher's list (P1-13): a page at a time, filtered, searched, in the order of work.
       { method: 'GET', path: '/admin/interventions' },
-      { method: 'GET', path: '/interventions/:id' },
+      // The case file of a job (P1-14): the whole history, for the roles that work on jobs.
+      { method: 'GET', path: '/admin/interventions/:id' },
       { method: 'GET', path: '/proofs' },
     ],
   },
@@ -138,6 +139,7 @@ export const DASHBOARD_SHELL_CALLS: readonly ApiCall[] = [{ method: 'GET', path:
 export type ActionId =
   | 'assignTicket'
   | 'changeTicket'
+  | 'addNote'
   | 'reviewProof'
   | 'verifyDocument'
   | 'decideApplication'
@@ -170,6 +172,12 @@ export const STAFF_ACTIONS: readonly StaffAction[] = [
       { method: 'PATCH', path: '/admin/interventions/:id/status' },
       { method: 'PATCH', path: '/admin/interventions/:id/cancel' },
     ],
+  },
+  {
+    id: 'addNote',
+    label: 'Ajouter une note interne à une demande',
+    roles: TICKET_STAFF,
+    calls: [{ method: 'POST', path: '/admin/interventions/:id/internal-notes' }],
   },
   {
     id: 'reviewProof',

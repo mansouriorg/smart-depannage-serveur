@@ -20,6 +20,8 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+import { INTERVENTION_NOTE_MAX } from '../../../common/views/case-file';
+
 import {
   AdminNoteTargetType,
   ArtisanAvailabilityStatus,
@@ -53,6 +55,18 @@ export class PaginationQueryDto {
 
 export class AdminInternalNoteDto {
   @IsString()
+  content: string;
+}
+
+/**
+ * A note on a job (P1-14): text that the back office reads. The service trims it and refuses it blank
+ * (`IsNotEmpty` lets "   " through); the longest allowed is INTERVENTION_NOTE_MAX, the number the
+ * dashboard's form stops at.
+ */
+export class InterventionNoteDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(INTERVENTION_NOTE_MAX)
   content: string;
 }
 

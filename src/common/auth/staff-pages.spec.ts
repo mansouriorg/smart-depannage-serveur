@@ -364,6 +364,7 @@ describe('the table against the routes of the API', () => {
     const placed: Record<string, string> = {
       assignTicket: 'interventions',
       changeTicket: 'interventions',
+      addNote: 'interventions',
       reviewProof: 'interventions',
       verifyDocument: 'applications',
       decideApplication: 'applications',
@@ -400,6 +401,25 @@ describe('the table against the routes of the API', () => {
 
   it('the list of jobs is for the roles that work on jobs, and an accountant has no use for it (P1-13)', () => {
     expect(sorted(API.get(routeKey('GET', '/admin/interventions'))?.roles ?? [])).toEqual(['ADMIN', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
+  });
+
+  it('the interventions page reads a job from the case file route, not from the older route that returns the raw row (P1-14)', () => {
+    const calls = DASHBOARD_PAGES.find((page) => page.id === 'interventions')?.calls.map((call) => `${call.method} ${call.path}`) ?? [];
+
+    expect(calls).toContain('GET /admin/interventions/:id');
+    expect(calls).not.toContain('GET /interventions/:id');
+  });
+
+  it('the case file of a job and the notes written on it are for the roles that work on jobs, and no other staff role (P1-14)', () => {
+    for (const [method, path] of [
+      ['GET', '/admin/interventions/:id'],
+      ['POST', '/admin/interventions/:id/internal-notes'],
+    ] as const) {
+      const route = API.get(routeKey(method, path));
+
+      expect(`${method} ${path}: ${sorted(route?.roles ?? [])}`).toBe(`${method} ${path}: ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT`);
+      expect(route?.rolesEnforced).toBe(true);
+    }
   });
 
   it('the status and cancel routes the buttons call are the dispatcher\'s, not support\'s (the older PATCH /interventions/:id is the one that lets support in)', () => {
