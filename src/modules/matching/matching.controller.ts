@@ -12,6 +12,8 @@ import {
 import { MatchingService } from './matching.service';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -21,8 +23,13 @@ import {
   MatchArtisansQueryDto,
 } from './dto/matching.dto';
 
+// The matches (who could take this job, with a score and an arrival time) are for the people who give
+// jobs to artisans: the roles of the admin route for it (P1-13). Support and accountants could look at
+// the matches and give a job through these routes before, although the admin route
+// (POST /admin/interventions/:id/assign-artisan) never let them.
 @Controller('matching')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
 export class MatchingController {
   constructor(private readonly service: MatchingService) {}
 

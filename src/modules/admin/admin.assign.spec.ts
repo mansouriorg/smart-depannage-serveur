@@ -14,7 +14,7 @@ function makeService(assignImpl?: (input: any) => Promise<any>) {
       }),
   };
 
-  return { service: new AdminService({} as any, {} as any, {} as any, {} as any, assignment), calls };
+  return { service: new AdminService({} as any, {} as any, {} as any, {} as any, assignment, {} as any), calls };
 }
 
 describe('AdminService.assignArtisan', () => {

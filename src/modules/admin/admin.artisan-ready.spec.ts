@@ -21,7 +21,7 @@ function makeWorld() {
     [users, profiles],
   );
 
-  const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any);
+  const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
   const notes: any[] = [];
 
   (service as any).invite = async () => ({});

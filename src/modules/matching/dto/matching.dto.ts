@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 import { Transform, Type } from 'class-transformer';
@@ -73,6 +74,12 @@ export class MatchArtisansQueryDto {
 }
 
 export class AssignMatchedArtisanDto {
+  /** The technician the screen showed as holding the job (null: nobody); somebody else by now is a 409. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expectedArtisanId?: number | null;
+
   @IsOptional()
   @IsDateString()
   startsAt?: string;

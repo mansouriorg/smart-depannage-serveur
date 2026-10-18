@@ -616,6 +616,80 @@ describe('giving a job to an artisan (P1-05)', () => {
     });
   });
 
+  describe('who the screen showed as holding the job (expectedArtisanId)', () => {
+    it('a job nobody holds, still free: the assignment goes through', async () => {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const id = w.addJob();
+
+      await assign(w, id, artisan, { expectedArtisanId: null });
+
+      expect(w.job(id).artisanId).toBe(artisan);
+    });
+
+    it('a job the screen showed as free, that somebody else has been given meanwhile, is a 409 and nothing is written or said', async () => {
+      const w = makeWorld();
+      const first = w.addArtisan();
+      const second = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+
+      const error = await failure(assign(w, id, second, { expectedArtisanId: null }));
+
+      expect(error.getStatus()).toBe(409);
+      expect(String(error.message)).toContain('autre technicien');
+      expect(w.job(id).artisanId).toBe(first);
+      expect(w.events.length + w.notified.length + w.others.length + w.live.length).toBe(0);
+      expect(w.left.length).toBe(0);
+    });
+
+    it('a job the screen showed with one technician, who has been replaced meanwhile by a third, is a 409', async () => {
+      const w = makeWorld();
+      const shown = w.addArtisan();
+      const now = w.addArtisan();
+      const chosen = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: now });
+
+      const error = await failure(assign(w, id, chosen, { expectedArtisanId: shown }));
+
+      expect(error.getStatus()).toBe(409);
+      expect(w.job(id).artisanId).toBe(now);
+    });
+
+    it('the technician the screen showed is still the one: the job is handed over', async () => {
+      const w = makeWorld();
+      const shown = w.addArtisan();
+      const chosen = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: shown });
+
+      await assign(w, id, chosen, { expectedArtisanId: shown });
+
+      expect(w.job(id).artisanId).toBe(chosen);
+      expect(w.left).toEqual([[shown, id]]);
+    });
+
+    it('giving the job to the one who has it by now is the same wish twice, not a conflict (a double click, two people agreeing)', async () => {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+
+      const result = await assign(w, id, artisan, { expectedArtisanId: null });
+
+      expect(result.intervention.artisanId).toBe(artisan);
+      expect(w.notified.length + w.others.length + w.events.length + w.live.length).toBe(0);
+    });
+
+    it('without it nothing is checked (the callers that never knew who held the job)', async () => {
+      const w = makeWorld();
+      const first = w.addArtisan();
+      const second = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+
+      await assign(w, id, second);
+
+      expect(w.job(id).artisanId).toBe(second);
+    });
+  });
+
   describe('the same artisan again', () => {
     it('with no new time nothing happens: no message, no timeline line, and a job the artisan accepted stays accepted', async () => {
       const w = makeWorld();

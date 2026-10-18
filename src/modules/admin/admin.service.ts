@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -19,7 +20,15 @@ import {
   phoneWhere,
   rethrowContactConflict,
 } from '../../common/contact/phone';
-import { statusesInGroup } from '../intervention-workflow/intervention-status';
+import { appFacingStatus, canonicalStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
+import { cancelVisit } from '../assignment/appointment-release';
+import { RealtimeService } from '../realtime/realtime.service';
+import { describeError } from '../notifications/delivery/delivery-error';
+import {
+  interventionListSelect,
+  interventionQueueOrder,
+  interventionQueueWhere,
+} from './intervention-queue';
 import { tradeFieldsFor, tradeFieldsForEdit } from '../artisans/trade-fields';
 import { InviteReason, inviteArtisan } from '../auth/invite';
 import { artisanZoneRowsFor } from '../service-zones/zone-pick';
@@ -69,12 +78,16 @@ import {
   InterventionEventType,
   MessageAudience,
   NotificationChannel,
+  NotificationType,
   PaymentStatus,
   Prisma,
   QuoteStatus,
   Role,
   Status,
 } from '../../../generated/prisma/client';
+
+/** The last page the list can be asked for: with 100 rows a page, the offset stays far below what the database holds. */
+const MAX_PAGE = 1_000_000;
 
 /** The answer when someone else decided the same profile first. */
 const ALREADY_DECIDED = 'Ce profil vient d’être traité par un autre membre de l’équipe: rechargez la liste.';
@@ -87,7 +100,10 @@ export class AdminService {
     private readonly events: InterventionEventsService,
     private readonly contactChange: ContactChangeService,
     private readonly assignment: AssignmentService,
+    private readonly realtime: RealtimeService,
   ) {}
+
+  private readonly logger = new Logger(AdminService.name);
 
   // ==========================================================
   // 1. HELPERS
@@ -112,8 +128,16 @@ export class AdminService {
   }
 
   private getPagination(page?: string | number, limit?: string | number) {
-    const safePage = Math.max(1, Number(page || 1));
-    const safeLimit = Math.min(100, Math.max(1, Number(limit || 20)));
+    // Text that is not a number ("abc", "1.5") is the default, not a NaN that Prisma refuses with a 500.
+    const wholeNumber = (value: string | number | undefined, fallback: number) => {
+      const number = Number(value || fallback);
+
+      return Number.isSafeInteger(number) ? number : fallback;
+    };
+
+    // A page past a million is no page of this list; "1e21" is a whole number to JavaScript but not to the database.
+    const safePage = Math.min(MAX_PAGE, Math.max(1, wholeNumber(page, 1)));
+    const safeLimit = Math.min(100, Math.max(1, wholeNumber(limit, 20)));
 
     return {
       page: safePage,
@@ -447,94 +471,26 @@ export class AdminService {
   // 3. INTERVENTION MANAGEMENT
   // ==========================================================
 
+  /**
+   * The dispatcher's list (P1-13): a page of jobs, filtered by tab, status, urgency, trade, place,
+   * date or a search text, in the order of work (`sort=queue`: most urgent first, then longest
+   * waiting) or by date. The rules are in intervention-queue.ts; the rows are the lean list rows,
+   * the whole job is `GET /admin/interventions/:id`.
+   */
   async findAllInterventions(query: AdminInterventionQueryDto) {
     const { page, limit, skip, take } = this.getPagination(
       query.page,
       query.limit,
     );
 
-    const where: Prisma.InterventionWhereInput = {};
-
-    if (query.status) {
-      where.status = query.status;
-    }
-
-    if (query.serviceType) {
-      where.serviceType = query.serviceType;
-    }
-
-    if (query.city) {
-      where.address = {
-        contains: query.city,
-        mode: 'insensitive',
-      };
-    }
-
-    if (query.artisanId) {
-      where.artisanId = Number(query.artisanId);
-    }
-
-    if (query.dateFrom || query.dateTo) {
-      where.createdAt = {
-        gte: query.dateFrom ? new Date(query.dateFrom) : undefined,
-        lte: query.dateTo ? new Date(query.dateTo) : undefined,
-      };
-    }
-
-    if (query.search) {
-      where.OR = [
-        {
-          contactName: {
-            contains: query.search,
-            mode: 'insensitive',
-          },
-        },
-        {
-          contactPhone: {
-            contains: query.search,
-            mode: 'insensitive',
-          },
-        },
-        {
-          contactEmail: {
-            contains: query.search,
-            mode: 'insensitive',
-          },
-        },
-        {
-          client: {
-            name: {
-              contains: query.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-        {
-          client: {
-            phone: {
-              contains: query.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-        {
-          client: {
-            email: {
-              contains: query.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-      ];
-    }
+    const where = interventionQueueWhere(query) as Prisma.InterventionWhereInput;
+    const orderBy = interventionQueueOrder(query.sort) as Prisma.InterventionOrderByWithRelationInput[];
 
     const [data, total] = await Promise.all([
       this.prisma.intervention.findMany({
         where,
-        include: this.interventionInclude,
-        orderBy: {
-          createdAt: 'desc',
-        },
+        select: interventionListSelect,
+        orderBy,
         skip,
         take,
       }),
@@ -608,12 +564,32 @@ export class AdminService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
+    // A status cannot give a job to somebody: the assignment checks the approval, the availability and
+    // the trade, and writes the technician together with the status.
+    if (canonicalStatus(dto.status) === 'ASSIGNED') {
+      throw new BadRequestException(
+        'Pour confier la demande à un technicien, utilisez l’assignation: elle vérifie l’agrément et la disponibilité.',
+      );
+    }
+
+    // Nor can a status cancel it: the cancellation asks for the reason the customer and the technician
+    // read, and frees the technician's booked visit with its reminders.
+    if (canonicalStatus(dto.status) === 'CANCELLED') {
+      throw new BadRequestException(
+        'Pour annuler la demande, utilisez l’annulation: elle demande un motif et libère le rendez-vous du technicien.',
+      );
+    }
+
     const { row: updated, changed } = await transitionStatusDetailed(
       this.prisma,
       {
         id: interventionId,
-        to: dto.status,
+        // The old name where the apps still read it (ACCEPTED, ON_THE_WAY...), like the jobs they write.
+        to: appFacingStatus(dto.status),
         actor: { kind: 'staff', userId: adminId },
+        // The screen names the status it showed: if somebody moved the job since, nothing is written.
+        ...(dto.expectedStatus ? { allowedFrom: [dto.expectedStatus] } : {}),
+        conflictMessage: 'Le statut de la demande a changé entre-temps. Rechargez la liste avant de recommencer.',
         include: this.interventionInclude,
       },
     );
@@ -639,9 +615,69 @@ export class AdminService {
           createdById: adminId,
         });
       }
+
+      await this.tellAboutStatusChange(String(intervention.status), updated, adminId);
     }
 
     return updated;
+  }
+
+  /**
+   * What the others hear once the back office has moved a job (P1-13): the live event (the other
+   * dispatchers' lists, the customer's and the technician's screens), the texts the customer got from
+   * the older route (the technician accepted; the job is done) and, for a cancellation, the notice to
+   * the technician. The status is written already: each message is attempted alone, and one that
+   * fails is logged (its kind only, a phone number or an address could be in the details) and does not
+   * undo or hide the change.
+   */
+  private async tellAboutStatusChange(before: string, row: any, adminId: number, cancelled?: { reason: string }) {
+    const attempt = async (what: string, work: () => Promise<unknown>) => {
+      try {
+        await work();
+      } catch (error) {
+        this.logger.error(`After a status change by the back office, the ${what} failed (${describeError(error)}).`);
+      }
+    };
+
+    await attempt('live event', () =>
+      this.realtime.emitStatusChange({
+        interventionId: row.id,
+        oldStatus: before,
+        newStatus: row.status,
+        actorId: adminId,
+      }),
+    );
+
+    const now = canonicalStatus(row.status);
+    const phone: string | null | undefined = row.client?.phone;
+
+    if (now === 'ARTISAN_ACCEPTED' && phone) {
+      await attempt('text to the customer', () =>
+        this.notifications.sendSms(
+          phone,
+          `Smart Dépannage: Votre demande a été acceptée ! ${row.artisan?.name || 'Un artisan'} prend en charge votre dossier.`,
+        ),
+      );
+    }
+
+    if (now === 'COMPLETED' && phone) {
+      await attempt('text to the customer', () => this.notifications.sendSms(phone, 'Intervention terminée. Merci de votre confiance !'));
+    }
+
+    if (cancelled && typeof row.artisanId === 'number') {
+      await attempt('notice to the technician', () =>
+        this.notifications.notify({
+          recipientId: row.artisanId,
+          actorId: adminId,
+          type: NotificationType.GENERAL,
+          title: 'Mission annulée',
+          message: `La mission #${row.id} a été annulée: ${cancelled.reason}`,
+          channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+          entityType: 'INTERVENTION',
+          entityId: row.id,
+        }),
+      );
+    }
   }
 
   async cancelIntervention(
@@ -657,29 +693,45 @@ export class AdminService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const { row: updated, changed } = await transitionStatusDetailed(
-      this.prisma,
-      {
+    // The customer and the technician read the reason: a blank one says nothing.
+    const reason = String(dto.reason ?? '').trim();
+
+    if (!reason) {
+      throw new BadRequestException('Indiquez le motif de l’annulation.');
+    }
+
+    // The status and the visit are written together: a cancelled job must not keep the technician's
+    // calendar blocked or its reminders going out.
+    const { row: updated, changed } = await this.prisma.$transaction(async (tx) => {
+      const result = await transitionStatusDetailed(tx, {
         id: interventionId,
         to: Status.CANCELLED,
         actor: { kind: 'staff', userId: adminId },
+        ...(dto.expectedStatus ? { allowedFrom: [dto.expectedStatus] } : {}),
+        conflictMessage: 'Le statut de la demande a changé entre-temps. Rechargez la liste avant de recommencer.',
         dataOnChange: {
-          cancelledReason: dto.reason,
+          cancelledReason: reason,
           cancelledById: adminId,
           cancelledAt: new Date(),
         },
         include: this.interventionInclude,
-      },
-    );
+      });
+
+      if (result.changed) await cancelVisit(tx as any, interventionId, reason, adminId);
+
+      return result;
+    });
 
     if (changed) {
       await this.createInterventionEvent({
         interventionId,
         type: InterventionEventType.CANCELLED,
         title: 'Intervention annulée',
-        message: dto.reason,
+        message: reason,
         createdById: adminId,
       });
+
+      await this.tellAboutStatusChange(String(intervention.status), updated, adminId, { reason });
     }
 
     return updated;

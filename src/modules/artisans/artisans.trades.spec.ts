@@ -157,7 +157,7 @@ function makeAdmin() {
     { user: users, artisanProfile: { ...profiles, update: async ({ where, data }: any) => Object.assign(profiles.rows.find((row) => row.id === where.id)!, data) } },
     [users, profiles],
   );
-  const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any);
+  const service = new AdminService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
 
   (service as any).invite = async () => ({});
   (service as any).getArtisanDetail = async (profileId: number) => profiles.rows.find((row) => row.id === profileId);

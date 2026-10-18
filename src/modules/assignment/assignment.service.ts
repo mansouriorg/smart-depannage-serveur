@@ -64,6 +64,13 @@ export type AssignInput = {
    * show as "affecté"). Nothing else: this is not a way to move a job anywhere.
    */
   status?: Status | string;
+  /**
+   * Who the screen showed as holding the job (null: nobody). If somebody else holds it by now, nothing is
+   * written (409): two dispatchers choosing at the same time must not overwrite each other without knowing.
+   * Left out, nothing is checked (the callers that never knew who held it). Giving the job to the one who
+   * holds it already is not a conflict: it is the same wish twice.
+   */
+  expectedArtisanId?: number | null;
   /** What the caller wants back on the intervention. */
   include?: unknown;
 };
@@ -242,6 +249,12 @@ export class AssignmentService {
 
       const status = canonicalStatus(job.status);
       const sameArtisan = job.artisanId === artisanId;
+
+      if (input.expectedArtisanId !== undefined && !sameArtisan && job.artisanId !== input.expectedArtisanId) {
+        throw new ConflictException(
+          'La demande a été confiée à un autre technicien entre-temps. Rechargez la liste avant de recommencer.',
+        );
+      }
 
       if (sameArtisan && !RESCHEDULABLE.includes(String(status))) {
         throw new ConflictException(

@@ -5,7 +5,9 @@ import {
   IsDateString,
   IsEmail,
   IsEnum,
+  IsIn,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsObject,
   IsOptional,
@@ -30,7 +32,10 @@ import {
   Role,
   ServiceType,
   Status,
+  UrgencyLevel,
 } from '../../../../generated/prisma/client';
+
+import { DISPATCH_SORTS, DISPATCH_VIEW_IDS } from '../../intervention-workflow/intervention-status';
 
 // ==========================================================
 // COMMON
@@ -70,9 +75,24 @@ export class DashboardQueryDto {
 // ==========================================================
 
 export class AdminInterventionQueryDto extends PaginationQueryDto {
+  /** One status, in either spelling of the table (CREATED finds the PENDING rows too). */
   @IsOptional()
   @IsEnum(Status)
   status?: Status;
+
+  /** A tab of the dispatcher's list (a group of statuses): toAssign, quote, active, done, cancelled, disputed. */
+  @IsOptional()
+  @IsIn(DISPATCH_VIEW_IDS)
+  view?: string;
+
+  @IsOptional()
+  @IsEnum(UrgencyLevel)
+  urgency?: UrgencyLevel;
+
+  /** queue (most urgent first, then longest waiting), newest (the default) or oldest. */
+  @IsOptional()
+  @IsIn(DISPATCH_SORTS)
+  sort?: string;
 
   @IsOptional()
   @IsEnum(ServiceType)
@@ -94,8 +114,10 @@ export class AdminInterventionQueryDto extends PaginationQueryDto {
   @IsDateString()
   dateTo?: string;
 
+  /** A job number, a name, a phone, an e-mail or a piece of the address (a longer text is cut to 100 characters, not refused). */
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   search?: string;
 }
 
@@ -122,14 +144,27 @@ export class ChangeInterventionStatusDto {
   @IsEnum(Status)
   status: Status;
 
+  /** The status the person saw when choosing: if the job has moved since, nothing is written (409). */
+  @IsOptional()
+  @IsEnum(Status)
+  expectedStatus?: Status;
+
   @IsOptional()
   @IsString()
   note?: string;
 }
 
 export class CancelInterventionDto {
+  /** Read by the customer and the technician: never blank. */
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
   reason: string;
+
+  /** The status the person saw when choosing: if the job has moved since, nothing is written (409). */
+  @IsOptional()
+  @IsEnum(Status)
+  expectedStatus?: Status;
 }
 
 export class QuoteItemDto {

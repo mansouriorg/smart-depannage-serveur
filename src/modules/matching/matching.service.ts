@@ -1016,6 +1016,7 @@ export class MatchingService {
       startsAt: dto.startsAt,
       endsAt: dto.endsAt,
       adminNote: dto.adminNote,
+      expectedArtisanId: dto.expectedArtisanId,
       include: {
         client: {
           select: {

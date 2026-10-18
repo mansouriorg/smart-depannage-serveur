@@ -1,4 +1,5 @@
 import { AppointmentRequestStatus, AppointmentStatus } from '../../../generated/prisma/client';
+import { replaceDefaultReminders } from './appointment-reminders';
 
 /**
  * What happens to the visit of a job when the artisan who had it no longer does
@@ -57,4 +58,59 @@ export async function closePendingRequests(
       reviewedAt: new Date(),
     },
   });
+}
+
+type VisitDb = Db &
+  RequestsDb & {
+    appointment: Db['appointment'] & { findUnique: (args: any) => Promise<any> };
+    appointmentReminder: {
+      deleteMany: (args: any) => Promise<unknown>;
+      createMany: (args: any) => Promise<unknown>;
+    };
+  };
+
+/** A visit that is over or already cancelled has nothing left to cancel. */
+const VISIT_ENDED: readonly AppointmentStatus[] = [
+  AppointmentStatus.CANCELLED,
+  AppointmentStatus.COMPLETED,
+  AppointmentStatus.NO_SHOW,
+];
+
+/**
+ * The job is cancelled, so its visit is too (P1-13): the technician's calendar is free again, the
+ * requests still waiting about the visit are closed, and the reminders not sent yet are dropped
+ * (they must not go out for a visit that will not happen). A job with no visit, or whose visit is
+ * over, is left alone. Returns the visit that was cancelled, or null.
+ */
+export async function cancelVisit(
+  db: VisitDb,
+  interventionId: number,
+  reason: string,
+  reviewedById?: number,
+) {
+  const visit = await db.appointment.findUnique({
+    where: { interventionId },
+    select: { id: true, interventionId: true, status: true, clientId: true, artisanId: true },
+  });
+
+  if (!visit || VISIT_ENDED.includes(visit.status)) return null;
+
+  await db.appointment.update({
+    where: { id: visit.id },
+    data: { status: AppointmentStatus.CANCELLED, cancelledAt: new Date(), cancelReason: reason },
+  });
+
+  await closePendingRequests(db, visit.id, {
+    response: 'Demande classée: la demande d’intervention a été annulée.',
+    ...(reviewedById !== undefined ? { reviewedById } : {}),
+  });
+
+  await replaceDefaultReminders(db, {
+    id: visit.id,
+    startsAt: null,
+    clientId: visit.clientId,
+    artisanId: visit.artisanId,
+  });
+
+  return visit;
 }

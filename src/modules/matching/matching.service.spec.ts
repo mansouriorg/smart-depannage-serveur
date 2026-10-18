@@ -388,6 +388,20 @@ describe('MatchingService.assignArtisan goes through the assignment path', () =>
     expect(result.status).toBe('ASSIGNED');
   });
 
+  it('who the screen showed as holding the job goes to the assignment, as it was sent (nobody, somebody, or not said)', async () => {
+    const nobody = makeWorld([artisan(4)], [job()]);
+    await nobody.service.assignArtisan(1, 'ADMIN' as any, 8, 4, { expectedArtisanId: null } as any);
+    expect(nobody.assigned[0].expectedArtisanId).toBe(null);
+
+    const somebody = makeWorld([artisan(4)], [job()]);
+    await somebody.service.assignArtisan(1, 'ADMIN' as any, 8, 4, { expectedArtisanId: 7 } as any);
+    expect(somebody.assigned[0].expectedArtisanId).toBe(7);
+
+    const unsaid = makeWorld([artisan(4)], [job()]);
+    await unsaid.service.assignArtisan(1, 'ADMIN' as any, 8, 4, {} as any);
+    expect(unsaid.assigned[0].expectedArtisanId).toBe(undefined);
+  });
+
   it('whether the artisan is busy is the assignment\'s call, and its refusal comes back as it is', async () => {
     const refusal = new BadRequestException({ message: 'Cet artisan n’est pas disponible.', issues: ['Artisan déjà réservé sur ce créneau.'] });
     const world = makeWorld(

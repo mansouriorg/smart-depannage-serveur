@@ -67,6 +67,8 @@ export interface DashboardPage {
 const TICKET_STAFF: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER'];
 const VERIFIERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT'];
 const MANAGERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN'];
+/** Who gives jobs to technicians and moves their status (the matching and the admin routes for it). */
+const DISPATCHERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'DISPATCHER'];
 
 /** The pages in the order of the menu. */
 export const DASHBOARD_PAGES: readonly DashboardPage[] = [
@@ -83,9 +85,9 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     label: 'Interventions',
     roles: TICKET_STAFF,
     calls: [
-      { method: 'GET', path: '/interventions' },
+      // The dispatcher's list (P1-13): a page at a time, filtered, searched, in the order of work.
+      { method: 'GET', path: '/admin/interventions' },
       { method: 'GET', path: '/interventions/:id' },
-      { method: 'GET', path: '/users/artisans' },
       { method: 'GET', path: '/proofs' },
     ],
   },
@@ -134,6 +136,7 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
 export const DASHBOARD_SHELL_CALLS: readonly ApiCall[] = [{ method: 'GET', path: '/users/me' }];
 
 export type ActionId =
+  | 'assignTicket'
   | 'changeTicket'
   | 'reviewProof'
   | 'verifyDocument'
@@ -151,10 +154,22 @@ export interface StaffAction {
 
 export const STAFF_ACTIONS: readonly StaffAction[] = [
   {
+    id: 'assignTicket',
+    label: 'Assigner un technicien à une demande',
+    roles: DISPATCHERS,
+    calls: [
+      { method: 'GET', path: '/matching/admin/interventions/:interventionId/artisans' },
+      { method: 'POST', path: '/matching/admin/interventions/:interventionId/assign/:artisanId' },
+    ],
+  },
+  {
     id: 'changeTicket',
-    label: 'Assigner un technicien ou changer le statut',
-    roles: TICKET_STAFF,
-    calls: [{ method: 'PATCH', path: '/interventions/:id' }],
+    label: 'Changer le statut d’une demande ou l’annuler',
+    roles: DISPATCHERS,
+    calls: [
+      { method: 'PATCH', path: '/admin/interventions/:id/status' },
+      { method: 'PATCH', path: '/admin/interventions/:id/cancel' },
+    ],
   },
   {
     id: 'reviewProof',

@@ -51,7 +51,7 @@ function makeWorld(options: { simulated?: boolean } = {}) {
     isEmailSimulated: () => Boolean(options.simulated),
   };
 
-  const service = new AdminService(prisma, notifications, {} as any, {} as any, {} as any);
+  const service = new AdminService(prisma, notifications, {} as any, {} as any, {} as any, {} as any);
 
   (service as any).getArtisanDetail = async (profileId: number) => {
     const profile = profiles.rows.find((row) => row.id === profileId);

@@ -187,6 +187,59 @@ export function statusesInGroup(group: StatusGroup): string[] {
 }
 
 // ----------------------------------------------------------
+// The dispatcher's queue (P1-13)
+// ----------------------------------------------------------
+
+export interface DispatchView {
+  id: string;
+  label: string;
+  statuses: readonly CanonicalStatus[];
+}
+
+/**
+ * The tabs of the dispatcher's list. Every status is in exactly one of them (the spec fails
+ * when a status is added to the table and not placed here), so a job never falls out of the
+ * queue; "all" is the absence of a tab.
+ *
+ *  - toAssign: nobody has the job and it is ready to be given to somebody (a request that came in,
+ *    one the back office has looked at, one whose quote the customer accepted);
+ *  - quote: waiting for the customer's answer, nothing to dispatch yet.
+ */
+export const DISPATCH_VIEWS = [
+  { id: 'toAssign', label: 'À assigner', statuses: ['CREATED', 'WAITING_ADMIN_REVIEW', 'QUOTE_ACCEPTED'] },
+  { id: 'quote', label: 'Devis envoyés', statuses: ['QUOTE_SENT'] },
+  {
+    id: 'active',
+    label: 'En cours',
+    statuses: ['ASSIGNED', 'ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS', 'WAITING_CLIENT_VALIDATION'],
+  },
+  { id: 'done', label: 'Terminées', statuses: ['COMPLETED', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT'] },
+  { id: 'cancelled', label: 'Annulées', statuses: ['CANCELLED'] },
+  { id: 'disputed', label: 'Litiges', statuses: ['DISPUTED'] },
+] as const satisfies readonly DispatchView[];
+
+export type DispatchViewId = (typeof DISPATCH_VIEWS)[number]['id'];
+
+export const DISPATCH_VIEW_IDS: readonly DispatchViewId[] = DISPATCH_VIEWS.map((view) => view.id);
+
+/** The tab with this id; undefined for anything else (a made-up id is not "everything"). */
+export function dispatchViewOf(id: unknown): (typeof DISPATCH_VIEWS)[number] | undefined {
+  return DISPATCH_VIEWS.find((view) => view.id === id);
+}
+
+/**
+ * How the list is ordered. `queue` is the order of work: the most urgent first, and among equals
+ * the one that has waited longest. `newest` and `oldest` are by date of the request alone.
+ */
+export const DISPATCH_SORTS = ['queue', 'newest', 'oldest'] as const;
+
+export type DispatchSort = (typeof DISPATCH_SORTS)[number];
+
+export function isDispatchSort(value: unknown): value is DispatchSort {
+  return (DISPATCH_SORTS as readonly unknown[]).includes(value);
+}
+
+// ----------------------------------------------------------
 // Who may move a job from one status to the next
 // ----------------------------------------------------------
 
@@ -409,6 +462,71 @@ export function allowedNextStatuses(
       (!actor || (edges[to] as readonly ActorKind[]).includes(actor)) &&
       (options.hasArtisan !== false || !STATUSES_NEEDING_ARTISAN.includes(to)),
   );
+}
+
+/**
+ * Statuses the dashboard's status menu never sets, although the table lets staff do it: another
+ * screen owns them.
+ *  - ASSIGNED: a person is chosen, in the assignment screen (the status follows);
+ *  - QUOTE_SENT, QUOTE_ACCEPTED: the quote screen writes them with the quote itself (items, amounts,
+ *    the customer's answer); a status alone would leave the quote saying the opposite;
+ *  - PAYMENT_PENDING, PAID, INVOICE_SENT: the payments and the invoices write them.
+ */
+export const STATUSES_SET_ELSEWHERE: readonly CanonicalStatus[] = [
+  'ASSIGNED',
+  'QUOTE_SENT',
+  'QUOTE_ACCEPTED',
+  'PAYMENT_PENDING',
+  'PAID',
+  'INVOICE_SENT',
+];
+
+/**
+ * The statuses the back office's status menu offers for a job: what the table lets staff do, minus
+ * what another screen owns, and minus two moves that the table allows but that leave the job and the
+ * technician disagreeing:
+ *  - "back to the back office's review" while a technician holds the job (the move would leave that
+ *    technician attached to a job nobody has given them: to take a job from a technician, it is given
+ *    to another one). A disputed job is the exception: the technician did the work, and reopening the
+ *    dispute for review is how it is settled;
+ *  - "technician accepted" from anywhere but ASSIGNED: from a later status it is a step backwards
+ *    (the technician is already on the way), and from an earlier one it is a manual acceptance that
+ *    skips the assignment (its checks and its notification).
+ * Nothing is offered for a status the table does not know.
+ */
+export function staffStatusMoves(current: string, options: { hasArtisan: boolean }): CanonicalStatus[] {
+  const from = canonicalStatus(current);
+
+  return allowedNextStatuses(current, 'staff', { hasArtisan: options.hasArtisan }).filter(
+    (to) =>
+      !STATUSES_SET_ELSEWHERE.includes(to) &&
+      !(options.hasArtisan && to === 'WAITING_ADMIN_REVIEW' && from !== 'DISPUTED') &&
+      !(to === 'ARTISAN_ACCEPTED' && from !== 'ASSIGNED'),
+  );
+}
+
+/**
+ * True when staff may give a job in this status to an artisan (or to another one). Not while a quote
+ * is out: nothing is to be dispatched until the customer answers (put it back to review first, or
+ * wait for the answer).
+ */
+export function staffMayAssign(current: string): boolean {
+  return canonicalStatus(current) !== 'QUOTE_SENT' && checkTransition(current, 'ASSIGNED', 'staff').ok;
+}
+
+/**
+ * The spelling the apps read for a status a staff member sets by hand: the old name where there is one
+ * (ACCEPTED, ON_THE_WAY, ADMIN_REVIEW...) until STATUS_STORAGE=canonical, like the jobs the apps
+ * write themselves. Every reader of the database already understands both (`withAliases`).
+ */
+export function appFacingStatus(status: string, mode: string | undefined = configuredStorageMode()): string {
+  const canonical = canonicalStatus(status);
+
+  if (!canonical) return status;
+
+  if (String(mode ?? '').toLowerCase() === 'canonical') return canonical;
+
+  return spellingsOf(canonical)[1] ?? canonical;
 }
 
 /**

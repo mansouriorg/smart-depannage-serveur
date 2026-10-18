@@ -76,7 +76,10 @@ export class AdminController {
   // 2. INTERVENTION MANAGEMENT
   // ==========================================================
 
+  // The dispatcher's list (P1-13): names, phones and addresses of every job, for the roles that work on
+  // jobs. An accountant has no page that needs it.
   @Get('interventions')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   findAllInterventions(@Query() query: AdminInterventionQueryDto) {
     return this.adminService.findAllInterventions(query);
   }

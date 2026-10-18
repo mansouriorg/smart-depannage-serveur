@@ -29,7 +29,13 @@ import {
  * API accepts.
  */
 const MODULES = path.join(__dirname, '../../modules');
-const CONTROLLERS = ['admin/admin.controller.ts', 'users/users.controller.ts', 'interventions/interventions.controller.ts', 'proofs/proofs.controller.ts'];
+const CONTROLLERS = [
+  'admin/admin.controller.ts',
+  'users/users.controller.ts',
+  'interventions/interventions.controller.ts',
+  'proofs/proofs.controller.ts',
+  'matching/matching.controller.ts',
+];
 
 function routesOfTheApi(): Map<string, ScannedRoute> {
   const routes = new Map<string, ScannedRoute>();
@@ -40,7 +46,7 @@ function routesOfTheApi(): Map<string, ScannedRoute> {
     for (const route of scanController(source, TICKET_STAFF_ROLES)) {
       const key = routeKey(route.method, route.path);
 
-      // Two routes with the same address in the four controllers would make the lookup below guess.
+      // Two routes with the same address in the five controllers would make the lookup below guess.
       if (routes.has(key)) throw new Error(`${key} is declared twice (${file})`);
 
       routes.set(key, route);
@@ -87,7 +93,7 @@ const SERVED: Record<string, { roles: readonly string[]; because: string; eviden
   },
   'PATCH /interventions/:': {
     roles: TICKET_STAFF_ROLES,
-    because: 'staff update any ticket, an artisan their own mission, everybody else is refused',
+    because: 'staff update any ticket, an artisan their own mission, everybody else is refused (no button of the dashboard uses it since P1-13; support can still call it by hand)',
     evidence: /if \(isTicketStaff\(req\.user\.role\)\) \{\s*return this\.interventionsService\.update\([\s\S]*?throw new ForbiddenException/,
   },
   'GET /users/profile': {
@@ -255,8 +261,14 @@ describe('the pages of the dashboard', () => {
 describe('the buttons of the dashboard', () => {
   it('staffCan(): the roles of each action, and nobody else', () => {
     expect(staffCan('DISPATCHER', 'changeTicket')).toBe(true);
-    expect(staffCan('SUPPORT', 'changeTicket')).toBe(true);
+    expect(staffCan('DISPATCHER', 'assignTicket')).toBe(true);
+    expect(staffCan('ADMIN', 'assignTicket')).toBe(true);
+    expect(staffCan('SUPER_ADMIN', 'changeTicket')).toBe(true);
+    // Support reads the list; giving a job or moving its status is the dispatcher's (the admin routes never let support).
+    expect(staffCan('SUPPORT', 'changeTicket')).toBe(false);
+    expect(staffCan('SUPPORT', 'assignTicket')).toBe(false);
     expect(staffCan('ACCOUNTANT', 'changeTicket')).toBe(false);
+    expect(staffCan('ACCOUNTANT', 'assignTicket')).toBe(false);
     expect(staffCan('SUPPORT', 'verifyDocument')).toBe(true);
     expect(staffCan('SUPPORT', 'decideApplication')).toBe(false);
     expect(staffCan('DISPATCHER', 'decideApplication')).toBe(false);
@@ -279,7 +291,7 @@ describe('the table against the routes of the API', () => {
     expect(API.get(routeKey('GET', '/interventions/dashboard/stats'))?.how).toBe('ticket-staff');
   });
 
-  it('every route of the four controllers that names roles is backed by RolesGuard (@Roles alone enforces nothing)', () => {
+  it('every route of the five controllers that names roles is backed by RolesGuard (@Roles alone enforces nothing)', () => {
     const unenforced = [...API.entries()].filter(([, route]) => !route.rolesEnforced).map(([key, route]) => `${key} (${route.guards.join(', ') || 'no guard'})`);
 
     expect(unenforced).toEqual([]);
@@ -350,6 +362,7 @@ describe('the table against the routes of the API', () => {
 
   it('the roles of an action are within the pages that hold it (the page that shows the button is open to them)', () => {
     const placed: Record<string, string> = {
+      assignTicket: 'interventions',
       changeTicket: 'interventions',
       reviewProof: 'interventions',
       verifyDocument: 'applications',
@@ -366,6 +379,32 @@ describe('the table against the routes of the API', () => {
       for (const role of action.roles) {
         expect(page?.roles).toContain(role);
       }
+    }
+  });
+
+  it('the matching routes (who could take this job, and giving it to somebody) are for the roles that give jobs, no other staff role (P1-13)', () => {
+    const matching = [...API.entries()].filter(([key]) => key.includes('/matching/'));
+
+    expect(matching.map(([key]) => key).sort()).toEqual([
+      'GET /matching/admin/artisans',
+      'GET /matching/admin/interventions/:/artisans',
+      'POST /matching/admin/interventions/:/assign-best',
+      'POST /matching/admin/interventions/:/assign/:',
+    ]);
+
+    for (const [key, route] of matching) {
+      expect(`${key}: ${sorted(route.roles ?? [])}`).toBe(`${key}: ADMIN,DISPATCHER,SUPER_ADMIN`);
+      expect(route.rolesEnforced).toBe(true);
+    }
+  });
+
+  it('the list of jobs is for the roles that work on jobs, and an accountant has no use for it (P1-13)', () => {
+    expect(sorted(API.get(routeKey('GET', '/admin/interventions'))?.roles ?? [])).toEqual(['ADMIN', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
+  });
+
+  it('the status and cancel routes the buttons call are the dispatcher\'s, not support\'s (the older PATCH /interventions/:id is the one that lets support in)', () => {
+    for (const path of ['/admin/interventions/:id/status', '/admin/interventions/:id/cancel', '/admin/interventions/:id/assign-artisan']) {
+      expect(sorted(API.get(routeKey(path.endsWith('assign-artisan') ? 'POST' : 'PATCH', path))?.roles ?? [])).toEqual(['ADMIN', 'DISPATCHER', 'SUPER_ADMIN']);
     }
   });
 

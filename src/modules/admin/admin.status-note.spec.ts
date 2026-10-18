@@ -18,7 +18,7 @@ function makeWorld() {
   };
   const eventsService: any = { create: async (event: any) => events.push({ id: events.length + 1, interventionId: 8, createdAt: new Date(), ...event }) };
 
-  return { service: new AdminService(prisma, {} as any, eventsService, {} as any, {} as any), events };
+  return { service: new AdminService(prisma, {} as any, eventsService, {} as any, {} as any, {} as any), events };
 }
 
 describe('a status change by the back office (P1-08)', () => {

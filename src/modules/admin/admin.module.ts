@@ -5,6 +5,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { InterventionEventsModule } from '../intervention-events/intervention-events.module';
 import { UsersModule } from '../users/users.module';
 import { AssignmentModule } from '../assignment/assignment.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
@@ -18,6 +19,8 @@ import { AdminService } from './admin.service';
     UsersModule,
     // The one path that gives a job to an artisan (P1-05).
     AssignmentModule,
+    // The live event after a status change by the back office (P1-13).
+    RealtimeModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],
