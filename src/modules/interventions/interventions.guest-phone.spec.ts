@@ -149,7 +149,7 @@ describe('legacy public request (POST /interventions without a session): phone n
     expect(guest.phone).toBe(null);
     expect(guest.phoneKey).toBe(null);
     expect(w.created[0].contactPhone).toBe('55 111 222');
-    expect(w.created[0].contactName).toBe('Sami');
+    expect(w.created[0].description).toBe('Fuite');
   });
 
   it('a deleted account whose number is only text (no key) does not stand in the way: the guest gets the number', async () => {
@@ -242,5 +242,20 @@ describe('legacy public request (POST /interventions without a session): phone n
 
     expect((await failure(w.service.create(null, form('not a number')))).status).toBe(400);
     expect(w.users.rows.length).toBe(0);
+  });
+});
+
+
+describe('legacy request: the bot check fields are not job columns (P1-16)', () => {
+  it('the three fields are read by the guard and never written to the job', async () => {
+    const w = makeWorld();
+
+    await w.service.create(null, form('55 111 222', { botChallenge: 'v1.x', botSolution: 'abc', website: '' }));
+
+    expect(w.created.length).toBe(1);
+    expect('botChallenge' in w.created[0]).toBe(false);
+    expect('botSolution' in w.created[0]).toBe(false);
+    expect('website' in w.created[0]).toBe(false);
+    expect(w.created[0].description).toBe('Fuite');
   });
 });

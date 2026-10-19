@@ -31,6 +31,7 @@ import {
   RateLimit,
   RateLimitGuard,
 } from '../../common/rate-limit/rate-limit.guard';
+import { BotCheckGuard } from '../../common/bot-check/bot-check.guard';
 
 @Controller('interventions')
 export class InterventionsController {
@@ -40,7 +41,9 @@ export class InterventionsController {
   // 1. PUBLIC ROUTE: Create Request (GUESTS)
   // ==========================================================
   @Post()
-  @UseGuards(RateLimitGuard)
+  // The same check as POST /guest/interventions (P1-16): this route made the same kind of request, and
+  // left open it would be the way round the check.
+  @UseGuards(RateLimitGuard, BotCheckGuard)
   @RateLimit({ name: 'legacy-guest-create', limit: 10, windowMs: 60 * 60_000 })
   create(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
     return this.interventionsService.create(null, createInterventionDto);

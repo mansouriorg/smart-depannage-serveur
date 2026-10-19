@@ -34,7 +34,12 @@ function makeWorld(
       phoneVerifiedAt: null,
     }),
   });
-  const interventions = new FakeTable({ defaults: () => ({ status: 'PENDING', photos: [], adminInternalNotes: null }) });
+  // One review per job, like `Review.interventionId @unique` (P1-16).
+  const reviews = new FakeTable({ unique: ['interventionId'] });
+  const interventions = new FakeTable({
+    defaults: () => ({ status: 'PENDING', photos: [], adminInternalNotes: null }),
+    include: { review: (row) => reviews.rows.find((review) => review.interventionId === row.id) ?? null },
+  });
   const complaints = new FakeTable();
 
   const intervention = {
@@ -55,7 +60,10 @@ function makeWorld(
   };
 
   const catalog = fakeSubServices();
-  const prisma: any = withTransactions({ user: users, intervention, complaint: complaints, subService: catalog }, [users, interventions, complaints]);
+  const prisma: any = withTransactions(
+    { user: users, intervention, complaint: complaints, subService: catalog, review: reviews },
+    [users, interventions, complaints, reviews],
+  );
 
   const sentSms: Array<{ to: string; body: string; options?: SendOptions }> = [];
   const sentEmails: Array<{ to: string; subject: string; body: string; options?: SendOptions }> = [];
@@ -127,6 +135,7 @@ function makeWorld(
     service,
     users,
     interventions,
+    reviews,
     complaints,
     sentSms,
     sentEmails,
@@ -572,8 +581,12 @@ describe('a review does not wipe a problem that was reported (P1-04 review)', ()
     await w.service.submitFeedback(id, token, { rating: 4 } as any);
     expect(w.interventions.rows.find((row) => row.id === id)!.hasIssue).toBe(true);
 
-    await w.service.submitFeedback(id, token, { rating: 4, hasIssue: false } as any);
-    expect(w.interventions.rows.find((row) => row.id === id)!.hasIssue).toBe(false);
+    // One opinion per job (P1-16): the second case is another job.
+    const other = await newRequest(w, 'COMPLETED');
+
+    w.interventions.rows.find((row) => row.id === other.id)!.hasIssue = true;
+    await w.service.submitFeedback(other.id, other.token, { rating: 4, hasIssue: false } as any);
+    expect(w.interventions.rows.find((row) => row.id === other.id)!.hasIssue).toBe(false);
   });
 
   it('a review with an empty text keeps the report in the notes; a text is added after it', async () => {
@@ -586,8 +599,220 @@ describe('a review does not wipe a problem that was reported (P1-04 review)', ()
     await w.service.submitFeedback(id, token, { rating: 4, feedbackNotes: '' } as any);
     expect(row.feedbackNotes).toBe('Le technicien a cassé le siphon');
 
-    await w.service.submitFeedback(id, token, { rating: 4, feedbackNotes: 'Sinon travail propre' } as any);
-    expect(row.feedbackNotes).toBe('Le technicien a cassé le siphon\n\nSinon travail propre');
+    // One opinion per job (P1-16): the second case is another job.
+    const other = await newRequest(w, 'COMPLETED');
+    const otherRow = w.interventions.rows.find((r) => r.id === other.id)!;
+
+    otherRow.hasIssue = true;
+    otherRow.feedbackNotes = 'Le technicien a cassé le siphon';
+    await w.service.submitFeedback(other.id, other.token, { rating: 4, feedbackNotes: 'Sinon travail propre' } as any);
+    expect(otherRow.feedbackNotes).toBe('Le technicien a cassé le siphon\n\nSinon travail propre');
+  });
+});
+
+describe('the opinion of a visitor is saved as a review (P1-16)', () => {
+  const answered = async (w: World, status = 'COMPLETED', artisanId: number | null = 7) => {
+    const request = await newRequest(w, status);
+
+    w.interventions.rows.find((row) => row.id === request.id)!.artisanId = artisanId;
+
+    return request;
+  };
+
+  it('creates the review of the job: the guest profile, the artisan, the stars and the words', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    await w.service.submitFeedback(id, token, { rating: 4, isOnTime: true, feedbackNotes: '  Très bien  ' } as any);
+
+    expect(w.reviews.rows.length).toBe(1);
+
+    const review = w.reviews.rows[0];
+
+    expect(review.interventionId).toBe(id);
+    expect(review.clientId).toBe(w.interventions.rows.find((row) => row.id === id)!.clientId);
+    expect(review.artisanId).toBe(7);
+    expect(review.rating).toBe(4);
+    expect(review.comment).toBe('Très bien');
+    expect(review.isOnTime).toBe(true);
+  });
+
+  it('waits for the back office: pending and shown to nobody', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    await w.service.submitFeedback(id, token, { rating: 5 } as any);
+
+    expect(w.reviews.rows[0].status).toBe('PENDING');
+    expect(w.reviews.rows[0].isVisible).toBe(false);
+  });
+
+  it('keeps the figures on the job for the screens that read them there', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    await w.service.submitFeedback(id, token, { rating: 3, isOnTime: false, feedbackNotes: 'Retard' } as any);
+
+    const row = w.interventions.rows.find((r) => r.id === id)!;
+
+    expect(row.rating).toBe(3);
+    expect(row.isOnTime).toBe(false);
+    expect(row.feedbackNotes).toBe('Retard');
+  });
+
+  it('an empty or blank text gives a review without a comment', async () => {
+    const w = makeWorld();
+    const first = await answered(w);
+    const second = await answered(w);
+
+    await w.service.submitFeedback(first.id, first.token, { rating: 5, feedbackNotes: '   ' } as any);
+    await w.service.submitFeedback(second.id, second.token, { rating: 5 } as any);
+
+    expect(w.reviews.rows.map((review) => review.comment)).toEqual([null, null]);
+  });
+
+  it('a job closed with no artisan can still be answered; the review counts for nobody', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w, 'COMPLETED', null);
+
+    await w.service.submitFeedback(id, token, { rating: 2 } as any);
+
+    expect(w.reviews.rows[0].artisanId).toBe(null);
+  });
+
+  it('is accepted on every finished status (paid, invoiced), not on the others', async () => {
+    const w = makeWorld();
+
+    for (const status of ['COMPLETED', 'PAID', 'INVOICE_SENT']) {
+      const { id, token } = await answered(w, status);
+      const outcome = await w.service.submitFeedback(id, token, { rating: 4 } as any).then(() => 'saved').catch((e) => `refused ${e.status}`);
+
+      expect(`${status}: ${outcome}`).toBe(`${status}: saved`);
+    }
+
+    for (const status of ['PENDING', 'IN_PROGRESS', 'ARTISAN_ACCEPTED', 'WAITING_CLIENT_VALIDATION', 'CANCELLED']) {
+      const { id, token } = await answered(w, status);
+      const error = await failure(w.service.submitFeedback(id, token, { rating: 4 } as any));
+
+      expect(`${status}: ${error.status}`).toBe(`${status}: 400`);
+    }
+
+    expect(w.reviews.rows.length).toBe(3);
+  });
+
+  it('a second answer is refused with a 409 and changes nothing', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    await w.service.submitFeedback(id, token, { rating: 5, feedbackNotes: 'Parfait' } as any);
+
+    const error = await failure(w.service.submitFeedback(id, token, { rating: 1, feedbackNotes: 'Nul' } as any));
+
+    expect(error.status).toBe(409);
+    expect(error.message).toBe('Vous avez déjà donné votre avis sur cette intervention.');
+    expect(w.reviews.rows.length).toBe(1);
+    expect(w.reviews.rows[0].rating).toBe(5);
+    expect(w.interventions.rows.find((row) => row.id === id)!.rating).toBe(5);
+    expect(w.events.filter((event) => event.type === 'REVIEW_SUBMITTED').length).toBe(1);
+  });
+
+  it('two answers at the same moment end in one review and one 409', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    const outcomes = await Promise.all(
+      [5, 1].map((rating) => w.service.submitFeedback(id, token, { rating } as any).then(() => 'saved', (error) => `refused ${error.status}`)),
+    );
+
+    expect(outcomes.filter((outcome) => outcome === 'saved').length).toBe(1);
+    expect(outcomes.filter((outcome) => outcome === 'refused 409').length).toBe(1);
+    // (The stand-in database has no isolation between transactions: what is left in its tables after
+    // the refused one rolls back is not what a real one keeps, so only the two answers are compared.)
+  });
+
+  it('a review that appears between the check and the save is a 409 too, and the job is not changed', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+    const realFindFirst = w.interventions.findFirst;
+
+    // The lookup sees no review; another answer takes the job's only place before ours is written.
+    (w.interventions as any).findFirst = async (args: any) => {
+      const found = await realFindFirst(args);
+
+      w.reviews.insert({ interventionId: id, clientId: 1, rating: 5, status: 'PENDING', isVisible: false });
+
+      return { ...found, review: null };
+    };
+    (w.prisma.intervention as any).findFirst = (w.interventions as any).findFirst;
+
+    const error = await failure(w.service.submitFeedback(id, token, { rating: 1 } as any));
+
+    expect(error.status).toBe(409);
+    expect(w.reviews.rows.length).toBe(1);
+    expect(w.interventions.rows.find((row) => row.id === id)!.rating).toBe(undefined);
+  });
+
+  it('a failure that is not a duplicate is passed on, with nothing saved', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    w.prisma.intervention.update = async () => {
+      throw new Error('connection lost');
+    };
+
+    const error = await failure(w.service.submitFeedback(id, token, { rating: 4 } as any));
+
+    expect(error.message).toBe('connection lost');
+    // The review written first is undone with the rest.
+    expect(w.reviews.rows.length).toBe(0);
+  });
+
+  it('a wrong link cannot leave an opinion', async () => {
+    const w = makeWorld();
+    const first = await answered(w);
+    const second = await answered(w);
+
+    const wrong = await failure(w.service.submitFeedback(first.id, 'nope', { rating: 4 } as any));
+    const crossed = await failure(w.service.submitFeedback(first.id, second.token, { rating: 4 } as any));
+
+    expect(wrong.status).toBe(404);
+    expect(crossed.status).toBe(404);
+    expect(w.reviews.rows.length).toBe(0);
+  });
+
+  it('a timeline line that cannot be written does not turn a saved opinion into an error', async () => {
+    const w = makeWorld({ eventsFail: true });
+    const { id, token } = await answered(w);
+
+    const answer: any = await w.service.submitFeedback(id, token, { rating: 4 } as any);
+
+    expect(answer.rating).toBe(4);
+    expect(w.reviews.rows.length).toBe(1);
+  });
+
+  it('the answer carries the opinion just saved, without its moderation', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    const answer: any = await w.service.submitFeedback(id, token, { rating: 4, feedbackNotes: 'Bien' } as any);
+
+    expect(answer.review.rating).toBe(4);
+    expect(answer.review.comment).toBe('Bien');
+    expect(answer.review).not.toHaveProperty('status');
+    expect(answer.review).not.toHaveProperty('isVisible');
+    expect(answer.review).not.toHaveProperty('clientId');
+    expect(answer.review).not.toHaveProperty('artisanId');
+  });
+
+  it('the tracking page shows the opinion already given', async () => {
+    const w = makeWorld();
+    const { id, token } = await answered(w);
+
+    await w.service.submitFeedback(id, token, { rating: 4 } as any);
+
+    const tracked: any = await w.service.track(id, token);
+
+    expect(tracked.review.rating).toBe(4);
   });
 });
 

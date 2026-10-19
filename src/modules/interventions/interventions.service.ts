@@ -177,7 +177,16 @@ export class InterventionsService {
       guestWithoutNumber = !user.phone;
     }
 
-    const { contactName, contactPhone, photos: sentPhotos, ...interventionData } = createInterventionDto;
+    // The three fields of the bot check were read by its guard; they are not columns (P1-16).
+    const {
+      contactName,
+      contactPhone,
+      photos: sentPhotos,
+      botChallenge: _botChallenge,
+      botSolution: _botSolution,
+      website: _website,
+      ...interventionData
+    } = createInterventionDto;
 
     // A visitor with no account cannot upload here, so a "photo" they send is only a link
     // they typed, and staff would see it as a photo. Pictures come through

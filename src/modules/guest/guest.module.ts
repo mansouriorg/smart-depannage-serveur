@@ -6,6 +6,7 @@ import { InterventionEventsModule } from '../intervention-events/intervention-ev
 import { InterventionsModule } from '../interventions/interventions.module';
 import { FilesModule } from '../files/files.module';
 import { ComplaintsModule } from '../complaints/complaints.module';
+import { BotCheckModule } from '../../common/bot-check/bot-check.module';
 
 import { GuestController } from './guest.controller';
 import { GuestService } from './guest.service';
@@ -20,6 +21,8 @@ import { GuestService } from './guest.service';
     // The picture store, and the complaint a reported problem opens.
     FilesModule,
     ComplaintsModule,
+    // The check of the public request form (P1-16).
+    BotCheckModule,
   ],
   controllers: [GuestController],
   providers: [GuestService],

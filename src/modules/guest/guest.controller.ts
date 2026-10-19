@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Ip,
   Param,
   ParseIntPipe,
@@ -16,6 +17,8 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 
 import { GuestService } from './guest.service';
+import { BotCheckGuard } from '../../common/bot-check/bot-check.guard';
+import { BotCheckService } from '../../common/bot-check/bot-check.service';
 import { GuestTrackingLinkGuard } from './guest-tracking-link.guard';
 import {
   RateLimit,
@@ -32,14 +35,36 @@ import { ActivateGuestAccountDto } from './dto/activate-guest-account.dto';
 
 @Controller('guest')
 export class GuestController {
-  constructor(private readonly guestService: GuestService) {}
+  constructor(
+    private readonly guestService: GuestService,
+    private readonly botCheck: BotCheckService,
+  ) {}
+
+  // ==========================================================
+  // 0. CHALLENGE FOR THE REQUEST FORM (P1-16)
+  // GET /guest/challenge
+  // A signed puzzle the page solves in the background and sends back with the form
+  // (botChallenge + botSolution). `{ enabled: false }` when the check is off.
+  // ==========================================================
+
+  // Every visit to the form takes one, read or not, and many phones share one public address (the operators' shared
+  // addresses), so the bucket is wide: sending is what is limited tightly (10 an hour, below). Never kept by a cache: a
+  // puzzle is good once, for one person.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-challenge', limit: 240, windowMs: 60 * 60_000 })
+  @Header('Cache-Control', 'no-store')
+  @Get('challenge')
+  challenge() {
+    return this.botCheck.issue();
+  }
 
   // ==========================================================
   // 1. CREATE REQUEST WITHOUT ACCOUNT
   // POST /guest/interventions
   // ==========================================================
 
-  @UseGuards(RateLimitGuard)
+  // Counted first, then checked: a script that fails the check still uses up its tries (P1-16).
+  @UseGuards(RateLimitGuard, BotCheckGuard)
   @RateLimit({ name: 'guest-create', limit: 10, windowMs: 60 * 60_000 })
   @Post('interventions')
   createGuestIntervention(@Body() dto: CreateGuestInterventionDto) {

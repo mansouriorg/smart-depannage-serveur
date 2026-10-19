@@ -35,6 +35,11 @@ function makeWorld(job: Record<string, unknown> = {}) {
     payment: {
       create: async ({ data }: any) => ({ ...poisonedJob().payments[0], ...data }),
     },
+    // The opinion is saved with the job in one transaction (P1-16).
+    review: {
+      create: async ({ data }: any) => ({ id: 1, createdAt: new Date(), updatedAt: new Date(), ...data }),
+    },
+    $transaction: async (work: any) => work(prisma),
   };
   const notifications: any = { notifyQuoteAccepted: async () => undefined };
   const events: any = { create: async () => undefined };
@@ -100,7 +105,7 @@ describe('what the routes of the tracking link answer (P1-08)', () => {
   });
 
   it('a review: the visitor\'s copy', async () => {
-    const answer: any = await makeWorld({ status: 'COMPLETED' }).submitFeedback(1, 'raw', { rating: 5, isOnTime: true } as any);
+    const answer: any = await makeWorld({ status: 'COMPLETED', review: null }).submitFeedback(1, 'raw', { rating: 5, isOnTime: true } as any);
 
     expect(leakedTo(answer, 'tracking')).toEqual([]);
     expect(answer).not.toHaveProperty('client');

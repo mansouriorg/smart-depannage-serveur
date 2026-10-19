@@ -67,6 +67,7 @@ import {
   PaymentMethod,
   PaymentStatus,
   QuoteStatus,
+  ReviewModerationStatus,
   Role,
   Status,
   UrgencyLevel,
@@ -88,6 +89,8 @@ function guestAgreesWithForm(
 
   return isMadeUpGuestEmail(guest.email) || Boolean(form.email && guest.email === form.email);
 }
+
+const ALREADY_REVIEWED = 'Vous avez déjà donné votre avis sur cette intervention.';
 
 @Injectable()
 export class GuestService {
@@ -953,21 +956,17 @@ export class GuestService {
       );
     }
 
-    const updated = await this.prisma.intervention.update({
-      where: { id: intervention.id },
-      data: {
-        rating: dto.rating,
-        isOnTime: dto.isOnTime,
-        hasIssue: dto.hasIssue ?? intervention.hasIssue ?? false,
-        feedbackNotes: notesAfterReview(
-          intervention.feedbackNotes,
-          dto.feedbackNotes,
-          Boolean(intervention.hasIssue),
-        ),
-      },
-    });
+    // One opinion per job (P1-16): the review is the record, and the job keeps the same figures
+    // for the back office screens that read them. A second answer is refused, not written over.
+    if (intervention.review) {
+      throw new ConflictException(ALREADY_REVIEWED);
+    }
 
-    await this.events.create({
+    const { updated, review } = await this.saveOpinion(intervention, dto);
+
+    // The opinion is saved: a timeline line that cannot be written must not turn it into an error
+    // (the visitor would send it again and be told it exists).
+    await this.recordEvent({
       interventionId: intervention.id,
       type: InterventionEventType.REVIEW_SUBMITTED,
       title: 'Avis reçu',
@@ -975,7 +974,61 @@ export class GuestService {
       createdById: intervention.clientId,
     });
 
-    return interventionForTracking(updated);
+    // The answer is the job as the link's holder sees it, with the opinion just saved (without its moderation).
+    return interventionForTracking({ ...updated, review });
+  }
+
+  /**
+   * The review and the figures of the job, both rows or neither, so a job never shows a rating without
+   * its review, and two answers sent at the same moment end in one review (the key of
+   * `Review.interventionId` is unique). Not a route: what it returns never leaves the service as it is.
+   */
+  private async saveOpinion(
+    intervention: { id: number; clientId: number; artisanId: number | null; hasIssue: boolean | null; feedbackNotes: string | null },
+    dto: GuestFeedbackDto,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const review = await tx.review.create({
+          data: {
+            interventionId: intervention.id,
+            // The guest profile of the request: the opinion is that of the person who asked for the job.
+            clientId: intervention.clientId,
+            // A job closed by the back office without an artisan can still be commented on; the
+            // opinion then counts for nobody's rating.
+            artisanId: intervention.artisanId ?? null,
+            rating: dto.rating,
+            comment: dto.feedbackNotes?.trim() || null,
+            isOnTime: dto.isOnTime,
+            // Like every review: it is read by the back office first, and shown to nobody before.
+            status: ReviewModerationStatus.PENDING,
+            isVisible: false,
+          },
+        });
+
+        const updated = await tx.intervention.update({
+          where: { id: intervention.id },
+          data: {
+            rating: dto.rating,
+            isOnTime: dto.isOnTime,
+            hasIssue: dto.hasIssue ?? intervention.hasIssue ?? false,
+            feedbackNotes: notesAfterReview(
+              intervention.feedbackNotes,
+              dto.feedbackNotes,
+              Boolean(intervention.hasIssue),
+            ),
+          },
+        });
+
+        return { updated, review };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(ALREADY_REVIEWED);
+      }
+
+      throw error;
+    }
   }
 
   // ==========================================================

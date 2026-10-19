@@ -4,8 +4,10 @@ import { ArrayMaxSize, IsEnum, IsNotEmpty, IsString, IsOptional, IsArray, MaxLen
 // Adjust the number of '../' if your file is located deeper or shallower
 import { ServiceType } from '../../../../generated/prisma/client'; 
 import { TRADE_CODES } from '../../../common/trades/trades';
+import { BotCheckFields } from '../../../common/bot-check/bot-check.dto';
 
-export class CreateInterventionDto {
+// The three fields of BotCheckFields are read on POST /interventions (no account) and ignored on the secure route (P1-16).
+export class CreateInterventionDto extends BotCheckFields {
   // 1. Service Type: Must match the Enum in your Schema (PLOMBIER, etc.)
   @IsEnum(ServiceType, {
     // The list comes from the table of trades, so a new trade is named here without touching this file (P1-10)

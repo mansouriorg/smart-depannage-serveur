@@ -29,6 +29,7 @@
  */
 
 import { deliveryConfigProblems } from './delivery';
+import { botCheckConfigProblems } from '../common/bot-check/bot-check';
 
 export const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
@@ -144,6 +145,7 @@ export function validateEnv(
   }
 
   errors.push(...deliveryConfigProblems(rawEnv));
+  errors.push(...botCheckConfigProblems(rawEnv));
 
   if (errors.length > 0) {
     throw new Error(

@@ -15,6 +15,7 @@ import {
   ServiceType,
   UrgencyLevel,
 } from '../../../../generated/prisma/client';
+import { BotCheckFields } from '../../../common/bot-check/bot-check.dto';
 
 /**
  * Everything here comes from somebody with no account, so every text has a
@@ -24,8 +25,10 @@ import {
  * There is no `photos` field: a link written by the visitor would be shown to
  * staff as if it were a photo. Pictures are uploaded once the request exists
  * (POST /guest/interventions/:id/photos?token=).
+ *
+ * The form also carries the three fields of the bot check (BotCheckFields, P1-16).
  */
-export class CreateGuestInterventionDto {
+export class CreateGuestInterventionDto extends BotCheckFields {
   @IsEnum(ServiceType)
   serviceType: ServiceType;
 
