@@ -20,6 +20,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "security:rotate-default-passwords": "ts-node scripts/rotate-default-passwords.ts",
     "status:migrate-vocabulary": "ts-node scripts/migrate-status-vocabulary.ts",
+    "money:migrate": "ts-node scripts/migrate-money.ts",
     "proofs:migrate": "ts-node scripts/migrate-proofs.ts",
     "phones:backfill": "ts-node scripts/backfill-phone-keys.ts",
     "artisans:backfill": "ts-node scripts/backfill-artisan-profiles.ts",

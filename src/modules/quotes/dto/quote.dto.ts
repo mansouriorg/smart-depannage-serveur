@@ -8,6 +8,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 
 import { Type } from 'class-transformer';
 
@@ -29,8 +30,7 @@ export class QuoteItemDto {
   @Min(0.01)
   quantity: number;
 
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   unitPrice: number;
 }
 
@@ -50,8 +50,7 @@ export class CreateQuoteDto {
   description?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()
@@ -74,8 +73,7 @@ export class UpdateQuoteDto {
   description?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()

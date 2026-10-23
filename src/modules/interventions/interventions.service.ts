@@ -30,6 +30,7 @@ import { isTicketStaff } from '../../common/auth/role-policy';
 import { forMarketplace, withoutStaffFields } from './intervention-redaction';
 import { misfitOf } from '../artisans/job-fit';
 import { interventionForClient, interventionForTracking } from '../../common/views/views';
+import { businessClock } from '../../common/locale/business-time';
 import {
   StatusActor,
   canonicalStatus,
@@ -738,7 +739,7 @@ export class InterventionsService {
     }
 
     // Append the new issue to any existing feedback notes with a timestamp
-    const timestamp = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    const timestamp = businessClock();
     const newNote = `[Signalement à ${timestamp}] : ${issueDescription}`;
     const updatedNotes = intervention.feedbackNotes 
       ? `${intervention.feedbackNotes}\n${newNote}` 

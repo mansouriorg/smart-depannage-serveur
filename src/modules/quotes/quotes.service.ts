@@ -22,6 +22,9 @@ import {
 } from '../../../generated/prisma/client';
 import { isBackOffice, isTicketStaff } from '../../common/auth/role-policy';
 import { quoteForArtisan, quoteForClient } from '../../common/views/views';
+import { requestTaxRate, totalsFromItems } from '../../common/money/document-totals';
+import { formatMoney, money, vatTotals } from '../../common/money/money';
+import { currencyCode } from '../../common/locale/locale';
 
 @Injectable()
 export class QuotesService {
@@ -73,72 +76,9 @@ export class QuotesService {
     },
   };
 
-  private roundMoney(value: number): number {
-    return Math.round(value * 100) / 100;
-  }
-
-  private calculateTotals(items: CreateQuoteDto['items'], taxRate = 20) {
-    if (!items?.length) {
-      throw new BadRequestException(
-        'Le devis doit contenir au moins une ligne.',
-      );
-    }
-
-    const normalizedItems = items.map((item) => {
-      const quantity = Number(item.quantity);
-      const unitPrice = Number(item.unitPrice);
-
-      if (!item.label?.trim()) {
-        throw new BadRequestException(
-          'Chaque ligne du devis doit avoir un libellé.',
-        );
-      }
-
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw new BadRequestException(
-          'La quantité doit être supérieure à 0.',
-        );
-      }
-
-      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new BadRequestException(
-          'Le prix unitaire doit être supérieur ou égal à 0.',
-        );
-      }
-
-      const total = this.roundMoney(quantity * unitPrice);
-
-      return {
-        label: item.label,
-        description: item.description,
-        quantity,
-        unitPrice,
-        total,
-      };
-    });
-
-    const amountHT = this.roundMoney(
-      normalizedItems.reduce((sum, item) => sum + item.total, 0),
-    );
-
-    const normalizedTaxRate = Number(taxRate);
-
-    if (!Number.isFinite(normalizedTaxRate) || normalizedTaxRate < 0) {
-      throw new BadRequestException(
-        'Le taux de TVA doit être supérieur ou égal à 0.',
-      );
-    }
-
-    const taxAmount = this.roundMoney(amountHT * (normalizedTaxRate / 100));
-    const amountTTC = this.roundMoney(amountHT + taxAmount);
-
-    return {
-      items: normalizedItems,
-      amountHT,
-      taxRate: normalizedTaxRate,
-      taxAmount,
-      amountTTC,
-    };
+  /** The lines and the three amounts, exact to the millime (see common/money/document-totals). */
+  private calculateTotals(items: CreateQuoteDto['items'], taxRate?: unknown) {
+    return totalsFromItems('quote', items, taxRate);
   }
 
   /**
@@ -284,7 +224,7 @@ export class QuotesService {
     await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
 
-    const totals = this.calculateTotals(dto.items, dto.taxRate ?? 20);
+    const totals = this.calculateTotals(dto.items, dto.taxRate);
 
     const quote = await this.prisma.quote.create({
       data: {
@@ -292,6 +232,7 @@ export class QuotesService {
         createdById,
         title: dto.title,
         description: dto.description,
+        currency: currencyCode(),
         amountHT: totals.amountHT,
         taxRate: totals.taxRate,
         taxAmount: totals.taxAmount,
@@ -319,7 +260,7 @@ export class QuotesService {
       interventionId,
       type: InterventionEventType.QUOTE_SENT,
       title: 'Devis envoyé',
-      message: `Un devis de ${totals.amountTTC} € TTC a été envoyé au client.`,
+      message: `Un devis de ${formatMoney(totals.amountTTC)} TTC a été envoyé au client.`,
       createdById,
       metadata: {
         quoteId: quote.id,
@@ -349,7 +290,7 @@ export class QuotesService {
     await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
 
-    const totals = this.calculateTotals(dto.items, dto.taxRate ?? 20);
+    const totals = this.calculateTotals(dto.items, dto.taxRate);
 
     return this.prisma.quote.create({
       data: {
@@ -357,6 +298,7 @@ export class QuotesService {
         createdById,
         title: dto.title,
         description: dto.description,
+        currency: currencyCode(),
         amountHT: totals.amountHT,
         taxRate: totals.taxRate,
         taxAmount: totals.taxAmount,
@@ -388,7 +330,7 @@ export class QuotesService {
     this.ensureQuoteEditable(quote);
 
     if (dto.items?.length) {
-      const totals = this.calculateTotals(dto.items, dto.taxRate ?? quote.taxRate);
+      const totals = this.calculateTotals(dto.items, dto.taxRate ?? money(quote.taxRate));
 
       return this.prisma.$transaction(async (tx) => {
         await tx.quoteItem.deleteMany({
@@ -421,6 +363,10 @@ export class QuotesService {
       });
     }
 
+    // A new rate changes the tax and the total of the amount already there: the three amounts always add up.
+    const rate = dto.taxRate === undefined || dto.taxRate === null ? undefined : requestTaxRate(dto.taxRate, 'Le taux de TVA doit être supérieur ou égal à 0.');
+    const repriced = rate === undefined ? null : vatTotals(quote.amountHT, rate);
+
     const updated = await this.prisma.quote.update({
       where: {
         id: quoteId,
@@ -428,7 +374,9 @@ export class QuotesService {
       data: {
         title: dto.title,
         description: dto.description,
-        taxRate: dto.taxRate,
+        taxRate: rate,
+        taxAmount: repriced?.taxAmount,
+        amountTTC: repriced?.amountTTC,
         pdfUrl: dto.pdfUrl,
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       },
@@ -498,14 +446,14 @@ export class QuotesService {
       interventionId: quote.interventionId,
       type: InterventionEventType.QUOTE_SENT,
       title: 'Devis envoyé',
-      message: `Un devis de ${quote.amountTTC} € TTC a été envoyé au client.`,
+      message: `Un devis de ${formatMoney(quote.amountTTC, { currency: quote.currency })} TTC a été envoyé au client.`,
       createdById: sentById,
       metadata: {
         quoteId,
-        amountHT: quote.amountHT,
-        taxRate: quote.taxRate,
-        taxAmount: quote.taxAmount,
-        amountTTC: quote.amountTTC,
+        amountHT: money(quote.amountHT),
+        taxRate: money(quote.taxRate),
+        taxAmount: money(quote.taxAmount),
+        amountTTC: money(quote.amountTTC),
       },
     });
 
@@ -640,11 +588,11 @@ export class QuotesService {
       title: 'Devis accepté',
       message:
         dto.note ||
-        `Le client a accepté le devis de ${quote.amountTTC} € TTC.`,
+        `Le client a accepté le devis de ${formatMoney(quote.amountTTC, { currency: quote.currency })} TTC.`,
       createdById: clientId,
       metadata: {
         quoteId,
-        amountTTC: quote.amountTTC,
+        amountTTC: money(quote.amountTTC),
       },
     });
 

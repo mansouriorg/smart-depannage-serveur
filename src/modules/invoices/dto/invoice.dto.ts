@@ -8,6 +8,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 
 import { Type } from 'class-transformer';
 
@@ -28,8 +29,7 @@ export class InvoiceLineDto {
   @Min(0.01)
   quantity: number;
 
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   unitPrice: number;
 }
 
@@ -42,7 +42,7 @@ export class GenerateInvoiceDto {
   quoteId?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()

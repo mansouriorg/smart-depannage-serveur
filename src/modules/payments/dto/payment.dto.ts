@@ -3,8 +3,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  Min,
 } from 'class-validator';
+import { IsMoney } from '../../../common/money/money-validation';
 
 import {
   PaymentMethod,
@@ -31,8 +31,7 @@ export class CreatePaymentDto {
   provider?: PaymentProvider;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0.01)
+  @IsMoney({ min: 0.001 })
   amount?: number;
 
   @IsOptional()
@@ -76,8 +75,7 @@ export class CancelPaymentDto {
 
 export class RefundPaymentDto {
   @IsOptional()
-  @IsNumber()
-  @Min(0.01)
+  @IsMoney({ min: 0.001 })
   amount?: number;
 
   @IsOptional()

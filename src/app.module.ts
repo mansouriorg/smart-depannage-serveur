@@ -15,6 +15,7 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { StripStaffFieldsInterceptor } from './common/interceptors/strip-staff-fields.interceptor';
+import { MoneyNumbersInterceptor } from './common/money/money-numbers.interceptor';
 
 // ==========================================================
 // 2. EXISTING FEATURE MODULES
@@ -165,6 +166,8 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     // Responses to non-staff callers never carry staff-only columns
     // (internal notes, tracking token hash).
     { provide: APP_INTERCEPTOR, useClass: StripStaffFieldsInterceptor },
+    // Amounts are DECIMAL columns: Prisma answers Decimal objects, the apps read numbers (P2-01).
+    { provide: APP_INTERCEPTOR, useClass: MoneyNumbersInterceptor },
   ],
 })
 export class AppModule {}

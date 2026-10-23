@@ -898,6 +898,7 @@ export class GuestService {
         method: dto.method,
         status,
         amount: acceptedQuote.amountTTC,
+        currency: acceptedQuote.currency,
         reference: dto.reference,
         clientNote: dto.clientNote,
       },

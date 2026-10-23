@@ -40,6 +40,13 @@ import { tradeFieldsFor, tradeFieldsForEdit } from '../artisans/trade-fields';
 import { InviteReason, inviteArtisan } from '../auth/invite';
 import { artisanZoneRowsFor } from '../service-zones/zone-pick';
 import { isStoredFileUrl } from '../files/stored-file-url';
+import { totalsFromItems } from '../../common/money/document-totals';
+import { formatMoney, money, sumMoney, sumMoneyOf } from '../../common/money/money';
+import { startOfBusinessDay, startOfBusinessMonth } from '../../common/locale/business-time';
+import { DEFAULT_LOCALE, DEFAULT_TAX_RATES, TaxRateOption, applyLocale, currencyCode, getLocale, parseTaxRates, resolveLocale } from '../../common/locale/locale';
+import { effectiveTaxRates, localeOfRow } from '../../common/locale/locale.service';
+import { normalizeMatriculeFiscal, normalizeRib } from '../../common/locale/company-identity';
+import { getBusinessTimeZone } from '../../config/env';
 import {
   transitionStatus,
   transitionStatusDetailed,
@@ -291,10 +298,10 @@ export class AdminService {
   async getDashboardKpis(query?: { from?: string; to?: string }) {
     const now = new Date();
 
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
+    // Today and this month begin at midnight on the clock of the business, not on the one of the server.
+    const startOfToday = startOfBusinessDay(now);
 
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfMonth = startOfBusinessMonth(now);
 
     const createdAtFilter: Prisma.DateTimeFilter = {};
 
@@ -470,8 +477,8 @@ export class AdminService {
           end: row.workCompletedAt,
         })),
       ),
-      monthlyRevenue: monthlyRevenue._sum.amount || 0,
-      todayRevenue: todayRevenue._sum.amount || 0,
+      monthlyRevenue: money(monthlyRevenue._sum.amount),
+      todayRevenue: money(todayRevenue._sum.amount),
       activeArtisans,
       averageRating: averageRating._avg.rating || 0,
       complaintsCount,
@@ -847,13 +854,8 @@ export class AdminService {
       throw new NotFoundException('Intervention introuvable.');
     }
 
-    const amountHT = dto.items.reduce((sum, item) => {
-      return sum + item.quantity * item.unitPrice;
-    }, 0);
-
-    const taxRate = dto.taxRate ?? 20;
-    const taxAmount = Math.round(amountHT * (taxRate / 100) * 100) / 100;
-    const amountTTC = Math.round((amountHT + taxAmount) * 100) / 100;
+    const totals = totalsFromItems('quote', dto.items, dto.taxRate);
+    const { amountTTC } = totals;
 
     const quote = await this.prisma.quote.create({
       data: {
@@ -861,20 +863,15 @@ export class AdminService {
         createdById: adminId,
         title: dto.title,
         description: dto.description,
-        amountHT,
-        taxRate,
-        taxAmount,
+        currency: currencyCode(),
+        amountHT: totals.amountHT,
+        taxRate: totals.taxRate,
+        taxAmount: totals.taxAmount,
         amountTTC,
         status: QuoteStatus.SENT,
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
         items: {
-          create: dto.items.map((item) => ({
-            label: item.label,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            total: Math.round(item.quantity * item.unitPrice * 100) / 100,
-          })),
+          create: totals.items,
         },
       },
       include: {
@@ -894,14 +891,14 @@ export class AdminService {
       interventionId,
       type: InterventionEventType.QUOTE_SENT,
       title: 'Devis envoyé',
-      message: `Devis envoyé par l’administration: ${amountTTC} € TTC.`,
+      message: `Devis envoyé par l’administration: ${formatMoney(amountTTC)} TTC.`,
       createdById: adminId,
     });
 
     if (intervention.contactPhone || intervention.client.phone) {
       await this.notifications.sendSms(
         intervention.contactPhone || intervention.client.phone!,
-        `Smart Dépannage: vous avez reçu un devis de ${amountTTC} € TTC.`,
+        `Smart Dépannage: vous avez reçu un devis de ${formatMoney(amountTTC)} TTC.`,
       );
     }
 
@@ -909,7 +906,7 @@ export class AdminService {
       await this.notifications.sendEmail(
         intervention.contactEmail || intervention.client.email,
         'Votre devis Smart Dépannage',
-        `Vous avez reçu un devis de ${amountTTC} € TTC.`,
+        `Vous avez reçu un devis de ${formatMoney(amountTTC)} TTC.`,
       );
     }
 
@@ -1520,10 +1517,7 @@ export class AdminService {
       },
     });
 
-    const totalRevenue = payments.reduce(
-      (sum, payment) => sum + payment.amount,
-      0,
-    );
+    const totalRevenue = sumMoneyOf(payments.map((payment) => payment.amount));
 
     return {
       artisanProfileId: profileId,
@@ -2011,7 +2005,7 @@ export class AdminService {
       content:
         dto.note ||
         (dto.approved
-          ? `Remboursement approuvé: ${dto.amount || 0} €.`
+          ? `Remboursement approuvé: ${formatMoney(dto.amount ?? 0)}.`
           : 'Remboursement refusé.'),
     });
 
@@ -2020,7 +2014,7 @@ export class AdminService {
       type: InterventionEventType.ISSUE_REPORTED,
       title: 'Décision remboursement',
       message: dto.approved
-        ? `Remboursement approuvé: ${dto.amount || 0} €.`
+        ? `Remboursement approuvé: ${formatMoney(dto.amount ?? 0)}.`
         : 'Remboursement refusé.',
       createdById: adminId,
     });
@@ -2065,27 +2059,63 @@ export class AdminService {
     });
 
     if (settings) {
-      return settings;
+      // A row saved before the list of rates existed answers the list it stands for.
+      return settings.taxRates === null || settings.taxRates === undefined ? { ...settings, taxRates: effectiveTaxRates(settings) as any } : settings;
     }
 
-    return this.prisma.companySettings.create({
+    const created = await this.prisma.companySettings.create({
       data: {
         companyName: 'Smart Dépannage',
         companyPhone: '',
         companyEmail: '',
         smsSender: 'SMARTDEP',
-        defaultTaxRate: 20,
+        currency: getLocale().currency,
+        // What the server started with (BUSINESS_TIMEZONE, else Africa/Tunis): from now on the settings are the source.
+        timezone: getBusinessTimeZone(),
+        taxRates: DEFAULT_TAX_RATES.map((rate) => ({ ...rate })),
+        defaultTaxRate: getLocale().defaultTaxRate,
         defaultEmergencyFee: 0,
         openingHours: {},
         paymentMethods: ['ONLINE', 'CASH', 'BANK_TRANSFER'],
       },
     });
+
+    applyLocale(localeOfRow(created));
+
+    return created;
   }
 
   async updateCompanySettings(dto: UpdateCompanySettingsDto) {
     const settings = await this.getCompanySettings();
 
-    return this.prisma.companySettings.update({
+    // The locale is checked as a whole before anything is written: the list of rates must hold the default rate.
+    let taxRates: TaxRateOption[] | undefined;
+    let rib: string | null | undefined;
+    let matriculeFiscal: string | null | undefined;
+
+    try {
+      taxRates = dto.taxRates === undefined ? undefined : parseTaxRates(dto.taxRates);
+      // An empty text, or null, clears the field.
+      const ribText = dto.rib as string | null | undefined;
+      const matriculeText = dto.matriculeFiscal as string | null | undefined;
+
+      rib = ribText === undefined ? undefined : ribText === null || String(ribText).trim() === '' ? null : normalizeRib(String(ribText));
+      matriculeFiscal = matriculeText === undefined ? undefined : matriculeText === null || String(matriculeText).trim() === '' ? null : normalizeMatriculeFiscal(String(matriculeText));
+
+      resolveLocale(
+        localeOfRow({
+          currency: dto.currency ?? settings.currency,
+          timezone: dto.timezone ?? settings.timezone,
+          taxRates: taxRates ?? settings.taxRates,
+          defaultTaxRate: dto.defaultTaxRate ?? settings.defaultTaxRate,
+        }),
+        DEFAULT_LOCALE,
+      );
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Paramètres invalides.');
+    }
+
+    const updated = await this.prisma.companySettings.update({
       where: {
         id: settings.id,
       },
@@ -2094,14 +2124,24 @@ export class AdminService {
         companyPhone: dto.companyPhone,
         companyEmail: dto.companyEmail,
         smsSender: dto.smsSender,
+        currency: dto.currency,
+        timezone: dto.timezone,
+        taxRates: taxRates as any,
         defaultTaxRate: dto.defaultTaxRate,
         defaultEmergencyFee: dto.defaultEmergencyFee,
+        rib,
+        matriculeFiscal,
         openingHours: dto.openingHours as any,
         paymentMethods: dto.paymentMethods,
         termsAndConditions: dto.termsAndConditions,
         privacyPolicy: dto.privacyPolicy,
       },
     });
+
+    // The server reads the new currency, time zone and rates from now on.
+    applyLocale(localeOfRow(updated));
+
+    return updated;
   }
 
   async findServiceZones() {

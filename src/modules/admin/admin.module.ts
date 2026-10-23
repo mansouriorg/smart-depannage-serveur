@@ -9,6 +9,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { LocaleService } from '../../common/locale/locale.service';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { AdminService } from './admin.service';
     RealtimeModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService],
-  exports: [AdminService],
+  providers: [AdminService, LocaleService],
+  exports: [AdminService, LocaleService],
 })
 export class AdminModule {}

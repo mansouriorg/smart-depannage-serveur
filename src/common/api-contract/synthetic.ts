@@ -22,6 +22,7 @@ function scalarValue(field: SchemaField): unknown {
       return 'text';
     case 'Int':
     case 'Float':
+    case 'Decimal':
       return 1;
     case 'Boolean':
       return false;

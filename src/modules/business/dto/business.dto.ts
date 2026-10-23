@@ -2,12 +2,12 @@ import {
   IsDateString,
   IsEnum,
   IsInt,
-  IsNumber,
   IsOptional,
   IsString,
   Max,
   Min,
 } from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 
 import { Type } from 'class-transformer';
 
@@ -17,33 +17,27 @@ import {
 
 export class CalculateInterventionFinancialsDto {
   @Type(() => Number)
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   totalPrice: number;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
-  @Min(0)
-  @Max(100)
+  @IsTaxRate()
   commissionRate?: number;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   artisanPayout?: number;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   paymentProviderFee?: number;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   refundAmount?: number;
 
   @IsOptional()

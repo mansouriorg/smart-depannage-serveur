@@ -3,10 +3,10 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
-  IsNumber,
   IsOptional,
   IsString,
 } from 'class-validator';
+import { IsMoney } from '../../../common/money/money-validation';
 
 import { Transform, Type } from 'class-transformer';
 
@@ -110,7 +110,7 @@ export class RefundDecisionDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsMoney()
   refundAmount?: number;
 
   @IsOptional()

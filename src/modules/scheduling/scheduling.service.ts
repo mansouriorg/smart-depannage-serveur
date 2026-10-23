@@ -12,6 +12,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
 import { checkWeeklySchedule } from '../../common/availability/weekly-schedule';
+import { businessDayWindow, instantOf } from '../../common/locale/business-time';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
@@ -421,6 +422,7 @@ export class SchedulingService {
         interventionId,
         clientId: intervention.clientId,
         artisanId: intervention.artisanId,
+        timezone: getBusinessTimeZone(),
         preferredDate,
         preferredStartTime: dto.preferredStartTime,
         preferredEndTime: dto.preferredEndTime,
@@ -495,8 +497,8 @@ export class SchedulingService {
       appointmentId,
     );
 
-    const requestedStartAt = new Date(dto.requestedStartAt);
-    const requestedEndAt = new Date(dto.requestedEndAt);
+    const requestedStartAt = instantOf(dto.requestedStartAt);
+    const requestedEndAt = instantOf(dto.requestedEndAt);
 
     this.assertValidRange(requestedStartAt, requestedEndAt);
 
@@ -614,8 +616,8 @@ export class SchedulingService {
       throw new ForbiddenException('Accès réservé à l’administration.');
     }
 
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
+    const fromDate = instantOf(from);
+    const toDate = instantOf(to);
 
     this.assertValidRange(fromDate, toDate);
 
@@ -701,11 +703,12 @@ export class SchedulingService {
     };
 
     if (date) {
-      const dayStart = new Date(date);
-      dayStart.setHours(0, 0, 0, 0);
+      // The day is the one of the business clock: midnight to midnight in Tunis, whatever the TZ of the server is.
+      const window = businessDayWindow(date);
 
-      const dayEnd = new Date(dayStart);
-      dayEnd.setDate(dayEnd.getDate() + 1);
+      if (!window) throw new BadRequestException('Date invalide.');
+
+      const { start: dayStart, end: dayEnd } = window;
 
       const blocks = await this.prisma.artisanTimeBlock.findMany({
         where: {
@@ -998,11 +1001,11 @@ export class SchedulingService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
+    const window = businessDayWindow(date);
 
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
+    if (!window) throw new BadRequestException('Date invalide.');
+
+    const { start: dayStart, end: dayEnd } = window;
 
     return this.prisma.appointment.findMany({
       where: {
@@ -1176,8 +1179,8 @@ export class SchedulingService {
       );
     }
 
-    const startsAt = new Date(dto.startsAt);
-    const endsAt = new Date(dto.endsAt);
+    const startsAt = instantOf(dto.startsAt);
+    const endsAt = instantOf(dto.endsAt);
 
     this.assertValidRange(startsAt, endsAt);
 
@@ -1219,8 +1222,8 @@ export class SchedulingService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
+    const fromDate = instantOf(from);
+    const toDate = instantOf(to);
 
     this.assertValidRange(fromDate, toDate);
 

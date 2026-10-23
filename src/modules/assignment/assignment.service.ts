@@ -18,7 +18,8 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
-import { formatLocalDateTime, localMoment, zonedInstant } from '../../common/availability/weekly-schedule';
+import { formatLocalDateTime } from '../../common/availability/weekly-schedule';
+import { instantOf } from '../../common/locale/business-time';
 import { canonicalStatus, LEGACY_STATUS_ALIASES } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
@@ -91,56 +92,6 @@ function isBlank(value: unknown): boolean {
 const MAX_ID = 2_147_483_647;
 const isRowId = (value: unknown): value is number => Number.isInteger(value) && (value as number) > 0 && (value as number) <= MAX_ID;
 
-/** "2026-10-19T09:00" or "2026-10-19 09:00:30": a date and a time with no zone or offset. */
-const WITHOUT_OFFSET = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::([0-5]\d)(?:\.\d+)?)?$/;
-
-/**
- * "2026-02-31" is not a date, but the JavaScript parser turns it into the 3rd of March
- * without a word, and an appointment would be booked on a day nobody asked for.
- */
-function hasRealCalendarDate(text: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
-
-  if (!match) return true;
-
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const probe = new Date(0);
-
-  probe.setUTCFullYear(year, month - 1, day);
-
-  return probe.getUTCFullYear() === year && probe.getUTCMonth() === month - 1 && probe.getUTCDate() === day;
-}
-
-/**
- * A moment as sent by a client. With a "Z" or an offset it is exact. Without one it is
- * the clock of the business (the same clock the weekly hours are read on), not the
- * clock of whichever machine the server runs on. A date that does not exist, or a time
- * that does not exist on that clock, is not a moment: NaN, and the caller answers 400.
- */
-function toInstant(value: unknown, timeZone: string): Date {
-  if (value instanceof Date) return value;
-
-  const text = String(value).trim();
-
-  if (!hasRealCalendarDate(text)) return new Date(Number.NaN);
-
-  const local = WITHOUT_OFFSET.exec(text);
-
-  if (!local) return new Date(text);
-
-  const instant = zonedInstant(local[1], local[2], timeZone);
-
-  if (!instant) return new Date(Number.NaN);
-
-  // Read back on the clock of the business: it must show what was written ("24:00", or an
-  // hour that a change of the clock skipped, would show another day or another hour).
-  const shown = localMoment(instant, timeZone);
-
-  if (shown.date !== local[1] || shown.time !== local[2]) return new Date(Number.NaN);
-
-  return new Date(instant.getTime() + Number(local[3] ?? 0) * 1000);
-}
-
 /** The time asked for: both ends or none, in order, and not longer than a day. */
 export function parseAssignmentRange(
   startsAt: unknown,
@@ -153,8 +104,8 @@ export function parseAssignmentRange(
     throw new BadRequestException('startsAt et endsAt doivent être fournis ensemble.');
   }
 
-  const start = toInstant(startsAt, timeZone);
-  const end = toInstant(endsAt, timeZone);
+  const start = instantOf(startsAt, timeZone);
+  const end = instantOf(endsAt, timeZone);
 
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
     throw new BadRequestException('Date ou horaire invalide.');

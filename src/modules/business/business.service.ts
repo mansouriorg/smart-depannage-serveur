@@ -15,6 +15,10 @@ import {
 } from '../../../generated/prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { compareMoney, divideMoney, formatMoney, money, percentOf, ratioPercent, subtractMoney, sumMoneyOf, toMoneyString } from '../../common/money/money';
+import { decimalsToNumbers } from '../../common/money/money-numbers';
+import { currencyCode } from '../../common/locale/locale';
+import { businessDateOf, businessMonthRange, startOfBusinessMonth } from '../../common/locale/business-time';
 
 import {
   BusinessDateRangeQueryDto,
@@ -24,6 +28,9 @@ import {
   ExportQueryDto,
   MarkPayoutPaidDto,
 } from './dto/business.dto';
+
+/** The share of the price that the platform keeps when nobody gave a rate (percent). */
+const DEFAULT_COMMISSION_RATE = 20;
 
 @Injectable()
 export class BusinessService {
@@ -55,7 +62,7 @@ export class BusinessService {
     const end = to ? new Date(to) : new Date();
     const start = from
       ? new Date(from)
-      : new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
+      : startOfBusinessMonth(end);
 
     if (
       Number.isNaN(start.getTime()) ||
@@ -71,18 +78,9 @@ export class BusinessService {
     };
   }
 
+  /** The month on the clock of the business: from its first instant to its last millisecond. */
   private monthRange(year: number, month: number) {
-    const from = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
-    const to = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-
-    return {
-      from,
-      to,
-    };
-  }
-
-  private roundMoney(value: number) {
-    return Number((value || 0).toFixed(2));
+    return businessMonthRange(year, month);
   }
 
   private paidStatuses(): Status[] {
@@ -245,7 +243,8 @@ export class BusinessService {
   }
 
   private toJsonValue(value: unknown): Prisma.InputJsonValue {
-    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+    // A Decimal would be written as a text: the amounts of a saved report are numbers.
+    return JSON.parse(JSON.stringify(decimalsToNumbers(value))) as Prisma.InputJsonValue;
   }
 
   // ==========================================================
@@ -268,23 +267,21 @@ export class BusinessService {
       );
     }
 
-    const totalPrice = this.roundMoney(dto.totalPrice);
-    const commissionRate = dto.commissionRate ?? 20;
-    const paymentProviderFee = this.roundMoney(dto.paymentProviderFee ?? 0);
-    const refundAmount = this.roundMoney(dto.refundAmount ?? 0);
-    const currency = dto.currency || 'EUR';
+    const totalPrice = money(dto.totalPrice);
+    const commissionRate = dto.commissionRate ?? DEFAULT_COMMISSION_RATE;
+    const paymentProviderFee = money(dto.paymentProviderFee ?? 0);
+    const refundAmount = money(dto.refundAmount ?? 0);
+    const currency = dto.currency || currencyCode();
 
-    let platformCommission = this.roundMoney(
-      totalPrice * (commissionRate / 100),
-    );
+    let platformCommission = percentOf(totalPrice, commissionRate);
 
     const artisanPayout =
       dto.artisanPayout !== undefined
-        ? this.roundMoney(dto.artisanPayout)
-        : this.roundMoney(totalPrice - platformCommission);
+        ? money(dto.artisanPayout)
+        : subtractMoney(totalPrice, platformCommission);
 
     if (dto.artisanPayout !== undefined) {
-      platformCommission = this.roundMoney(totalPrice - artisanPayout);
+      platformCommission = subtractMoney(totalPrice, artisanPayout);
     }
 
     if (artisanPayout < 0 || platformCommission < 0) {
@@ -293,9 +290,7 @@ export class BusinessService {
       );
     }
 
-    const netRevenue = this.roundMoney(
-      platformCommission - paymentProviderFee - refundAmount,
-    );
+    const netRevenue = subtractMoney(subtractMoney(platformCommission, paymentProviderFee), refundAmount);
 
     const companyMargin = netRevenue;
 
@@ -429,46 +424,29 @@ export class BusinessService {
     ).length;
 
     const refundedCount = financials.filter(
-      (item) => item.refundAmount > 0,
+      (item) => compareMoney(item.refundAmount, 0) > 0,
     ).length;
 
-    const totalRevenue = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.totalPrice, 0),
-    );
+    const totalRevenue = sumMoneyOf(financials.map((item) => item.totalPrice));
 
-    const totalCommission = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.platformCommission, 0),
-    );
+    const totalCommission = sumMoneyOf(financials.map((item) => item.platformCommission));
 
-    const totalArtisanPayouts = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.artisanPayout, 0),
-    );
+    const totalArtisanPayouts = sumMoneyOf(financials.map((item) => item.artisanPayout));
 
-    const totalPaymentFees = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.paymentProviderFee, 0),
-    );
+    const totalPaymentFees = sumMoneyOf(financials.map((item) => item.paymentProviderFee));
 
-    const totalRefunds = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.refundAmount, 0),
-    );
+    const totalRefunds = sumMoneyOf(financials.map((item) => item.refundAmount));
 
-    const netRevenue = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.netRevenue, 0),
-    );
+    const netRevenue = sumMoneyOf(financials.map((item) => item.netRevenue));
 
-    const companyMargin = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.companyMargin, 0),
-    );
+    const companyMargin = sumMoneyOf(financials.map((item) => item.companyMargin));
 
     const averageOrderValue =
       interventionCount === 0
         ? 0
-        : this.roundMoney(totalRevenue / interventionCount);
+        : divideMoney(totalRevenue, interventionCount);
 
-    const marginRate =
-      totalRevenue === 0
-        ? 0
-        : this.roundMoney((companyMargin / totalRevenue) * 100);
+    const marginRate = ratioPercent(companyMargin, totalRevenue);
 
     return {
       period: {
@@ -521,7 +499,7 @@ export class BusinessService {
         periodStart: range.from,
         periodEnd: range.to,
         label,
-        currency: 'EUR',
+        currency: currencyCode(),
 
         interventionCount: dashboard.totals.interventionCount,
         paidInterventionCount: dashboard.totals.paidInterventionCount,
@@ -633,15 +611,11 @@ export class BusinessService {
       );
     }
 
-    const grossAmount = this.roundMoney(
-      financials.reduce((sum, item) => sum + item.artisanPayout, 0),
-    );
+    const grossAmount = sumMoneyOf(financials.map((item) => item.artisanPayout));
 
     const refundsDeducted = 0;
     const paymentProviderFees = 0;
-    const netAmount = this.roundMoney(
-      grossAmount - refundsDeducted - paymentProviderFees,
-    );
+    const netAmount = subtractMoney(subtractMoney(grossAmount, refundsDeducted), paymentProviderFees);
 
     return this.prisma.artisanPayout.create({
       data: {
@@ -649,7 +623,7 @@ export class BusinessService {
         status: PayoutStatus.READY,
         periodStart,
         periodEnd,
-        currency: 'EUR',
+        currency: currencyCode(),
         grossAmount,
         paymentProviderFees,
         refundsDeducted,
@@ -659,7 +633,7 @@ export class BusinessService {
           create: financials.map((item) => ({
             financialId: item.id,
             interventionId: item.interventionId,
-            amount: item.artisanPayout,
+            amount: money(item.artisanPayout),
           })),
         },
       },
@@ -787,13 +761,13 @@ export class BusinessService {
         item.intervention.serviceType,
         item.intervention.status,
         item.currency,
-        item.totalPrice,
-        item.artisanPayout,
-        item.platformCommission,
-        item.paymentProviderFee,
-        item.refundAmount,
-        item.netRevenue,
-        item.companyMargin,
+        toMoneyString(item.totalPrice),
+        toMoneyString(item.artisanPayout),
+        toMoneyString(item.platformCommission),
+        toMoneyString(item.paymentProviderFee),
+        toMoneyString(item.refundAmount),
+        toMoneyString(item.netRevenue),
+        toMoneyString(item.companyMargin),
         item.createdAt.toISOString(),
       ]),
     );
@@ -822,13 +796,13 @@ export class BusinessService {
       `Interventions: ${dashboard.totals.interventionCount}`,
       `Paid interventions: ${dashboard.totals.paidInterventionCount}`,
       `Refunded interventions: ${dashboard.totals.refundedCount}`,
-      `Total revenue: ${dashboard.totals.totalRevenue} EUR`,
-      `Total commission: ${dashboard.totals.totalCommission} EUR`,
-      `Artisan payouts: ${dashboard.totals.totalArtisanPayouts} EUR`,
-      `Payment fees: ${dashboard.totals.totalPaymentFees} EUR`,
-      `Refunds: ${dashboard.totals.totalRefunds} EUR`,
-      `Net revenue: ${dashboard.totals.netRevenue} EUR`,
-      `Company margin: ${dashboard.totals.companyMargin} EUR`,
+      `Total revenue: ${formatMoney(dashboard.totals.totalRevenue)}`,
+      `Total commission: ${formatMoney(dashboard.totals.totalCommission)}`,
+      `Artisan payouts: ${formatMoney(dashboard.totals.totalArtisanPayouts)}`,
+      `Payment fees: ${formatMoney(dashboard.totals.totalPaymentFees)}`,
+      `Refunds: ${formatMoney(dashboard.totals.totalRefunds)}`,
+      `Net revenue: ${formatMoney(dashboard.totals.netRevenue)}`,
+      `Company margin: ${formatMoney(dashboard.totals.companyMargin)}`,
       `Margin rate: ${dashboard.totals.marginRate}%`,
     ];
 
@@ -852,7 +826,8 @@ export class BusinessService {
     });
 
     const rows = items.flatMap((item) => {
-      const date = item.createdAt.toISOString().slice(0, 10);
+      // The day of the entry is the day on the clock of the business.
+      const date = businessDateOf(item.createdAt);
       const interventionLabel = `Intervention #${item.interventionId}`;
 
       return [
@@ -860,7 +835,7 @@ export class BusinessService {
           date,
           account: 'CLIENT_REVENUE',
           label: `${interventionLabel} - Client payment`,
-          debit: item.totalPrice,
+          debit: money(item.totalPrice),
           credit: 0,
           interventionId: item.interventionId,
         },
@@ -869,7 +844,7 @@ export class BusinessService {
           account: 'ARTISAN_PAYABLE',
           label: `${interventionLabel} - Artisan payout`,
           debit: 0,
-          credit: item.artisanPayout,
+          credit: money(item.artisanPayout),
           interventionId: item.interventionId,
         },
         {
@@ -877,14 +852,14 @@ export class BusinessService {
           account: 'PLATFORM_COMMISSION',
           label: `${interventionLabel} - Platform commission`,
           debit: 0,
-          credit: item.platformCommission,
+          credit: money(item.platformCommission),
           interventionId: item.interventionId,
         },
         {
           date,
           account: 'PAYMENT_FEES',
           label: `${interventionLabel} - Payment provider fee`,
-          debit: item.paymentProviderFee,
+          debit: money(item.paymentProviderFee),
           credit: 0,
           interventionId: item.interventionId,
         },
@@ -892,20 +867,16 @@ export class BusinessService {
           date,
           account: 'REFUNDS',
           label: `${interventionLabel} - Refund`,
-          debit: item.refundAmount,
+          debit: money(item.refundAmount),
           credit: 0,
           interventionId: item.interventionId,
         },
       ];
     });
 
-    const totalDebit = this.roundMoney(
-      rows.reduce((sum, row) => sum + row.debit, 0),
-    );
+    const totalDebit = sumMoneyOf(rows.map((row) => row.debit));
 
-    const totalCredit = this.roundMoney(
-      rows.reduce((sum, row) => sum + row.credit, 0),
-    );
+    const totalCredit = sumMoneyOf(rows.map((row) => row.credit));
 
     const csv = this.buildCsv(
       [
@@ -920,8 +891,8 @@ export class BusinessService {
         row.date,
         row.account,
         row.label,
-        row.debit,
-        row.credit,
+        toMoneyString(row.debit),
+        toMoneyString(row.credit),
         row.interventionId,
       ]),
     );

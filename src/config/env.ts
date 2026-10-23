@@ -25,11 +25,14 @@
  *   API_DOCS            "true" serves /api/docs in production, "false" hides it elsewhere;
  *                       empty means on outside production, off in production (P1-09).
  *   BUSINESS_TIMEZONE   the time zone of the artisans' weekly schedules and of
- *                       appointments, an IANA name (default Africa/Tunis) (P1-05).
+ *                       appointments, an IANA name (default Africa/Tunis) (P1-05). It is what
+ *                       the server starts with: once the company settings are read, their
+ *                       time zone is the one used (P2-01).
  */
 
 import { deliveryConfigProblems } from './delivery';
 import { botCheckConfigProblems } from '../common/bot-check/bot-check';
+import { isValidTimeZone, loadedLocale } from '../common/locale/locale';
 
 export const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
@@ -62,14 +65,7 @@ function readString(env: Record<string, unknown>, name: string): string {
 export const DEFAULT_BUSINESS_TIMEZONE = 'Africa/Tunis';
 
 /** Is this an IANA time zone name this server's runtime knows? */
-export function isValidTimeZone(name: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: name });
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { isValidTimeZone };
 
 /**
  * Passed to ConfigModule.forRoot({ validate }).
@@ -208,7 +204,8 @@ export function getJwtRefreshSecret(): string {
  * written and in which appointments are read. Africa/Tunis unless BUSINESS_TIMEZONE says otherwise.
  */
 export function getBusinessTimeZone(): string {
-  return (process.env.BUSINESS_TIMEZONE ?? '').trim() || DEFAULT_BUSINESS_TIMEZONE;
+  // The company settings (P2-01) are the source once they are read; the variable is what the server starts with.
+  return loadedLocale()?.timeZone ?? ((process.env.BUSINESS_TIMEZONE ?? '').trim() || DEFAULT_BUSINESS_TIMEZONE);
 }
 
 /** Public website URL without a trailing slash. */

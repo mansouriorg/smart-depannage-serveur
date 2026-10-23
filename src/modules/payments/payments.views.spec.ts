@@ -123,7 +123,7 @@ describe('what the timeline says when the back office fails, cancels or refunds 
     expect([failing.events.length, cancelling.events.length, refunding.events.length]).toEqual([1, 1, 1]);
     expect(failing.events[0].message).toBe('Le paiement a échoué.');
     expect(cancelling.events[0].message).toBe('Le paiement a été annulé.');
-    expect(refunding.events[0].message).toBe('Remboursement de 20 TND.');
+    expect(refunding.events[0].message).toBe('Remboursement de 20,000 TND.');
   });
 
   it('without a reason typed, the lines are the same', async () => {
@@ -131,6 +131,6 @@ describe('what the timeline says when the back office fails, cancels or refunds 
 
     await world.service.refund(1, 5, { amount: 20 } as any);
 
-    expect(world.events[0].message).toBe('Remboursement de 20 TND.');
+    expect(world.events[0].message).toBe('Remboursement de 20,000 TND.');
   });
 });

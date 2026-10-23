@@ -13,6 +13,10 @@ import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 import { isDeliverableEmail } from '../notifications/delivery/contact';
 import { invoiceForArtisan, invoiceForClient } from '../../common/views/views';
+import { totalsFromAmount, totalsFromItems } from '../../common/money/document-totals';
+import { formatMoney, money, toMoneyString } from '../../common/money/money';
+import { currencyCode, getLocale } from '../../common/locale/locale';
+import { businessYearMonth } from '../../common/locale/business-time';
 
 import {
   InterventionEventType,
@@ -111,17 +115,11 @@ export class InvoicesService {
     return adminRoles.includes(role);
   }
 
-  private roundMoney(value: number): number {
-    return Math.round(value * 100) / 100;
-  }
-
   private generateInvoiceNumber(): string {
-    const d = new Date();
+    // The year and the month of the invoice are the ones on the clock of the business, not of the server.
+    const { year, month } = businessYearMonth();
 
-    return `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(
-      2,
-      '0',
-    )}-${Date.now()}`;
+    return `INV-${year}${String(month).padStart(2, '0')}-${Date.now()}`;
   }
 
   private async createEvent(data: {
@@ -226,24 +224,8 @@ export class InvoicesService {
       : invoiceForArtisan(invoice);
   }
 
-  private calculateTotalsFromAmount(amountHT: number, taxRate = 20) {
-    if (!Number.isFinite(amountHT) || amountHT <= 0) {
-      throw new BadRequestException('Montant HT invalide.');
-    }
-
-    if (!Number.isFinite(taxRate) || taxRate < 0) {
-      throw new BadRequestException('Taux de TVA invalide.');
-    }
-
-    const taxAmount = this.roundMoney(amountHT * (taxRate / 100));
-    const amountTTC = this.roundMoney(amountHT + taxAmount);
-
-    return {
-      amountHT: this.roundMoney(amountHT),
-      taxRate,
-      taxAmount,
-      amountTTC,
-    };
+  private calculateTotalsFromAmount(amountHT: unknown, taxRate?: unknown) {
+    return totalsFromAmount(amountHT, taxRate ?? getLocale().defaultTaxRate);
   }
 
   private calculateTotalsFromItems(
@@ -253,54 +235,13 @@ export class InvoicesService {
       quantity: number;
       unitPrice: number;
     }[],
-    taxRate = 20,
+    taxRate?: unknown,
   ) {
-    if (!items?.length) {
-      throw new BadRequestException(
-        'La facture doit contenir au moins une ligne.',
-      );
-    }
-
-    const normalizedItems = items.map((item) => {
-      const quantity = Number(item.quantity);
-      const unitPrice = Number(item.unitPrice);
-
-      if (!item.label?.trim()) {
-        throw new BadRequestException(
-          'Chaque ligne de facture doit avoir un libellé.',
-        );
-      }
-
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw new BadRequestException(
-          'La quantité doit être supérieure à 0.',
-        );
-      }
-
-      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new BadRequestException(
-          'Le prix unitaire doit être supérieur ou égal à 0.',
-        );
-      }
-
-      return {
-        label: item.label,
-        description: item.description || undefined,
-        quantity,
-        unitPrice,
-        total: this.roundMoney(quantity * unitPrice),
-      };
-    });
-
-    const amountHT = this.roundMoney(
-      normalizedItems.reduce((sum, item) => sum + item.total, 0),
-    );
-
-    const totals = this.calculateTotalsFromAmount(amountHT, taxRate);
+    const totals = totalsFromItems('invoice', items, taxRate ?? getLocale().defaultTaxRate, 'Taux de TVA invalide.');
 
     return {
       ...totals,
-      items: normalizedItems,
+      items: totals.items.map((item) => ({ ...item, description: item.description || undefined })),
     };
   }
 
@@ -309,8 +250,8 @@ export class InvoicesService {
       label: item.label,
       description: item.description,
       quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      total: item.total,
+      unitPrice: money(item.unitPrice),
+      total: money(item.total),
     }));
   }
 
@@ -358,10 +299,11 @@ export class InvoicesService {
       interventionId: invoice.interventionId,
       interventionAddress: invoice.interventionAddress,
       serviceType: invoice.serviceType,
-      amountHT: invoice.amountHT,
-      taxRate: invoice.taxRate,
-      taxAmount: invoice.taxAmount,
-      amountTTC: invoice.amountTTC,
+      amountHT: toMoneyString(invoice.amountHT),
+      taxRate: money(invoice.taxRate),
+      taxAmount: toMoneyString(invoice.taxAmount),
+      amountTTC: toMoneyString(invoice.amountTTC),
+      currency: invoice.currency,
       issuedAt: invoice.issuedAt,
       sentAt: invoice.sentAt,
       paidAt: invoice.paidAt,
@@ -397,15 +339,22 @@ export class InvoicesService {
     const paidPayment = intervention.payments[0];
 
     const amountHT = dto.amountHT ?? quote?.amountHT;
-    const taxRate = dto.taxRate ?? quote?.taxRate ?? company?.defaultTaxRate ?? 20;
+    const taxRate = dto.taxRate ?? quote?.taxRate ?? company?.defaultTaxRate ?? getLocale().defaultTaxRate;
 
-    if (!amountHT) {
+    if (!amountHT || money(amountHT) === 0) {
       throw new BadRequestException(
         'Montant HT introuvable. Utilisez un devis accepté ou envoyez un montant HT.',
       );
     }
 
-    const totals = this.calculateTotalsFromAmount(amountHT, taxRate);
+    // An invoice made from the accepted quote, with no amount or rate sent, is that quote: the same amounts to the millime
+    // (a quote written before the millime columns may carry a tax rounded to the cent, which the customer accepted) and the
+    // currency it was written in. An amount or a rate sent by the administrator is worked out again.
+    const fromQuote = Boolean(quote) && dto.amountHT === undefined && dto.taxRate === undefined;
+    const totals = fromQuote
+      ? { amountHT: money(quote.amountHT), taxRate: money(quote.taxRate), taxAmount: money(quote.taxAmount), amountTTC: money(quote.amountTTC) }
+      : this.calculateTotalsFromAmount(amountHT, taxRate);
+    const currency = quote?.currency ?? currencyCode();
 
     const invoiceItems = quote?.items?.length
       ? this.getInvoiceItemsFromQuote(quote)
@@ -436,7 +385,7 @@ export class InvoicesService {
           companyPhone: company?.companyPhone,
           companyEmail: company?.companyEmail,
           companyAddress: undefined,
-          companyTaxId: undefined,
+          companyTaxId: company?.matriculeFiscal ?? undefined,
           companyWebsite: undefined,
 
           clientName: intervention.contactName || intervention.client.name,
@@ -449,6 +398,7 @@ export class InvoicesService {
           serviceType: intervention.serviceType,
           subServiceName: intervention.subService?.name,
 
+          currency,
           amountHT: totals.amountHT,
           taxRate: totals.taxRate,
           taxAmount: totals.taxAmount,
@@ -497,7 +447,7 @@ export class InvoicesService {
       metadata: {
         invoiceId: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
-        amountTTC: invoice.amountTTC,
+        amountTTC: money(invoice.amountTTC),
       },
     });
 
@@ -723,7 +673,7 @@ export class InvoicesService {
       dto.message ||
       `Bonjour,
 
-Votre facture ${invoice.invoiceNumber} d’un montant de ${invoice.amountTTC} € TTC est disponible.
+Votre facture ${invoice.invoiceNumber} d’un montant de ${formatMoney(invoice.amountTTC, { currency: invoice.currency })} TTC est disponible.
 
 ${invoice.pdfUrl ? `Lien PDF : ${invoice.pdfUrl}` : 'Le PDF sera disponible prochainement.'}
 

@@ -25,6 +25,9 @@ import {
 import { isBackOffice } from '../../common/auth/role-policy';
 import { pick } from '../../common/views/pick';
 import { paymentForArtisan, paymentForClient } from '../../common/views/views';
+import { compareMoney, formatMoney, money, sumMoney } from '../../common/money/money';
+import { currencyCode } from '../../common/locale/locale';
+import { businessYearMonth } from '../../common/locale/business-time';
 
 /** The listed keys of a person (a name and a number, an address only where it is the reader's own). */
 function pickPerson(person: any, keys: string[]) {
@@ -77,12 +80,8 @@ export class PaymentsService {
     invoice: true,
   };
 
-  private roundMoney(value: number): number {
-    return Math.round(value * 100) / 100;
-  }
-
   private generateReceiptNumber(paymentId: number, date: Date = new Date()): string {
-    const year = date.getFullYear();
+    const { year } = businessYearMonth(date);
     return `RCPT-${year}-${String(paymentId).padStart(6, '0')}`;
   }
 
@@ -339,9 +338,9 @@ export class PaymentsService {
     const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const amount = this.roundMoney(
-      amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0,
-    );
+    const amount = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
+    const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 
     if (!amount || amount <= 0) {
       throw new BadRequestException(
@@ -363,7 +362,7 @@ export class PaymentsService {
         status: this.initialStatusFromMethod(dto.method),
         amount,
         amountRefunded: 0,
-        currency: this.getOptionalString(dto, 'currency') || 'EUR',
+        currency,
         reference: dto.reference,
         clientNote: dto.clientNote,
         createdById: clientId,
@@ -395,7 +394,7 @@ export class PaymentsService {
         paymentId: payment.id,
         method: payment.method,
         provider: payment.provider,
-        amount: payment.amount,
+        amount: money(payment.amount),
         currency: payment.currency,
         quoteId: payment.quoteId,
         invoiceId: payment.invoiceId,
@@ -541,11 +540,11 @@ export class PaymentsService {
       interventionId: payment.interventionId,
       type: InterventionEventType.PAYMENT_CONFIRMED,
       title: 'Paiement confirmé',
-      message: `Le paiement de ${payment.amount} ${payment.currency} a été confirmé.`,
+      message: `Le paiement de ${formatMoney(payment.amount, { currency: payment.currency })} a été confirmé.`,
       createdById: adminId,
       metadata: {
         paymentId,
-        amount: payment.amount,
+        amount: money(payment.amount),
         currency: payment.currency,
         method: payment.method,
         provider: payment.provider,
@@ -666,7 +665,7 @@ export class PaymentsService {
     this.ensurePaymentCanBeRefunded(payment);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const refundAmount = this.roundMoney(amountFromDto ?? payment.amount);
+    const refundAmount = money(amountFromDto ?? payment.amount);
 
     if (refundAmount <= 0) {
       throw new BadRequestException(
@@ -674,21 +673,20 @@ export class PaymentsService {
       );
     }
 
-    const alreadyRefunded = payment.amountRefunded || 0;
-    const newRefundedTotal = this.roundMoney(alreadyRefunded + refundAmount);
+    const newRefundedTotal = sumMoney(payment.amountRefunded, refundAmount);
 
-    if (newRefundedTotal > payment.amount) {
+    if (compareMoney(newRefundedTotal, payment.amount) > 0) {
       throw new BadRequestException(
         'Le montant total remboursé ne peut pas dépasser le montant du paiement.',
       );
     }
 
-    const isFullRefund = newRefundedTotal === payment.amount;
+    const isFullRefund = compareMoney(newRefundedTotal, payment.amount) === 0;
 
     const reason =
       this.getOptionalString(dto, 'reason') ||
       dto.adminNote ||
-      `Remboursement de ${refundAmount} ${payment.currency}.`;
+      `Remboursement de ${formatMoney(refundAmount, { currency: payment.currency })}.`;
 
     const updated = await this.prisma.payment.update({
       where: {
@@ -713,7 +711,7 @@ export class PaymentsService {
       title: isFullRefund
         ? 'Remboursement enregistré'
         : 'Remboursement partiel enregistré',
-      message: `Remboursement de ${refundAmount} ${payment.currency}.`,
+      message: `Remboursement de ${formatMoney(refundAmount, { currency: payment.currency })}.`,
       createdById: adminId,
       metadata: {
         paymentId,
@@ -797,8 +795,8 @@ export class PaymentsService {
       receipt: {
         number: receiptNumber,
         date: receiptDate,
-        amount: payment.amount,
-        amountRefunded: payment.amountRefunded,
+        amount: money(payment.amount),
+        amountRefunded: money(payment.amountRefunded),
         currency: payment.currency,
         // How the customer paid is for the customer and the back office, not for the artisan.
         ...(side === 'artisan'
@@ -894,9 +892,9 @@ export class PaymentsService {
     const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const amount = this.roundMoney(
-      amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0,
-    );
+    const amount = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
+    const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 
     if (!amount || amount <= 0) {
       throw new BadRequestException(
@@ -914,7 +912,7 @@ export class PaymentsService {
         status: this.initialStatusFromMethod(dto.method),
         amount,
         amountRefunded: 0,
-        currency: this.getOptionalString(dto, 'currency') || 'EUR',
+        currency,
         reference: dto.reference,
         clientNote: dto.clientNote,
         adminNote: this.getOptionalString(dto, 'adminNote'),
@@ -927,12 +925,12 @@ export class PaymentsService {
       interventionId,
       type: InterventionEventType.PAYMENT_PENDING,
       title: 'Paiement créé par l’administration',
-      message: `Un paiement de ${payment.amount} ${payment.currency} a été créé par l’administration.`,
+      message: `Un paiement de ${formatMoney(payment.amount, { currency: payment.currency })} a été créé par l’administration.`,
       createdById: adminId,
       metadata: {
         paymentId: payment.id,
         method: payment.method,
-        amount: payment.amount,
+        amount: money(payment.amount),
         currency: payment.currency,
       },
     });

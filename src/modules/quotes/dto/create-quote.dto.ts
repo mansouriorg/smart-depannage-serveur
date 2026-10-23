@@ -7,6 +7,7 @@ import {
   IsString,
   ValidateNested,
 } from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 
 export class CreateQuoteItemDto {
   @IsString()
@@ -19,7 +20,7 @@ export class CreateQuoteItemDto {
   @IsNumber()
   quantity: number;
 
-  @IsNumber()
+  @IsMoney()
   unitPrice: number;
 }
 
@@ -32,7 +33,7 @@ export class CreateQuoteDto {
   description?: string;
 
   @IsOptional()
-  @IsNumber()
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()

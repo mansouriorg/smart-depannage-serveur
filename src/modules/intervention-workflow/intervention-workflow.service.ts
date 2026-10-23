@@ -18,6 +18,7 @@ import {
 } from './intervention-status';
 import { transitionStatusDetailed } from './transition-status';
 import { eventsForParties } from '../../common/views/views';
+import { MoneyInput, formatMoney, money } from '../../common/money/money';
 
 import {
   InterventionEventType,
@@ -601,7 +602,7 @@ export class InterventionWorkflowService {
   async markQuoteSent(
     interventionId: number,
     createdById?: number,
-    amountTTC?: number,
+    amountTTC?: MoneyInput,
   ) {
     await this.applyTransition(interventionId, Status.QUOTE_SENT, createdById, {
       quoteSentAt: new Date(),
@@ -613,13 +614,13 @@ export class InterventionWorkflowService {
       title: 'Devis envoyé',
       message:
         amountTTC !== undefined
-          ? `Un devis de ${amountTTC} € TTC a été envoyé.`
+          ? `Un devis de ${formatMoney(amountTTC)} TTC a été envoyé.`
           : 'Un devis a été envoyé au client.',
       createdById,
       metadata:
         amountTTC !== undefined
           ? {
-              amountTTC,
+              amountTTC: money(amountTTC),
             }
           : undefined,
     });
@@ -782,7 +783,7 @@ export class InterventionWorkflowService {
   async markClientPaid(
     interventionId: number,
     createdById?: number,
-    amount?: number,
+    amount?: MoneyInput,
   ) {
     await this.applyTransition(interventionId, Status.PAID, createdById, {
       paidAt: new Date(),
@@ -794,13 +795,13 @@ export class InterventionWorkflowService {
       title: 'Paiement confirmé',
       message:
         amount !== undefined
-          ? `Le client a payé ${amount} €.`
+          ? `Le client a payé ${formatMoney(amount)}.`
           : 'Le paiement du client a été confirmé.',
       createdById,
       metadata:
         amount !== undefined
           ? {
-              amount,
+              amount: money(amount),
             }
           : undefined,
     });

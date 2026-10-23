@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { Decimal, averageDecimals, compareDecimals, isDecimalInput, sumDecimals, toColumnDecimal } from './decimal-double';
+
 /**
  * A Prisma client that keeps its rows in memory and reads its shape from `prisma/schema.prisma` (P1-17).
  *
@@ -13,7 +15,7 @@ import * as path from 'path';
  * What it does: findUnique / findFirst / findMany (where, select, include, orderBy, take, skip, distinct),
  * count, aggregate, groupBy (by, _count, _sum), create, createMany, update, updateMany, upsert, delete,
  * deleteMany, nested `connect` / `create` / `connectOrCreate` / `disconnect` / `createMany` / `set` /
- * `update` / `delete` on relations, defaults (autoincrement, now, uuid, cuid, literals), `@updatedAt`,
+ * `update` / `delete` on relations, DECIMAL columns (answered as `Decimal` objects, never as numbers: see `decimal-double.ts`), defaults (autoincrement, now, uuid, cuid, literals), `@updatedAt`,
  * unique constraints (`P2002`), not-found updates (`P2025`), `$transaction` with an undo journal and
  * `pg_advisory_xact_lock` as a real wait.
  * What it does not: raw SQL (other than that lock), full-text search, database-level cascades,
@@ -34,6 +36,9 @@ interface FieldInfo {
   /** The source text of `@default(...)`, if any. */
   defaultExpr: string | null;
   kind: 'scalar' | 'enum' | 'relation';
+  /** Decimal fields: `@db.Decimal(precision, scale)`; the default of Prisma for PostgreSQL is (65, 30). */
+  precision: number;
+  scale: number;
   /** Relation fields: the name of the relation, the columns here and the columns they point at (owner side). */
   relationName: string | null;
   fkFields: string[];
@@ -148,6 +153,7 @@ export function parseSchema(schema: string): { models: Map<string, ModelInfo>; e
       const [, fieldName, type, list, optional, attributes] = match;
       const isRelation = !SCALARS.has(type) && !enums.has(type);
       const defaultAt = attributes.indexOf('@default(');
+      const decimalColumn = /@db\.Decimal\(\s*(\d+)\s*,\s*(\d+)\s*\)/.exec(attributes);
       const relationAt = attributes.indexOf('@relation(');
       const relationText = relationAt >= 0 ? parenthesised(attributes, relationAt + '@relation'.length) : '';
       const nameMatch = /^\s*(?:name:\s*)?"([^"]+)"/.exec(relationText);
@@ -164,6 +170,8 @@ export function parseSchema(schema: string): { models: Map<string, ModelInfo>; e
         updatedAt: attributes.includes('@updatedAt'),
         defaultExpr: defaultAt >= 0 ? parenthesised(attributes, defaultAt + '@default'.length).trim() : null,
         kind: isRelation ? 'relation' : enums.has(type) ? 'enum' : 'scalar',
+        precision: decimalColumn ? Number(decimalColumn[1]) : 65,
+        scale: decimalColumn ? Number(decimalColumn[2]) : 30,
         relationName: nameMatch ? nameMatch[1] : null,
         fkFields: fieldsMatch ? listOf(fieldsMatch[1]) : [],
         refFields: referencesMatch ? listOf(referencesMatch[1]) : [],
@@ -191,6 +199,7 @@ export function parseSchema(schema: string): { models: Map<string, ModelInfo>; e
 const lowerFirst = (name: string) => name.charAt(0).toLowerCase() + name.slice(1);
 
 function clone<T>(value: T): T {
+  if (value instanceof Decimal) return value;
   if (value instanceof Date) return new Date(value.getTime()) as unknown as T;
   if (Array.isArray(value)) return value.map((item) => clone(item)) as unknown as T;
   if (value && typeof value === 'object') {
@@ -201,6 +210,7 @@ function clone<T>(value: T): T {
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Decimal || b instanceof Decimal) return isDecimalInput(a) && isDecimalInput(b) && compareDecimals(a, b) === 0;
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
   if (a instanceof Date || b instanceof Date) return false;
   if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') return JSON.stringify(a) === JSON.stringify(b);
@@ -210,6 +220,7 @@ function sameValue(a: unknown, b: unknown): boolean {
 
 function comparable(value: unknown): number | string | boolean | null {
   if (value instanceof Date) return value.getTime();
+  if (value instanceof Decimal) return value.toNumber();
   if (value === undefined) return null;
 
   return value as number | string | boolean | null;
@@ -436,7 +447,7 @@ export class MemoryPrisma {
 
       if (field.kind === 'enum') filled[field.name] = (this.enums.get(field.type) as string[])[0];
       else if (field.type === 'String') filled[field.name] = this.labeller ? this.labeller(name, field.name, unique) : `${lowerFirst(name)}.${field.name}${unique}`;
-      else if (field.type === 'Int' || field.type === 'Float') filled[field.name] = unique ? this.plantedCount : 0;
+      else if (field.type === 'Int' || field.type === 'Float' || field.type === 'Decimal') filled[field.name] = unique ? this.plantedCount : 0;
       else if (field.type === 'Boolean') filled[field.name] = false;
       else if (field.type === 'DateTime') filled[field.name] = this.clock();
       else if (field.type === 'Json') filled[field.name] = {};
@@ -643,7 +654,7 @@ export class MemoryPrisma {
   }
 
   private matchesScalar(value: unknown, cond: any, field: FieldInfo): boolean {
-    const isFilter = cond !== null && typeof cond === 'object' && !(cond instanceof Date) && !Array.isArray(cond);
+    const isFilter = cond !== null && typeof cond === 'object' && !(cond instanceof Date) && !(cond instanceof Decimal) && !Array.isArray(cond);
 
     if (!isFilter) {
       if (cond === null) return value === null || value === undefined;
@@ -681,7 +692,7 @@ export class MemoryPrisma {
     if ('not' in cond) {
       const not = cond.not;
 
-      if (not !== null && typeof not === 'object' && !(not instanceof Date) && !Array.isArray(not)) {
+      if (not !== null && typeof not === 'object' && !(not instanceof Date) && !(not instanceof Decimal) && !Array.isArray(not)) {
         if (this.matchesScalar(here, not, field)) return false;
       } else if (not === null ? here === null : sameValue(here, not)) {
         return false;
@@ -871,6 +882,23 @@ export class MemoryPrisma {
     if (tx) tx.journal.push(entry);
   }
 
+  /** What the column keeps: a DECIMAL column rounds to its scale and holds a Decimal, whatever was given. */
+  private stored(model: string, field: FieldInfo, value: unknown): unknown {
+    if (field.type !== 'Decimal' || field.list || value === null || value === undefined) return clone(value);
+
+    return toColumnDecimal(value, field.precision, field.scale, `${model}.${field.name}`);
+  }
+
+  private decimalAggregate(aggregate: string, values: unknown[]): Decimal | null {
+    if (!values.length) return null;
+    if (aggregate === '_sum') return sumDecimals(values);
+    if (aggregate === '_avg') return averageDecimals(values);
+
+    const pick = aggregate === '_min' ? -1 : 1;
+
+    return values.reduce((best, value) => (compareDecimals(value, best) === pick ? value : best)) as Decimal;
+  }
+
   private checkType(model: string, field: FieldInfo, value: unknown) {
     if (value === null || value === undefined) return;
 
@@ -886,6 +914,7 @@ export class MemoryPrisma {
 
     if (field.type === 'Int' && !Number.isInteger(value)) bad('an integer');
     if (field.type === 'Float' && typeof value !== 'number') bad('a number');
+    if (field.type === 'Decimal' && !isDecimalInput(value)) bad('a number, a decimal text or a Decimal');
     if (field.type === 'String' && typeof value !== 'string') bad('a string');
     if (field.type === 'Boolean' && typeof value !== 'boolean') bad('a boolean');
     if (field.type === 'DateTime' && !(value instanceof Date) && typeof value !== 'string') bad('a date');
@@ -926,7 +955,7 @@ export class MemoryPrisma {
       }
 
       this.checkType(model, field, value);
-      row[field.name] = clone(value);
+      row[field.name] = this.stored(model, field, value);
 
       if (field.id && field.defaultExpr === 'autoincrement()' && typeof row[field.name] === 'number') {
         this.counters.set(model, Math.max(this.counters.get(model) ?? 0, row[field.name]));
@@ -1062,11 +1091,20 @@ export class MemoryPrisma {
     for (const [key, value] of Object.entries<any>(changes)) {
       const field = this.field(model, key);
 
-      if (value !== null && typeof value === 'object' && !(value instanceof Date) && !Array.isArray(value) && field.kind === 'scalar' && field.type !== 'Json') {
+      if (value !== null && typeof value === 'object' && !(value instanceof Date) && !(value instanceof Decimal) && !Array.isArray(value) && field.kind === 'scalar' && field.type !== 'Json') {
         const operations = Object.keys(value);
         const current = row[key];
 
-        if (operations.includes('set')) next[key] = clone(value.set);
+        if (field.type === 'Decimal' && !field.list && operations.some((operation) => ['increment', 'decrement', 'multiply', 'divide'].includes(operation))) {
+          const operand = value[operations[0]];
+
+          this.checkType(model, field, operand);
+
+          const here = new Decimal(current ?? 0);
+          const result = 'increment' in value ? here.plus(operand) : 'decrement' in value ? here.minus(operand) : 'multiply' in value ? here.times(operand) : here.dividedBy(operand);
+
+          next[key] = this.stored(model, field, result);
+        } else if (operations.includes('set')) next[key] = this.stored(model, field, value.set);
         else if ('increment' in value) next[key] = (current ?? 0) + value.increment;
         else if ('decrement' in value) next[key] = (current ?? 0) - value.decrement;
         else if ('multiply' in value) next[key] = (current ?? 0) * value.multiply;
@@ -1075,7 +1113,7 @@ export class MemoryPrisma {
         else throw new Error(`${model}.${key}: unknown update operator ${operations.join(', ')}`);
       } else {
         this.checkType(model, field, value);
-        next[key] = clone(value);
+        next[key] = this.stored(model, field, value);
       }
 
       if (value === null && !field.optional) throw new Error(`${model}.${key} cannot be null`);
@@ -1161,6 +1199,7 @@ export class MemoryPrisma {
         const rows = self.find(model, { where: args.where });
         const out: Row = {};
         const numbers = (column: string) => rows.map((row) => row[column]).filter((value) => value !== null && value !== undefined) as number[];
+        const decimal = (column: string) => this.field(model, column).type === 'Decimal';
 
         for (const [aggregate, columns] of Object.entries<any>(args)) {
           if (!aggregate.startsWith('_')) continue;
@@ -1171,7 +1210,9 @@ export class MemoryPrisma {
             const values = numbers(column);
 
             if (aggregate === '_count') out._count[column] = column === '_all' ? rows.length : values.length;
-            else if (aggregate === '_sum') out._sum[column] = values.length ? values.reduce((a, b) => a + b, 0) : null;
+            else if (column !== '_all' && decimal(column) && ['_sum', '_avg', '_min', '_max'].includes(aggregate)) {
+              out[aggregate][column] = this.decimalAggregate(aggregate, values);
+            } else if (aggregate === '_sum') out._sum[column] = values.length ? values.reduce((a, b) => a + b, 0) : null;
             else if (aggregate === '_avg') out._avg[column] = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
             else if (aggregate === '_min') out._min[column] = values.length ? Math.min(...values) : null;
             else if (aggregate === '_max') out._max[column] = values.length ? Math.max(...values) : null;
@@ -1200,7 +1241,16 @@ export class MemoryPrisma {
           const out: Row = Object.fromEntries(by.map((column) => [column, members[0][column]]));
 
           if (args._count) out._count = args._count === true ? members.length : Object.fromEntries(Object.keys(args._count).map((column) => [column, column === '_all' ? members.length : members.filter((m) => m[column] != null).length]));
-          if (args._sum) out._sum = Object.fromEntries(Object.keys(args._sum).map((column) => [column, members.reduce((sum, m) => sum + (m[column] ?? 0), 0)]));
+          if (args._sum) {
+            out._sum = Object.fromEntries(
+              Object.keys(args._sum).map((column) => [
+                column,
+                self.field(model, column).type === 'Decimal'
+                  ? sumDecimals(members.map((m) => m[column]).filter((value) => value !== null && value !== undefined))
+                  : members.reduce((sum, m) => sum + (m[column] ?? 0), 0),
+              ]),
+            );
+          }
 
           return out;
         });

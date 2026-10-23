@@ -22,6 +22,7 @@ import { flattenVars } from './delivery/render-template';
 import { pushPayload } from './delivery/push-payload';
 import { isDeliverableEmail } from './delivery/contact';
 import { describeError } from './delivery/delivery-error';
+import { formatMoney, money } from '../../common/money/money';
 
 import {
   NotificationChannel,
@@ -1644,14 +1645,14 @@ export class NotificationsService {
         actorId,
         type: NotificationType.QUOTE_SENT,
         title: 'Devis reçu',
-        message: `Un devis de ${quote.amountTTC} € TTC vous a été envoyé.`,
+        message: `Un devis de ${formatMoney(quote.amountTTC, { currency: quote.currency })} TTC vous a été envoyé.`,
         channels,
         entityType: 'QUOTE',
         entityId: quoteId,
         data: {
           quoteId,
           interventionId: quote.interventionId,
-          amountTTC: quote.amountTTC,
+          amountTTC: money(quote.amountTTC),
         },
       });
     });
@@ -1725,7 +1726,7 @@ export class NotificationsService {
         roles: MONEY_ROLES,
         type: NotificationType.PAYMENT_RECEIVED,
         title: 'Paiement reçu',
-        message: `Paiement de ${payment.amount} ${payment.currency} reçu.`,
+        message: `Paiement de ${formatMoney(payment.amount, { currency: payment.currency })} reçu.`,
         entityType: 'PAYMENT',
         entityId: paymentId,
         data: {
@@ -1739,7 +1740,7 @@ export class NotificationsService {
         actorId,
         type: NotificationType.PAYMENT_RECEIVED,
         title: 'Paiement confirmé',
-        message: `Votre paiement de ${payment.amount} ${payment.currency} a été confirmé.`,
+        message: `Votre paiement de ${formatMoney(payment.amount, { currency: payment.currency })} a été confirmé.`,
         entityType: 'PAYMENT',
         entityId: paymentId,
         data: {

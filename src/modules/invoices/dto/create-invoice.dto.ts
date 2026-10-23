@@ -1,4 +1,8 @@
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+} from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 
 export class CreateInvoiceDto {
   @IsOptional()
@@ -6,11 +10,11 @@ export class CreateInvoiceDto {
   invoiceNumber?: string;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   amountHT?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()

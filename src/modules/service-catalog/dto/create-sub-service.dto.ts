@@ -1,11 +1,11 @@
 import {
   IsBoolean,
   IsInt,
-  IsNumber,
   IsOptional,
   IsString,
   Min,
 } from 'class-validator';
+import { IsMoney } from '../../../common/money/money-validation';
 
 export class CreateSubServiceDto {
   @IsInt()
@@ -28,13 +28,11 @@ export class CreateSubServiceDto {
   estimatedDuration?: number;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   basePrice?: number;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsMoney()
   emergencyPrice?: number;
 
   @IsOptional()

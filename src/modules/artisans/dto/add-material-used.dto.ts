@@ -1,4 +1,11 @@
-import { IsArray, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsNumber,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
+import { IsMoney } from '../../../common/money/money-validation';
 import { Type } from 'class-transformer';
 
 export class MaterialUsedItemDto {
@@ -13,7 +20,7 @@ export class MaterialUsedItemDto {
   unit?: string;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   unitPrice?: number;
 }
 

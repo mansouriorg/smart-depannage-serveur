@@ -15,6 +15,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
 import { artisanPositionIsShared } from '../../common/views/views';
+import { decimalsToNumbers } from '../../common/money/money-numbers';
 
 import {
   ArtisanLocationUpdateDto,
@@ -441,24 +442,25 @@ export class RealtimeGateway
   // Used by RealtimeService and other modules
   // ==========================================================
 
+  // Amounts are DECIMAL columns, and a Decimal travels as a text in JSON: every payload leaves with plain numbers (P2-01).
   // Chained .to(): socket.io sends to the union of the rooms, once per socket.
   // Two separate emits delivered every event twice to a socket in both rooms
   // (every admin is in 'admins' and 'admin-dashboard', every client in
   // both its client room and its user room).
   emitToAdmins(event: string, payload: any) {
-    this.server.to('admins').to('admin-dashboard').emit(event, payload);
+    this.server.to('admins').to('admin-dashboard').emit(event, decimalsToNumbers(payload));
   }
 
   emitToUser(userId: number, event: string, payload: any) {
-    this.server.to(this.userRoom(userId)).emit(event, payload);
+    this.server.to(this.userRoom(userId)).emit(event, decimalsToNumbers(payload));
   }
 
   emitToClient(clientId: number, event: string, payload: any) {
-    this.server.to(this.clientRoom(clientId)).to(this.userRoom(clientId)).emit(event, payload);
+    this.server.to(this.clientRoom(clientId)).to(this.userRoom(clientId)).emit(event, decimalsToNumbers(payload));
   }
 
   emitToArtisan(artisanId: number, event: string, payload: any) {
-    this.server.to(this.artisanRoom(artisanId)).to(this.userRoom(artisanId)).emit(event, payload);
+    this.server.to(this.artisanRoom(artisanId)).to(this.userRoom(artisanId)).emit(event, decimalsToNumbers(payload));
   }
 
   /**
@@ -472,7 +474,7 @@ export class RealtimeGateway
   }
 
   emitToIntervention(interventionId: number, event: string, payload: any) {
-    this.server.to(this.interventionRoom(interventionId)).emit(event, payload);
+    this.server.to(this.interventionRoom(interventionId)).emit(event, decimalsToNumbers(payload));
   }
 
   emitStatusChange(payload: {

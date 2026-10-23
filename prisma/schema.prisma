@@ -860,9 +860,9 @@ model SubService {
 
   estimatedDuration Int?
 
-  basePrice Float?
+  basePrice Decimal? @db.Decimal(14, 3)
 
-  emergencyPrice Float?
+  emergencyPrice Decimal? @db.Decimal(14, 3)
 
   requiresPhotos Boolean @default(false)
 
@@ -1052,10 +1052,13 @@ model Quote {
   title       String
   description String?
 
-  amountHT  Float
-  taxRate   Float @default(20)
-  taxAmount Float
-  amountTTC Float
+  // The currency the amounts were written in: the one of the company when the document was made (P2-01).
+  currency String @default("TND")
+
+  amountHT  Decimal @db.Decimal(14, 3)
+  taxRate   Decimal @db.Decimal(5, 2) @default(19)
+  taxAmount Decimal @db.Decimal(14, 3)
+  amountTTC Decimal @db.Decimal(14, 3)
 
   status     QuoteStatus @default(DRAFT)
   clientNote String?
@@ -1094,8 +1097,8 @@ model QuoteItem {
   label       String
   description String?
   quantity    Float  @default(1)
-  unitPrice   Float
-  total       Float
+  unitPrice   Decimal @db.Decimal(14, 3)
+  total       Decimal @db.Decimal(14, 3)
 
   @@index([quoteId])
 }
@@ -1120,9 +1123,9 @@ model Payment {
 
   status PaymentStatus @default(PENDING)
 
-  amount         Float
-  amountRefunded Float  @default(0)
-  currency       String @default("EUR")
+  amount         Decimal @db.Decimal(14, 3)
+  amountRefunded Decimal @db.Decimal(14, 3) @default(0)
+  currency       String @default("TND")
 
   reference         String?
   providerPaymentId String?
@@ -1201,10 +1204,13 @@ model Invoice {
   serviceType             ServiceType?
   subServiceName          String?
 
-  amountHT  Float
-  taxRate   Float @default(20)
-  taxAmount Float
-  amountTTC Float
+  // The currency the amounts were written in: the one of the company when the document was made (P2-01).
+  currency String @default("TND")
+
+  amountHT  Decimal @db.Decimal(14, 3)
+  taxRate   Decimal @db.Decimal(5, 2) @default(19)
+  taxAmount Decimal @db.Decimal(14, 3)
+  amountTTC Decimal @db.Decimal(14, 3)
 
   pdfUrl    String?
   emailedTo String?
@@ -1242,8 +1248,8 @@ model InvoiceItem {
   label       String
   description String?
   quantity    Float @default(1)
-  unitPrice   Float
-  total       Float
+  unitPrice   Decimal @db.Decimal(14, 3)
+  total       Decimal @db.Decimal(14, 3)
 
   createdAt DateTime @default(now())
 
@@ -1340,7 +1346,7 @@ model Complaint {
   refundRequested   Boolean                 @default(false)
   refundDecision    ComplaintRefundDecision @default(NOT_REQUESTED)
   refundApproved    Boolean                 @default(false)
-  refundAmount      Float?
+  refundAmount      Decimal? @db.Decimal(14, 3)
   refundDecidedById Int?
   refundDecidedAt   DateTime?
 
@@ -1657,7 +1663,7 @@ model Appointment {
   startsAt DateTime?
   endsAt   DateTime?
 
-  timezone String @default("Europe/Paris")
+  timezone String @default("Africa/Tunis")
 
   clientNote  String?
   adminNote   String?
@@ -1785,18 +1791,18 @@ model InterventionFinancials {
   interventionId Int          @unique
   intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
 
-  currency String @default("EUR")
+  currency String @default("TND")
 
-  totalPrice Float
+  totalPrice Decimal @db.Decimal(14, 3)
 
-  commissionRate     Float @default(20)
-  platformCommission Float
-  artisanPayout      Float
-  paymentProviderFee Float @default(0)
-  refundAmount       Float @default(0)
+  commissionRate     Decimal @db.Decimal(5, 2) @default(20)
+  platformCommission Decimal @db.Decimal(14, 3)
+  artisanPayout      Decimal @db.Decimal(14, 3)
+  paymentProviderFee Decimal @db.Decimal(14, 3) @default(0)
+  refundAmount       Decimal @db.Decimal(14, 3) @default(0)
 
-  netRevenue    Float
-  companyMargin Float
+  netRevenue    Decimal @db.Decimal(14, 3)
+  companyMargin Decimal @db.Decimal(14, 3)
 
   notes          String?
   calculatedById Int?
@@ -1831,12 +1837,12 @@ model ArtisanPayout {
   periodStart DateTime
   periodEnd   DateTime
 
-  currency String @default("EUR")
+  currency String @default("TND")
 
-  grossAmount         Float @default(0)
-  paymentProviderFees Float @default(0)
-  refundsDeducted     Float @default(0)
-  netAmount           Float @default(0)
+  grossAmount         Decimal @db.Decimal(14, 3) @default(0)
+  paymentProviderFees Decimal @db.Decimal(14, 3) @default(0)
+  refundsDeducted     Decimal @db.Decimal(14, 3) @default(0)
+  netAmount           Decimal @db.Decimal(14, 3) @default(0)
 
   paymentReference String?
   paidAt           DateTime?
@@ -1870,7 +1876,7 @@ model ArtisanPayoutItem {
 
   interventionId Int
 
-  amount Float
+  amount Decimal @db.Decimal(14, 3)
 
   createdAt DateTime @default(now())
 
@@ -1890,20 +1896,20 @@ model BusinessReport {
 
   label String?
 
-  currency String @default("EUR")
+  currency String @default("TND")
 
   interventionCount     Int @default(0)
   paidInterventionCount Int @default(0)
   refundedCount         Int @default(0)
 
-  totalRevenue        Float @default(0)
-  totalCommission     Float @default(0)
-  totalArtisanPayouts Float @default(0)
-  totalPaymentFees    Float @default(0)
-  totalRefunds        Float @default(0)
+  totalRevenue        Decimal @db.Decimal(14, 3) @default(0)
+  totalCommission     Decimal @db.Decimal(14, 3) @default(0)
+  totalArtisanPayouts Decimal @db.Decimal(14, 3) @default(0)
+  totalPaymentFees    Decimal @db.Decimal(14, 3) @default(0)
+  totalRefunds        Decimal @db.Decimal(14, 3) @default(0)
 
-  netRevenue    Float @default(0)
-  companyMargin Float @default(0)
+  netRevenue    Decimal @db.Decimal(14, 3) @default(0)
+  companyMargin Decimal @db.Decimal(14, 3) @default(0)
 
   data Json?
 
@@ -1934,8 +1940,8 @@ model AccountingExport {
   fileUrl  String?
 
   totalLines  Int   @default(0)
-  totalDebit  Float @default(0)
-  totalCredit Float @default(0)
+  totalDebit  Decimal @db.Decimal(14, 3) @default(0)
+  totalCredit Decimal @db.Decimal(14, 3) @default(0)
 
   data Json?
 
@@ -1986,8 +1992,19 @@ model CompanySettings {
 
   smsSender String?
 
-  defaultTaxRate      Float @default(20)
-  defaultEmergencyFee Float @default(0)
+  // Where the business is (P2-01). Amounts are DECIMAL(14,3): the dinar has three decimals (millimes).
+  currency String @default("TND")
+  timezone String @default("Africa/Tunis")
+
+  // VAT rates a quote or an invoice can take: [{ code, label, rate }]. Null means the rates of the country (common/locale).
+  taxRates Json?
+
+  defaultTaxRate      Decimal @db.Decimal(5, 2) @default(19)
+  defaultEmergencyFee Decimal @db.Decimal(14, 3) @default(0)
+
+  // What an invoice prints: the bank account (RIB, 20 digits) and the matricule fiscal of the company.
+  rib             String?
+  matriculeFiscal String?
 
   openingHours Json?
 

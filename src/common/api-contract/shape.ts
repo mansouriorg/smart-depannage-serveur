@@ -25,7 +25,8 @@ const SCALAR_TS: Record<string, string> = {
   // A date travels as text in JSON.
   DateTime: 'string',
   Json: 'JsonValue',
-  Decimal: 'string',
+  // A DECIMAL column leaves the API as a plain number (common/money/money-numbers), with at most three decimals.
+  Decimal: 'number',
   BigInt: 'string',
   Bytes: 'string',
 };

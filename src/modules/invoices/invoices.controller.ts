@@ -95,7 +95,7 @@ export class InvoicesController {
    * {
    *   "interventionId": 12,
    *   "amountHT": 120,
-   *   "taxRate": 20,
+   *   "taxRate": 19,
    *   "notes": "Merci pour votre confiance."
    * }
    */

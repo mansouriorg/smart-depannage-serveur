@@ -12,12 +12,14 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import { IsMoney, IsTaxRate } from '../../../common/money/money-validation';
 import { Type } from 'class-transformer';
 
 import { INTERVENTION_NOTE_MAX } from '../../../common/views/case-file';
@@ -192,7 +194,7 @@ export class QuoteItemDto {
   @IsNumber()
   quantity: number;
 
-  @IsNumber()
+  @IsMoney()
   unitPrice: number;
 }
 
@@ -205,7 +207,7 @@ export class AdminSendQuoteDto {
   description?: string;
 
   @IsOptional()
-  @IsNumber()
+  @IsTaxRate()
   taxRate?: number;
 
   @IsOptional()
@@ -442,7 +444,7 @@ export class DecideRefundDto {
   approved: boolean;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   amount?: number;
 
   @IsOptional()
@@ -464,6 +466,21 @@ export class AdminContactDto {
 // SETTINGS
 // ==========================================================
 
+/** One VAT rate a quote or an invoice can take. */
+export class TaxRateOptionDto {
+  @IsString()
+  @Matches(/^[A-Z0-9_]{1,32}$/)
+  code: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  label?: string;
+
+  @IsTaxRate()
+  rate: number;
+}
+
 export class UpdateCompanySettingsDto {
   @IsOptional()
   @IsString()
@@ -481,13 +498,45 @@ export class UpdateCompanySettingsDto {
   @IsString()
   smsSender?: string;
 
+  /** ISO 4217 code of the amounts: TND. */
   @IsOptional()
-  @IsNumber()
+  @IsString()
+  @Matches(/^[A-Z]{3}$/)
+  currency?: string;
+
+  /** IANA name of the time zone of the business: Africa/Tunis. Checked against the runtime by the service. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  timezone?: string;
+
+  /** The VAT rates; the default rate is one of them. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => TaxRateOptionDto)
+  taxRates?: TaxRateOptionDto[];
+
+  @IsOptional()
+  @IsTaxRate()
   defaultTaxRate?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   defaultEmergencyFee?: number;
+
+  /** Bank account printed on the invoices: 20 digits (spaces allowed). An empty text clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  rib?: string;
+
+  /** Tax number printed on the invoices. An empty text clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  matriculeFiscal?: string;
 
   @IsOptional()
   @IsObject()
@@ -594,11 +643,11 @@ export class UpdateSubServicePricingDto {
   estimatedDuration?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   basePrice?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsMoney()
   emergencyPrice?: number;
 
   @IsOptional()
