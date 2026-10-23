@@ -26,6 +26,7 @@ import {
   Role,
   Status,
 } from '../../../generated/prisma/client';
+import { isTicketStaff } from '../../common/auth/role-policy';
 
 type SocketUser = {
   id: number;
@@ -346,7 +347,8 @@ export class RealtimeGateway
   ) {
     const user = this.getUser(client);
 
-    if (user.role !== Role.ARTISAN && !this.isAdminRole(user.role)) {
+    // The position of an artisan is theirs to send, or the staff's who work on tickets: the accountant writes no position.
+    if (user.role !== Role.ARTISAN && !isTicketStaff(user.role)) {
       throw new WsException('Only artisan or admin can update location.');
     }
 
@@ -374,10 +376,10 @@ export class RealtimeGateway
       throw new WsException('Intervention introuvable.');
     }
 
-    const isAdmin = this.isAdminRole(user.role);
+    const isStaff = isTicketStaff(user.role);
     const isAssignedArtisan = intervention.artisanId === user.id;
 
-    if (!isAdmin && !isAssignedArtisan) {
+    if (!isStaff && !isAssignedArtisan) {
       throw new WsException(
         'Vous ne pouvez pas envoyer la position pour cette intervention.',
       );

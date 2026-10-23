@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { leakedTo, poisonedJob } from '../../common/testing/poison';
 import { InterventionWorkflowService } from './intervention-workflow.service';
@@ -8,13 +8,15 @@ import { InterventionWorkflowService } from './intervention-workflow.service';
  * P1-08: the timeline of a job. The back office reads every line, with the author and the notes it
  * wrote for itself; the customer, the artisan and the visitor with the link read the lines meant for them.
  */
-function makeWorld() {
+function makeWorld(options: { jobExists?: boolean } = {}) {
   const prisma: any = {
     intervention: {
       findUnique: async ({ select }: any) =>
-        select
-          ? { ...poisonedJob(), trackingToken: createHash('sha256').update('raw').digest('hex') }
-          : poisonedJob(),
+        options.jobExists === false
+          ? null
+          : select
+            ? { ...poisonedJob(), trackingToken: createHash('sha256').update('raw').digest('hex') }
+            : poisonedJob(),
     },
     interventionEvent: { findMany: async () => poisonedJob().events },
     user: { findMany: async () => [{ id: 5, name: 'Support', email: 'support@x.tn', role: 'SUPPORT' }, { id: 20, name: 'Ali', email: 'ali@x.tn', role: 'ARTISAN' }] },
@@ -55,6 +57,28 @@ describe('the timeline of a job (P1-08)', () => {
   });
 
   it('a wrong link reads nothing', async () => {
-    await expect(makeWorld().getPublicTimeline(1, 'nope')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(makeWorld().getPublicTimeline(1, 'nope')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('a link that was not sent reads nothing, and is not a crash (P1-17)', async () => {
+    await expect(makeWorld().getPublicTimeline(1, undefined as any)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(makeWorld().getPublicTimeline(1, '')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('a job that does not exist and a wrong link get the same answer, so the route cannot be used to find which job numbers exist (P1-17)', async () => {
+    const wrong: any = await makeWorld().getPublicTimeline(1, 'nope').catch((error) => error);
+    const missing: any = await makeWorld({ jobExists: false }).getPublicTimeline(1, 'raw').catch((error) => error);
+
+    expect(wrong.getStatus()).toBe(missing.getStatus());
+    expect(wrong.message).toBe(missing.message);
+  });
+
+  it('a job with no link of its own (made by a signed-in customer) is not opened by an empty one (P1-17)', async () => {
+    const prisma: any = {
+      intervention: { findUnique: async () => ({ ...poisonedJob(), trackingToken: null }) },
+      interventionEvent: { findMany: async () => [] },
+    };
+
+    await expect(new InterventionWorkflowService(prisma).getPublicTimeline(1, '')).rejects.toBeInstanceOf(NotFoundException);
   });
 });

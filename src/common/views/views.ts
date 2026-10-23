@@ -450,6 +450,85 @@ export function complaintForClient(complaint: any) {
 }
 
 // ==========================================================
+// The visit (the appointment of a job)
+// ==========================================================
+
+const APPOINTMENT_COLUMNS = [
+  'id',
+  'interventionId',
+  'clientId',
+  'artisanId',
+  'status',
+  'preferredDate',
+  'preferredStartTime',
+  'preferredEndTime',
+  'startsAt',
+  'endsAt',
+  'timezone',
+  'clientNote',
+  'confirmedAt',
+  'cancelledAt',
+  'cancelReason',
+  'createdAt',
+  'updatedAt',
+];
+
+const APPOINTMENT_REQUEST_COLUMNS = [
+  'id',
+  'appointmentId',
+  'requestedById',
+  'type',
+  'status',
+  'requestedStartAt',
+  'requestedEndAt',
+  'reason',
+  'reviewedAt',
+  'createdAt',
+  'updatedAt',
+];
+
+/**
+ * A request to move or cancel a visit as the customer or the artisan reads it. The back office's
+ * answer is addressed to whoever asked and stays with them; the other party sees that there is a
+ * request and what it asks, not what the back office wrote back, nor who reviewed it.
+ */
+export function appointmentRequestForParties(request: any, viewerId: number) {
+  if (!request) return request;
+
+  return {
+    ...pick(request, APPOINTMENT_REQUEST_COLUMNS),
+    ...(request.requestedById === viewerId ? pick(request, ['adminResponse']) : {}),
+  };
+}
+
+/**
+ * The visit of a job as the customer or the artisan reads it: when, with whom, and what each side
+ * wrote, but not the back office's note, nor who planned it, nor the reminders the server keeps.
+ * The other side is a name and a number (the customer's e-mail goes to the artisan of the job, as
+ * everywhere else; the artisan's never goes to the customer).
+ */
+export function appointmentForParties(appointment: any, side: Side, viewerId: number) {
+  if (!appointment) return appointment;
+
+  return {
+    ...pick(appointment, APPOINTMENT_COLUMNS),
+    ...(appointment.client !== undefined
+      ? { client: appointment.client ? (side === 'client' ? clientOwn(appointment.client) : clientForArtisan(appointment.client)) : appointment.client }
+      : {}),
+    ...(appointment.artisan !== undefined
+      ? {
+          artisan: appointment.artisan
+            ? side === 'client'
+              ? artisanForClient(appointment.artisan)
+              : pick(appointment.artisan, ['id', 'name', 'phone', 'email'])
+            : appointment.artisan,
+        }
+      : {}),
+    ...(Array.isArray(appointment.requests) ? { requests: each(appointment.requests, (request) => appointmentRequestForParties(request, viewerId)) } : {}),
+  };
+}
+
+// ==========================================================
 // Files
 // ==========================================================
 

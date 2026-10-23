@@ -40,7 +40,8 @@ export class InterventionWorkflowService {
   // ==========================================================
 
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
+    // A link that was not sent at all hashes like an empty one, which no job has: "not found", not a crash (P1-17).
+    return crypto.createHash('sha256').update(String(token ?? '')).digest('hex');
   }
 
   private isAdminRole(role: Role): boolean {
@@ -369,12 +370,10 @@ export class InterventionWorkflowService {
       },
     });
 
-    if (!intervention) {
-      throw new NotFoundException('Intervention introuvable.');
-    }
-
-    if (intervention.trackingToken !== this.hashToken(rawToken)) {
-      throw new ForbiddenException('Lien de suivi invalide.');
+    // A job that does not exist and a link that is wrong get the same answer, word for word: the route must not tell
+    // a visitor which job numbers are in use (P1-17).
+    if (!intervention || !intervention.trackingToken || intervention.trackingToken !== this.hashToken(rawToken)) {
+      throw new NotFoundException('Lien de suivi invalide ou expiré.');
     }
 
     const events = await this.prisma.interventionEvent.findMany({

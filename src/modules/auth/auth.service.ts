@@ -94,7 +94,11 @@ export class AuthService {
   }
 
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
+    // A missing token is hashed as an empty one: it finds nothing, and is refused like any made-up token.
+    return crypto
+      .createHash('sha256')
+      .update(String(token ?? ''))
+      .digest('hex');
   }
 
   private generateRandomToken(): string {

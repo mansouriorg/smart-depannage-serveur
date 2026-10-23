@@ -26,7 +26,9 @@ function listFiles(dir: string, suffix: string): string[] {
   return out;
 }
 
-const productionFiles = listFiles(SRC, '.ts').filter((file) => !file.endsWith('.spec.ts'));
+// The test support (common/testing) is not production code: its scenarios write the paths they test.
+const TESTING = path.join(SRC, 'common', 'testing') + path.sep;
+const productionFiles = listFiles(SRC, '.ts').filter((file) => !file.endsWith('.spec.ts') && !file.startsWith(TESTING));
 
 /** The decorators in front of each property of a DTO class, by property name. */
 function propertyDecorators(source: string): Array<{ name: string; decorators: string }> {

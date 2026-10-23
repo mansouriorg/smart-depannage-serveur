@@ -9,7 +9,15 @@ import * as path from 'path';
 
 export const SRC_ROOT = path.resolve(__dirname, '../..');
 
-/** Every non-spec .ts file under `dir`, as a path relative to src, with forward slashes. */
+/** The folder of the test support (this file, the in-memory database, the scenarios): code that tests use and the application never loads. */
+const TESTING_DIR = path.join(SRC_ROOT, 'common', 'testing');
+
+/**
+ * Every non-spec .ts file under `dir`, as a path relative to src, with forward slashes. The test support
+ * (`common/testing`) is not part of the application and is left out: the rules these scans keep (who writes a
+ * column, who takes a lock, how a link is built) are rules for the application's code, and the scenarios have to
+ * name those columns and links to check them.
+ */
 export function listSourceFiles(dir: string = SRC_ROOT): string[] {
   const out: string[] = [];
 
@@ -17,6 +25,8 @@ export function listSourceFiles(dir: string = SRC_ROOT): string[] {
     const full = path.join(dir, entry.name);
 
     if (entry.isDirectory()) {
+      if (full === TESTING_DIR) continue;
+
       out.push(...listSourceFiles(full));
     } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts')) {
       out.push(path.relative(SRC_ROOT, full).split(path.sep).join('/'));

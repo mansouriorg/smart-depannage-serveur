@@ -42,7 +42,7 @@ const ROUTE_DECORATOR = /@(Get|Post|Patch|Put|Delete)\(/g;
 const GATE = /if\s*\(\s*!\s*isTicketStaff\s*\([^)]*\)\s*\)\s*\{?\s*throw\b/;
 
 /** The text between the parenthesis that opens at `open` and the one that closes it, or null when it is not closed. */
-function balancedArguments(text: string, open: number): string | null {
+export function balancedArguments(text: string, open: number): string | null {
   let depth = 0;
   let quote: string | null = null;
 
@@ -67,7 +67,7 @@ function balancedArguments(text: string, open: number): string | null {
 }
 
 /** The arguments of a call split at the commas that are not inside a bracket or a string. */
-function splitArguments(args: string): string[] {
+export function splitArguments(args: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let quote: string | null = null;

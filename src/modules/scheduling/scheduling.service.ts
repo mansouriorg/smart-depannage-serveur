@@ -21,6 +21,8 @@ import { MissionActionsService } from '../mission-actions/mission-actions.servic
 import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
 import { lockArtisanCalendar, lockJob } from '../assignment/artisan-lock';
 import { replaceDefaultReminders } from '../assignment/appointment-reminders';
+import { appointmentForParties, appointmentRequestForParties } from '../../common/views/views';
+import { isTicketStaff } from '../../common/auth/role-policy';
 
 import {
   AppointmentReminderStatus,
@@ -67,16 +69,23 @@ export class SchedulingService {
   // Helpers
   // ==========================================================
 
+  /**
+   * The staff who work on jobs: scheduling a visit, answering a request to move or cancel it, accepting for an
+   * artisan all move a job's status, which is theirs alone (P1-17). The accountant is of the back office but has no
+   * business here: the dashboard offers no scheduling page to that role.
+   */
   private isStaff(role: Role): boolean {
-    const staffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
+    return isTicketStaff(role);
+  }
 
-    return staffRoles.includes(role);
+  /**
+   * The visit as this person may read it (P1-17): the back office gets the row as it is; the customer and
+   * the artisan of the job get a copy without the back office's note, the staff ids and the reminders.
+   */
+  private visitFor(appointment: any, userId: number, role: Role, clientId: number) {
+    if (!appointment || this.isStaff(role)) return appointment;
+
+    return appointmentForParties(appointment, clientId === userId ? 'client' : 'artisan', userId);
   }
 
   private assertValidRange(startsAt: Date, endsAt: Date) {
@@ -389,7 +398,9 @@ export class SchedulingService {
       interventionId,
     );
 
-    if (role === Role.CLIENT && intervention.clientId !== userId) {
+    // The time is the customer's to give. The artisan of the job is on the job, and may ask to move the
+    // visit (reschedule-request), but does not change the time the customer asked for (P1-17).
+    if (!this.isStaff(role) && intervention.clientId !== userId) {
       throw new ForbiddenException('Vous ne pouvez modifier que vos demandes.');
     }
 
@@ -429,7 +440,7 @@ export class SchedulingService {
       },
     });
 
-    return appointment;
+    return this.visitFor(appointment, userId, role, intervention.clientId);
   }
 
   async getAppointmentForIntervention(
@@ -437,9 +448,9 @@ export class SchedulingService {
     role: Role,
     interventionId: number,
   ) {
-    await this.checkInterventionAccess(userId, role, interventionId);
+    const intervention = await this.checkInterventionAccess(userId, role, interventionId);
 
-    return this.prisma.appointment.findUnique({
+    const appointment = await this.prisma.appointment.findUnique({
       where: {
         interventionId,
       },
@@ -468,6 +479,8 @@ export class SchedulingService {
         reminders: true,
       },
     });
+
+    return this.visitFor(appointment, userId, role, intervention.clientId);
   }
 
   async requestReschedule(
@@ -516,7 +529,7 @@ export class SchedulingService {
       entityId: request.id,
     });
 
-    return request;
+    return this.isStaff(role) ? request : appointmentRequestForParties(request, userId);
   }
 
   async requestCancel(
@@ -558,7 +571,7 @@ export class SchedulingService {
       entityId: request.id,
     });
 
-    return request;
+    return this.isStaff(role) ? request : appointmentRequestForParties(request, userId);
   }
 
   // ==========================================================
@@ -1056,10 +1069,12 @@ export class SchedulingService {
 
       await this.missionActions.accept({ userId, interventionId: appointment.interventionId });
 
-      return this.prisma.appointment.update({
+      const confirmed = await this.prisma.appointment.update({
         where: { id: appointmentId },
         data: { status: AppointmentStatus.CONFIRMED, confirmedAt: new Date() },
       });
+
+      return this.visitFor(confirmed, userId, role, appointment.clientId);
     }
 
     // Staff accepting for the artisan: the status table lets them, and the client is told.

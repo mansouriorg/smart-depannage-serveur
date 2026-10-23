@@ -118,7 +118,8 @@ export class GuestService {
   }
 
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
+    // A link that was not sent at all hashes like an empty one, which no job has: "not found", not a crash (P1-17).
+    return crypto.createHash('sha256').update(String(token ?? '')).digest('hex');
   }
 
   private generateRawToken(): string {
