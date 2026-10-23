@@ -495,6 +495,7 @@ model User {
   artisanTimeBlocks   ArtisanTimeBlock[] @relation("ArtisanTimeBlocks")
 
   artisanPayouts           ArtisanPayout[]    @relation("ArtisanPayouts")
+  cashLedgerEntries        CashLedgerEntry[]  @relation("ArtisanCashLedger")
   businessReportsCreated   BusinessReport[]   @relation("BusinessReportsCreated")
   accountingExportsCreated AccountingExport[] @relation("AccountingExportsCreated")
 
@@ -989,6 +990,8 @@ model Intervention {
   appointment Appointment?
   financials  InterventionFinancials?
 
+  cashLedgerEntries CashLedgerEntry[]
+
   missionRejections ArtisanMissionRejection[]
 
   createdAt DateTime @default(now())
@@ -1149,6 +1152,8 @@ model Payment {
   failedAt    DateTime?
   refundedAt  DateTime?
   cancelledAt DateTime?
+
+  cashLedgerEntries CashLedgerEntry[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1824,6 +1829,55 @@ model InterventionFinancials {
   @@index([companyMargin])
   @@index([calculatedById])
   @@index([createdAt])
+}
+
+/// One line of the cash an artisan holds for the platform (P2-02). The lines are only ever added, never changed or deleted:
+/// a mistake is corrected by another line. Each line says what it does to two figures, signed:
+///   - cashAmount: the cash the artisan has taken from customers (a collection adds it, a reversal takes it back);
+///   - commissionAmount: what the artisan owes the platform (a collection adds the commission, a remittance takes it off).
+/// The balance of an artisan is the sum of commissionAmount. `type` is one of COLLECTION, REMITTANCE, REVERSAL and ADJUSTMENT
+/// (a text and not an enum, so that the shared package does not change with it).
+model CashLedgerEntry {
+  id Int @id @default(autoincrement())
+
+  artisanId Int
+  artisan   User @relation("ArtisanCashLedger", fields: [artisanId], references: [id], onDelete: Restrict)
+
+  type String
+
+  interventionId Int?
+  intervention   Intervention? @relation(fields: [interventionId], references: [id], onDelete: SetNull)
+
+  paymentId Int?
+  payment   Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  cashAmount       Decimal @db.Decimal(14, 3) @default(0)
+  commissionAmount Decimal @db.Decimal(14, 3) @default(0)
+
+  // The rate (percent) the commission of a collection was computed at, kept with the line.
+  commissionRate Decimal? @db.Decimal(5, 2)
+
+  currency String @default("TND")
+
+  // The number of a transfer or of a receipt (a remittance), and the words of the person who typed the line.
+  reference String?
+  note      String?
+
+  // The line that this one takes back (a reversal): a line is taken back once.
+  reversesId Int? @unique
+
+  // The caller's own key for the request, so that sending it twice writes one line.
+  requestKey String?
+
+  recordedById Int?
+
+  createdAt DateTime @default(now())
+
+  @@unique([artisanId, requestKey])
+  @@index([artisanId, createdAt])
+  @@index([interventionId])
+  @@index([paymentId])
+  @@index([type])
 }
 
 model ArtisanPayout {

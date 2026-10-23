@@ -56,6 +56,7 @@ import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { MatchingModule } from './modules/matching/matching.module';
 import { BusinessModule } from './modules/business/business.module';
 import { ProofsModule } from './modules/proofs/proofs.module';
+import { CashLedgerModule } from './modules/cash-ledger/cash-ledger.module';
 
 // Uploaded files are user content: the browser must use the declared type and
 // never guess one (a file that "looks like" HTML would then run).
@@ -149,6 +150,7 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     SchedulingModule,
     MatchingModule,
     ProofsModule,
+    CashLedgerModule,
 
     // ======================================================
     // G. GUEST CLIENT FEATURES

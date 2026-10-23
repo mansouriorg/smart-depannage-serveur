@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -18,7 +19,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { compareMoney, divideMoney, formatMoney, money, percentOf, ratioPercent, subtractMoney, sumMoneyOf, toMoneyString } from '../../common/money/money';
 import { decimalsToNumbers } from '../../common/money/money-numbers';
 import { currencyCode } from '../../common/locale/locale';
-import { businessDateOf, businessMonthRange, startOfBusinessMonth } from '../../common/locale/business-time';
+import { businessDateOf, businessMonthRange, instantOf, startOfBusinessMonth } from '../../common/locale/business-time';
+import { DEFAULT_COMMISSION_RATE } from '../cash-ledger/cash-ledger.types';
+import { lockPayouts } from '../assignment/artisan-lock';
+import { PayoutDecision, payoutDecisions } from './payout-holds';
 
 import {
   BusinessDateRangeQueryDto,
@@ -27,10 +31,8 @@ import {
   CreatePayoutDto,
   ExportQueryDto,
   MarkPayoutPaidDto,
+  PayoutPreviewQueryDto,
 } from './dto/business.dto';
-
-/** The share of the price that the platform keeps when nobody gave a rate (percent). */
-const DEFAULT_COMMISSION_RATE = 20;
 
 @Injectable()
 export class BusinessService {
@@ -555,15 +557,10 @@ export class BusinessService {
   // Artisan payouts
   // ==========================================================
 
-  async createArtisanPayout(
-    userId: number,
-    role: Role,
-    dto: CreatePayoutDto,
-  ) {
-    this.assertStaff(role);
-
-    const periodStart = new Date(dto.periodStart);
-    const periodEnd = new Date(dto.periodEnd);
+  /** The period of a payout from what was typed: a time without an offset is read on the clock of the business. */
+  private payoutPeriod(dto: { periodStart: string; periodEnd: string }) {
+    const periodStart = instantOf(dto.periodStart);
+    const periodEnd = instantOf(dto.periodEnd);
 
     if (
       Number.isNaN(periodStart.getTime()) ||
@@ -573,9 +570,13 @@ export class BusinessService {
       throw new BadRequestException('Période invalide.');
     }
 
+    return { periodStart, periodEnd };
+  }
+
+  private async activeArtisanOrFail(artisanId: number) {
     const artisan = await this.prisma.user.findFirst({
       where: {
-        id: dto.artisanId,
+        id: artisanId,
         role: Role.ARTISAN,
         isActive: true,
         deletedAt: null,
@@ -586,17 +587,25 @@ export class BusinessService {
       throw new NotFoundException('Artisan introuvable.');
     }
 
-    const financials = await this.prisma.interventionFinancials.findMany({
+    return artisan;
+  }
+
+  /**
+   * The jobs of the artisan in the period that no payout has taken yet (a cancelled payout takes none), split into those that
+   * can be paid now, with what they pay, and those that are held back, each with its reasons (see `payout-holds`).
+   */
+  private async payoutCandidates(db: any, artisanId: number, periodStart: Date, periodEnd: Date) {
+    const financials: any[] = await db.interventionFinancials.findMany({
       where: {
         createdAt: {
           gte: periodStart,
           lte: periodEnd,
         },
         intervention: {
-          artisanId: dto.artisanId,
+          artisanId,
         },
         payoutItems: {
-          none: {},
+          none: { payout: { status: { not: PayoutStatus.CANCELLED } } },
         },
       },
       include: this.financialInclude(),
@@ -605,55 +614,111 @@ export class BusinessService {
       },
     });
 
-    if (!financials.length) {
-      throw new BadRequestException(
-        'Aucune intervention financière disponible pour ce payout.',
-      );
-    }
+    const decisions = await payoutDecisions(db, artisanId, financials);
+    const decisionOf = (item: any) => decisions.get(item.id) as PayoutDecision;
 
-    const grossAmount = sumMoneyOf(financials.map((item) => item.artisanPayout));
+    return {
+      free: financials.filter((item) => decisionOf(item).reasons.length === 0).map((item) => ({ financial: item, amount: decisionOf(item).amount, cashHeld: decisionOf(item).cashHeld })),
+      held: financials.filter((item) => decisionOf(item).reasons.length > 0).map((item) => ({ financial: item, reasons: decisionOf(item).reasons, amount: decisionOf(item).amount })),
+    };
+  }
 
-    const refundsDeducted = 0;
-    const paymentProviderFees = 0;
-    const netAmount = subtractMoney(subtractMoney(grossAmount, refundsDeducted), paymentProviderFees);
+  /**
+   * What a payout of this artisan for this period would pay, and what it would leave out and why. Writes nothing.
+   *
+   * GET /business/payouts/preview
+   */
+  async previewArtisanPayout(userId: number, role: Role, query: PayoutPreviewQueryDto) {
+    this.assertStaff(role);
 
-    return this.prisma.artisanPayout.create({
-      data: {
-        artisanId: dto.artisanId,
-        status: PayoutStatus.READY,
-        periodStart,
-        periodEnd,
-        currency: currencyCode(),
-        grossAmount,
-        paymentProviderFees,
-        refundsDeducted,
-        netAmount,
-        notes: dto.notes?.trim() || null,
-        items: {
-          create: financials.map((item) => ({
-            financialId: item.id,
-            interventionId: item.interventionId,
-            amount: money(item.artisanPayout),
-          })),
-        },
-      },
-      include: {
-        artisan: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
+    const { periodStart, periodEnd } = this.payoutPeriod(query);
+    const artisan = await this.activeArtisanOrFail(query.artisanId);
+    const { free, held } = await this.payoutCandidates(this.prisma, artisan.id, periodStart, periodEnd);
+
+    return {
+      artisanId: artisan.id,
+      periodStart,
+      periodEnd,
+      currency: currencyCode(),
+      grossAmount: sumMoneyOf(free.map((item) => item.amount)),
+      included: free.map(({ financial, amount, cashHeld }) => ({ financialId: financial.id, interventionId: financial.interventionId, amount, cashHeld })),
+      held: held.map(({ financial, reasons, amount }) => ({
+        financialId: financial.id,
+        interventionId: financial.interventionId,
+        amount,
+        reasons,
+      })),
+    };
+  }
+
+  async createArtisanPayout(
+    userId: number,
+    role: Role,
+    dto: CreatePayoutDto,
+  ) {
+    this.assertStaff(role);
+
+    const { periodStart, periodEnd } = this.payoutPeriod(dto);
+    const artisan = await this.activeArtisanOrFail(dto.artisanId);
+
+    // One payout of an artisan is made at a time: two requests that both see a job as free would both pay it.
+    return this.prisma.$transaction(async (tx) => {
+      await lockPayouts(tx, artisan.id);
+
+      const { free, held } = await this.payoutCandidates(tx, artisan.id, periodStart, periodEnd);
+
+      if (!free.length) {
+        throw new BadRequestException(
+          held.length
+            ? `Aucune intervention financière ne peut être payée maintenant: ${held.length} intervention(s) sont retenues (litige, remboursement ou espèces déjà encaissées).`
+            : 'Aucune intervention financière disponible pour ce payout.',
+        );
+      }
+
+      const grossAmount = sumMoneyOf(free.map((item) => item.amount));
+
+      const refundsDeducted = 0;
+      const paymentProviderFees = 0;
+      const netAmount = subtractMoney(subtractMoney(grossAmount, refundsDeducted), paymentProviderFees);
+
+      return tx.artisanPayout.create({
+        data: {
+          artisanId: artisan.id,
+          status: PayoutStatus.READY,
+          periodStart,
+          periodEnd,
+          currency: currencyCode(),
+          grossAmount,
+          paymentProviderFees,
+          refundsDeducted,
+          netAmount,
+          notes: dto.notes?.trim() || null,
+          items: {
+            create: free.map(({ financial, amount }) => ({
+              financialId: financial.id,
+              interventionId: financial.interventionId,
+              amount,
+            })),
           },
         },
-        items: {
-          include: {
-            financial: {
-              include: this.financialInclude(),
+        include: {
+          artisan: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          items: {
+            include: {
+              financial: {
+                include: this.financialInclude(),
+              },
             },
           },
         },
-      },
+      });
     });
   }
 
@@ -678,6 +743,11 @@ export class BusinessService {
     });
   }
 
+  /**
+   * The payout has been paid. Saying it twice changes nothing: the second call answers the payout as the first one left it
+   * (same date, same reference), whether it comes a minute later or at the same moment. A payout that was cancelled or failed
+   * is not paid by this call.
+   */
   async markPayoutPaid(
     userId: number,
     role: Role,
@@ -685,6 +755,18 @@ export class BusinessService {
     dto: MarkPayoutPaidDto,
   ) {
     this.assertStaff(role);
+
+    const include = {
+      artisan: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+        },
+      },
+      items: true,
+    };
 
     const payout = await this.prisma.artisanPayout.findUnique({
       where: {
@@ -696,26 +778,105 @@ export class BusinessService {
       throw new NotFoundException('Payout introuvable.');
     }
 
-    return this.prisma.artisanPayout.update({
-      where: {
-        id: payoutId,
-      },
-      data: {
-        status: PayoutStatus.PAID,
-        paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
-        paymentReference: dto.paymentReference?.trim() || null,
-      },
-      include: {
-        artisan: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-          },
+    const paidAt = dto.paidAt ? instantOf(dto.paidAt) : new Date();
+
+    if (Number.isNaN(paidAt.getTime())) {
+      throw new BadRequestException('Date de paiement invalide.');
+    }
+
+    // One payout of an artisan changes at a time (the same lock as the creation of a payout and a cash collection): of two
+    // requests at the same moment, the second one finds the payout already paid and answers it as the first one left it.
+    return this.prisma.$transaction(async (tx) => {
+      await lockPayouts(tx, payout.artisanId);
+
+      const current = await tx.artisanPayout.findUnique({ where: { id: payoutId }, include });
+
+      if (!current) {
+        throw new NotFoundException('Payout introuvable.');
+      }
+
+      if (current.status === PayoutStatus.PAID) {
+        return current;
+      }
+
+      if (current.status !== PayoutStatus.PENDING && current.status !== PayoutStatus.READY) {
+        throw new ConflictException(`Ce payout est ${current.status === PayoutStatus.CANCELLED ? 'annulé' : 'en échec'}: il ne peut pas être marqué comme payé.`);
+      }
+
+      // Between its creation and now a job of the payout may have been disputed, refunded, or paid in cash (all or part of it),
+      // or its share may have been calculated again: what the payout says it pays is then no longer what the job is owed. Such a
+      // payout is not paid, it is cancelled and made again.
+      const financials: any[] = await tx.interventionFinancials.findMany({ where: { id: { in: current.items.map((item: any) => item.financialId) } } });
+      const decisions = await payoutDecisions(tx, current.artisanId, financials);
+      const changed = current.items.filter((item: any) => {
+        const decision = decisions.get(item.financialId);
+
+        return !decision || decision.reasons.length > 0 || compareMoney(money(item.amount), decision.amount) !== 0;
+      });
+
+      if (changed.length > 0) {
+        throw new ConflictException(
+          `Ce payout ne peut pas être marqué comme payé: ${changed.length} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées ou montant). Annulez-le puis refaites-le.`,
+        );
+      }
+
+      return tx.artisanPayout.update({
+        where: { id: payoutId },
+        data: {
+          status: PayoutStatus.PAID,
+          paidAt,
+          paymentReference: dto.paymentReference?.trim() || null,
         },
-        items: true,
+        include,
+      });
+    });
+  }
+
+  /**
+   * The payout is cancelled: its jobs are free again for the next one. A payout that was paid is not cancelled (what was paid
+   * is put right with an adjustment of the cash ledger); a payout that is already cancelled stays as it is.
+   *
+   * PATCH /business/payouts/:payoutId/cancel
+   */
+  async cancelPayout(userId: number, role: Role, payoutId: number) {
+    this.assertStaff(role);
+
+    const include = {
+      artisan: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+        },
       },
+      items: true,
+    };
+
+    const payout = await this.prisma.artisanPayout.findUnique({ where: { id: payoutId } });
+
+    if (!payout) {
+      throw new NotFoundException('Payout introuvable.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await lockPayouts(tx, payout.artisanId);
+
+      const current = await tx.artisanPayout.findUnique({ where: { id: payoutId }, include });
+
+      if (!current) {
+        throw new NotFoundException('Payout introuvable.');
+      }
+
+      if (current.status === PayoutStatus.CANCELLED) {
+        return current;
+      }
+
+      if (current.status === PayoutStatus.PAID) {
+        throw new ConflictException('Ce payout est déjà payé: il ne peut plus être annulé.');
+      }
+
+      return tx.artisanPayout.update({ where: { id: payoutId }, data: { status: PayoutStatus.CANCELLED }, include });
     });
   }
 

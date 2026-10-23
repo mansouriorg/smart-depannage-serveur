@@ -137,7 +137,7 @@ describe('the migration moves the columns without losing a millime (P2-01)', () 
 });
 
 /** The money columns by name, for the scans of the code below. */
-const MONEY_FIELDS = ['commissionRate', 'totalRefunds', 'totalArtisanPayouts', 'totalPaymentFees', 'amountHT', 'amountTTC', 'taxAmount', 'taxRate', 'unitPrice', 'amountRefunded', 'totalPrice', 'platformCommission', 'artisanPayout', 'paymentProviderFee', 'refundAmount', 'netRevenue', 'companyMargin', 'grossAmount', 'paymentProviderFees', 'refundsDeducted', 'netAmount', 'basePrice', 'emergencyPrice', 'defaultEmergencyFee', 'defaultTaxRate', 'totalRevenue', 'totalCommission', 'totalDebit', 'totalCredit'];
+const MONEY_FIELDS = ['commissionRate', 'totalRefunds', 'totalArtisanPayouts', 'totalPaymentFees', 'amountHT', 'amountTTC', 'taxAmount', 'taxRate', 'unitPrice', 'amountRefunded', 'totalPrice', 'platformCommission', 'artisanPayout', 'paymentProviderFee', 'refundAmount', 'netRevenue', 'companyMargin', 'grossAmount', 'paymentProviderFees', 'refundsDeducted', 'netAmount', 'basePrice', 'emergencyPrice', 'defaultEmergencyFee', 'defaultTaxRate', 'totalRevenue', 'totalCommission', 'totalDebit', 'totalCredit', 'cashAmount', 'commissionAmount'];
 
 /** Any read of an amount from a row (`payment.amount`, `quote?.amountHT`), found in a piece of code. */
 const ACCESS = new RegExp(`\\b[a-zA-Z_]\\w*\\??\\.(?:${MONEY_FIELDS.join('|')}|amount)\\b`, 'g');

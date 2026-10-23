@@ -31,6 +31,10 @@ function makeWorld(payment: Record<string, unknown> = {}) {
       update: async ({ data }: any) => ({ ...nestedJob(), ...data }),
     },
     invoice: { findUnique: async () => ({ id: 1, interventionId: 1, amountTTC: 120 }) },
+    // A cancel or a fail changes the payment and the cash ledger in one transaction (P2-02); no cash was declared here.
+    cashLedgerEntry: { findMany: async () => [] },
+    $executeRaw: async () => 1,
+    $transaction: async (work: (tx: any) => unknown) => work(prisma),
   };
   const eventsService: any = { create: async (event: any) => events.push(event) };
   const notifications: any = { notifyPaymentReceived: async () => undefined };

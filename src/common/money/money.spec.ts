@@ -11,6 +11,7 @@ import {
   moneyOrNull,
   multiplyMoney,
   percentOf,
+  proportionOf,
   ratioPercent,
   subtractMoney,
   sumMoney,
@@ -99,6 +100,21 @@ describe('money: amounts are exact to the millime (P2-01)', () => {
     expect(ratioPercent(1, 3)).toBe(33.33);
     expect(ratioPercent(2, 3)).toBe(66.67);
     expect(ratioPercent(5, 0)).toBe(0);
+  });
+
+  it('takes a share of an amount, with a single rounding at the end', () => {
+    expect(proportionOf(80, 2, 3)).toBe(53.333);
+    expect(proportionOf(100, 2, 3)).toBe(66.667);
+    expect(proportionOf(101.15, 100, 119)).toBe(85); // 101.15 x 100 / 119 = 85.0000
+    expect(proportionOf(80, 80, 100)).toBe(64);
+    expect(proportionOf(80, 100, 100)).toBe(80);
+    expect(proportionOf(80, 0, 100)).toBe(0);
+    expect(proportionOf(0.001, 1, 2)).toBe(0.001); // half a millime goes away from zero
+    expect(proportionOf(-0.001, 1, 2)).toBe(-0.001);
+    expect(proportionOf(0.001, 1, 3)).toBe(0);
+    expect(proportionOf(1234.567, 7.5, 9.25)).toBe(1001.0);
+    expect(proportionOf(80, 5, 0)).toBe(0);
+    expect(() => proportionOf(80, 'abc' as any, 3)).toThrow();
   });
 
   it('the total of a document is exactly the amount and its tax added', () => {

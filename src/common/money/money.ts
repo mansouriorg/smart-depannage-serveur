@@ -149,6 +149,18 @@ export function ratioPercent(part: MoneyInput, whole: MoneyInput): number {
   return Number(divideRounded(toBigMillimes(part, 'part') * 10_000n, base)) / 100;
 }
 
+/**
+ * `amount` times `part` over `whole`, rounded once at the end: the share of 80 that 2 parts out of 3 stand for is 53.333.
+ * 0 when there is no whole.
+ */
+export function proportionOf(amount: MoneyInput, part: MoneyInput, whole: MoneyInput): number {
+  const base = toBigMillimes(whole, 'whole');
+
+  if (base === 0n) return 0;
+
+  return fromMillimes(toSafeNumber(divideRounded(toBigMillimes(amount, 'amount') * toBigMillimes(part, 'part'), base), 'amount'));
+}
+
 export function subtractMoney(from: MoneyInput, amount: MoneyInput): number {
   return fromMillimes(toMillimes(from) - toMillimes(amount));
 }

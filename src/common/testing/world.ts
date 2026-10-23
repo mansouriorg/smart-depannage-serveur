@@ -13,6 +13,8 @@ import { ArtisansService } from '../../modules/artisans/artisans.service';
 import { AssignmentService } from '../../modules/assignment/assignment.service';
 import { BusinessController } from '../../modules/business/business.controller';
 import { BusinessService } from '../../modules/business/business.service';
+import { CashLedgerController } from '../../modules/cash-ledger/cash-ledger.controller';
+import { CashLedgerService } from '../../modules/cash-ledger/cash-ledger.service';
 import { ClientAddressesController } from '../../modules/client-addresses/client-addresses.controller';
 import { ClientAddressesService } from '../../modules/client-addresses/client-addresses.service';
 import { ClientInterventionsController } from '../../modules/client-interventions/client-interventions.controller';
@@ -186,6 +188,7 @@ export class World {
     svc.artisans = new ArtisansService(prisma, svc.told, svc.events, svc.rateLimit, svc.missionActions, svc.files);
     svc.workflow = new InterventionWorkflowService(prisma);
     svc.business = new BusinessService(prisma);
+    svc.cashLedger = new CashLedgerService(prisma, svc.events);
     svc.preferences = new NotificationPreferencesService(prisma);
     svc.matching = new MatchingService(prisma, svc.assignment);
     svc.admin = new AdminService(prisma, svc.told, svc.events, svc.contactChange, svc.assignment, svc.realtime);
@@ -198,6 +201,7 @@ export class World {
         ['admin/admin', new AdminController(svc.admin)],
         ['artisans/artisans', new ArtisansController(svc.artisans)],
         ['business/business', new BusinessController(svc.business)],
+        ['cash-ledger/cash-ledger', new CashLedgerController(svc.cashLedger)],
         ['client-addresses/client-addresses', new ClientAddressesController(svc.clientAddresses)],
         ['client-interventions/client-interventions', new ClientInterventionsController(svc.clientInterventions)],
         ['complaints/complaints', new ComplaintsController(svc.complaints)],
@@ -377,6 +381,8 @@ export class World {
     ids.appointmentRequest = this.fill('appointmentRequest', { appointmentId: appointment.id, requestedById: client.id, type: 'RESCHEDULE' }).id;
     ids.proof = this.fill('proofCapture', { interventionId: job.id, kind: 'BEFORE', status: 'ACCEPTED', submittedById: artisan.id }).id;
     ids.financials = this.fill('interventionFinancials', { interventionId: job.id }).id;
+    // cash the artisan took on the job, and the commission on it (the figures are the same in both households)
+    ids.cashEntry = this.fill('cashLedgerEntry', { artisanId: artisan.id, type: 'COLLECTION', interventionId: job.id, cashAmount: 120, commissionAmount: 24, commissionRate: 20 }).id;
     ids.payout = this.fill('artisanPayout', { artisanId: artisan.id, status: 'PENDING', periodStart: new Date('2026-09-01T00:00:00Z'), periodEnd: new Date('2026-09-30T00:00:00Z'), notes: mark(h, 'payout notes') }).id;
   }
 }

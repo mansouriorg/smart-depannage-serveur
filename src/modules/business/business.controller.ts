@@ -27,6 +27,7 @@ import {
   CreatePayoutDto,
   ExportQueryDto,
   MarkPayoutPaidDto,
+  PayoutPreviewQueryDto,
 } from './dto/business.dto';
 
 type DownloadableFile = {
@@ -162,6 +163,20 @@ export class BusinessController {
   }
 
   /**
+   * What a payout would pay and what it would leave out, and why.
+   *
+   * GET /business/payouts/preview?artisanId=1&periodStart=...&periodEnd=...
+   */
+  @Get('payouts/preview')
+  previewArtisanPayout(
+    @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
+    @Query() query: PayoutPreviewQueryDto,
+  ) {
+    return this.service.previewArtisanPayout(userId, role, query);
+  }
+
+  /**
    * GET /business/payouts
    */
   @Get('payouts')
@@ -188,6 +203,20 @@ export class BusinessController {
       payoutId,
       dto,
     );
+  }
+
+  /**
+   * Gives the jobs of a payout that was not paid back to the next one.
+   *
+   * PATCH /business/payouts/:payoutId/cancel
+   */
+  @Patch('payouts/:payoutId/cancel')
+  cancelPayout(
+    @CurrentUser('id') userId: number,
+    @CurrentUser('role') role: Role,
+    @Param('payoutId', ParseIntPipe) payoutId: number,
+  ) {
+    return this.service.cancelPayout(userId, role, payoutId);
   }
 
   // ==========================================================

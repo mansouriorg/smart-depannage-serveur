@@ -114,3 +114,16 @@ export class ExportQueryDto {
   @IsEnum(BusinessExportFormat)
   format?: BusinessExportFormat;
 }
+
+/** What a payout would pay, for one artisan and one period. */
+export class PayoutPreviewQueryDto {
+  @Type(() => Number)
+  @IsInt()
+  artisanId: number;
+
+  @IsDateString()
+  periodStart: string;
+
+  @IsDateString()
+  periodEnd: string;
+}

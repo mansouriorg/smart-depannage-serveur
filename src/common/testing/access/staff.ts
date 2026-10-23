@@ -39,6 +39,12 @@ export const staffScenarios: Scenario[] = [
     allowed: ['backOffice'],
     request: (h, w) => ({ params: { payoutId: w.ids[h].payout }, body: { paymentReference: 'VIR-1' } }),
   },
+  {
+    route: 'PATCH /business/payouts/:/cancel',
+    note: 'a payout that exists: the whole back office cancels it, and nobody else can',
+    allowed: ['backOffice'],
+    request: (h, w) => ({ params: { payoutId: w.ids[h].payout } }),
+  },
   { route: 'GET /business/exports/revenue/csv', allowed: ['backOffice'], gateOnly: true, request: () => ({ query: RANGE }) },
   { route: 'GET /business/exports/revenue/pdf', allowed: ['backOffice'], gateOnly: true, request: () => ({ query: RANGE }) },
   { route: 'GET /business/exports/accounting', allowed: ['backOffice'], gateOnly: true, request: () => ({ query: RANGE }) },

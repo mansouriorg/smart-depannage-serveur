@@ -11,6 +11,15 @@
 export const LOCK_JOB = 71_001;
 export const LOCK_ARTISAN = 71_002;
 
+/**
+ * The same kind of lock for one artisan's cash ledger and for one artisan's payouts (P2-02). "How much does the artisan
+ * owe?" and "write the line" are two steps: two requests that both read the same balance would both be allowed to take it
+ * off (a remittance larger than what is owed), and two payouts that both see a job as free would both pay it. The numbers
+ * differ from the two above so that a ledger never waits for a calendar. A job is locked before an artisan's ledger.
+ */
+export const LOCK_CASH_LEDGER = 71_003;
+export const LOCK_PAYOUT = 71_004;
+
 type RawDb = { $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown> };
 
 export async function lockJob(tx: RawDb, interventionId: number): Promise<void> {
@@ -19,4 +28,12 @@ export async function lockJob(tx: RawDb, interventionId: number): Promise<void> 
 
 export async function lockArtisanCalendar(tx: RawDb, artisanId: number): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_ARTISAN}::int, ${artisanId}::int)`;
+}
+
+export async function lockCashLedger(tx: RawDb, artisanId: number): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_CASH_LEDGER}::int, ${artisanId}::int)`;
+}
+
+export async function lockPayouts(tx: RawDb, artisanId: number): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_PAYOUT}::int, ${artisanId}::int)`;
 }

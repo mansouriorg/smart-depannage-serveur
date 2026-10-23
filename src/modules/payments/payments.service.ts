@@ -11,6 +11,8 @@ import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
+import { lockJob } from '../assignment/artisan-lock';
+import { reverseCollectionsOfPayment, settleCashOnConfirm } from '../cash-ledger/cash-ledger-ops';
 
 import {
   InterventionEventType,
@@ -263,6 +265,20 @@ export class PaymentsService {
     }
   }
 
+  private ensurePaymentCanFail(payment: any) {
+    const statusesThatCannotFail: PaymentStatus[] = [
+      PaymentStatus.PAID,
+      PaymentStatus.REFUNDED,
+      PaymentStatus.PARTIALLY_REFUNDED,
+    ];
+
+    if (statusesThatCannotFail.includes(payment.status)) {
+      throw new BadRequestException(
+        'Un paiement payé ou remboursé ne peut pas être marqué comme échoué.',
+      );
+    }
+  }
+
   private ensurePaymentCanBeCancelled(payment: any) {
     const cancellableStatuses: PaymentStatus[] = [
       PaymentStatus.PENDING,
@@ -497,6 +513,20 @@ export class PaymentsService {
       payment.receiptNumber || this.generateReceiptNumber(payment.id);
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, payment.interventionId);
+
+      // Read again under the lock: a cancel or a fail may have come in between.
+      const current = await tx.payment.findUnique({ where: { id: paymentId } });
+
+      if (!current) throw new NotFoundException('Paiement introuvable.');
+
+      this.ensurePaymentCanBeConfirmed(current);
+
+      // A cash payment is in the artisan's ledger once it is confirmed: the cash they declared stays (or counts again, when
+      // the payment had failed), and cash nobody declared is written now. Before the payment is marked as paid, so that what
+      // it brings is not counted twice when the room left on the job is worked out.
+      await settleCashOnConfirm(tx, current, { userId: adminId });
+
       const confirmedPayment = await tx.payment.update({
         where: {
           id: paymentId,
@@ -567,34 +597,40 @@ export class PaymentsService {
   async fail(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
     const payment = await this.getPaymentOrFail(paymentId);
 
-    const statusesThatCannotFail: PaymentStatus[] = [
-      PaymentStatus.PAID,
-      PaymentStatus.REFUNDED,
-      PaymentStatus.PARTIALLY_REFUNDED,
-    ];
-
-    if (statusesThatCannotFail.includes(payment.status)) {
-      throw new BadRequestException(
-        'Un paiement payé ou remboursé ne peut pas être marqué comme échoué.',
-      );
-    }
+    this.ensurePaymentCanFail(payment);
 
     const reason =
       this.getOptionalString(dto, 'reason') ||
       dto.adminNote ||
       'Le paiement a échoué.';
 
-    const updated = await this.prisma.payment.update({
-      where: {
-        id: paymentId,
-      },
-      data: {
-        status: PaymentStatus.FAILED,
-        failedAt: new Date(),
-        failureReason: reason,
-        adminNote: dto.adminNote,
-      },
-      include: this.paymentInclude,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, payment.interventionId);
+
+      // Read again under the lock: the payment may have been confirmed in the meantime.
+      const current = await tx.payment.findUnique({ where: { id: paymentId } });
+
+      if (!current) throw new NotFoundException('Paiement introuvable.');
+
+      this.ensurePaymentCanFail(current);
+
+      const failed = await tx.payment.update({
+        where: {
+          id: paymentId,
+        },
+        data: {
+          status: PaymentStatus.FAILED,
+          failedAt: new Date(),
+          failureReason: reason,
+          adminNote: dto.adminNote,
+        },
+        include: this.paymentInclude,
+      });
+
+      // The cash an artisan declared for this payment was not taken after all: it leaves their ledger.
+      await reverseCollectionsOfPayment(tx, paymentId, { userId: adminId, reason: 'Paiement marqué comme échoué.' });
+
+      return failed;
     });
 
     await this.createEvent({
@@ -628,16 +664,32 @@ export class PaymentsService {
       dto.adminNote ||
       'Le paiement a été annulé.';
 
-    const updated = await this.prisma.payment.update({
-      where: {
-        id: paymentId,
-      },
-      data: {
-        status: PaymentStatus.CANCELLED,
-        cancelledAt: new Date(),
-        adminNote: dto.adminNote,
-      },
-      include: this.paymentInclude,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, payment.interventionId);
+
+      // Read again under the lock: the payment may have been confirmed in the meantime.
+      const current = await tx.payment.findUnique({ where: { id: paymentId } });
+
+      if (!current) throw new NotFoundException('Paiement introuvable.');
+
+      this.ensurePaymentCanBeCancelled(current);
+
+      const cancelled = await tx.payment.update({
+        where: {
+          id: paymentId,
+        },
+        data: {
+          status: PaymentStatus.CANCELLED,
+          cancelledAt: new Date(),
+          adminNote: dto.adminNote,
+        },
+        include: this.paymentInclude,
+      });
+
+      // The cash an artisan declared for this payment was not taken after all: it leaves their ledger.
+      await reverseCollectionsOfPayment(tx, paymentId, { userId: adminId, reason: 'Paiement annulé.' });
+
+      return cancelled;
     });
 
     await this.createEvent({
