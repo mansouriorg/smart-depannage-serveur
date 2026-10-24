@@ -21,10 +21,10 @@ export const staffScenarios: Scenario[] = [
   { route: 'GET /business/payouts', allowed: ['backOffice'], request: () => ({}) },
   {
     route: 'POST /business/interventions/:/financials',
-    note: 'the gate: the work behind it needs a paid job',
+    note: 'the gate: the figures are worked out from the confirmed payments, the body only keeps the rate, the provider fee and the notes (P2-03)',
     allowed: ['backOffice'],
     gateOnly: true,
-    request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { totalPrice: 120 } }),
+    request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { commissionRate: 20 } }),
   },
   { route: 'POST /business/reports/monthly', allowed: ['backOffice'], gateOnly: true, request: () => ({ body: { year: 2026, month: 9 } }) },
   {

@@ -4,8 +4,11 @@ import { Household, World, mark } from '../world';
 const job = (h: Household, w: World) => w.ids[h].intervention;
 const artisan = (h: Household, w: World) => w.ids[h].artisan;
 
-/** The job is under way, so its artisan may say they were paid. */
-const underWay = (w: World) => w.set('intervention', { status: 'IN_PROGRESS' });
+/** The job is under way, so its artisan may say they were paid; the payment the seed holds (online, waiting) is out of the way (P2-03). */
+const underWay = (w: World) => {
+  w.set('intervention', { status: 'IN_PROGRESS' });
+  w.set('payment', { status: 'CANCELLED', cancelledAt: new Date('2026-01-02T00:00:00Z') });
+};
 
 const PERIOD = { periodStart: '2020-01-01T00:00:00.000Z', periodEnd: '2100-01-01T00:00:00.000Z' };
 

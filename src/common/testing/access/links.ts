@@ -56,6 +56,8 @@ export const linkScenarios: LinkScenario[] = [
     prepare: (w) => {
       w.set('intervention', { status: 'PAYMENT_PENDING' });
       w.set('quote', { status: 'ACCEPTED' });
+      // the payment the seed holds is out of the way: a job has one open payment at a time (P2-03)
+      w.set('payment', { status: 'CANCELLED', cancelledAt: new Date('2026-01-02T00:00:00Z') });
     },
     request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token), body: { method: 'CASH' } }),
   },

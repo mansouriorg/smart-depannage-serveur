@@ -52,6 +52,9 @@ import { greetingName } from './greeting-name';
 import { KeyedLock } from '../../common/concurrency/limits';
 import { initialStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
 import { transitionStatus } from '../intervention-workflow/transition-status';
+import { lockJob } from '../assignment/artisan-lock';
+import { claimOpenPayment, leftToPay, refreshOpenPayment } from '../payments/open-payment';
+import { money } from '../../common/money/money';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
@@ -886,54 +889,88 @@ export class GuestService {
       );
     }
 
-    const status =
-      dto.method === PaymentMethod.ONLINE
-        ? PaymentStatus.PENDING
-        : PaymentStatus.AWAITING_CONFIRMATION;
+    // An online request (card or not) waits for a provider; any other waits for the back office. The same rule as for a customer
+    // who is signed in: a card request that waited for the back office could never be replaced by another way of paying.
+    const online = dto.method === PaymentMethod.ONLINE || dto.method === PaymentMethod.ONLINE_CARD;
+    const status = online ? PaymentStatus.PENDING : PaymentStatus.AWAITING_CONFIRMATION;
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        interventionId: intervention.id,
-        quoteId: acceptedQuote.id,
-        method: dto.method,
-        status,
-        amount: acceptedQuote.amountTTC,
-        currency: acceptedQuote.currency,
-        reference: dto.reference,
-        clientNote: dto.clientNote,
-      },
+    let payment: any = null;
+    let reused = false;
+
+    await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, intervention.id);
+
+      // A visitor cannot type an amount: what is left to pay (a deposit that was paid is not asked for twice).
+      const amount = await leftToPay(tx, intervention.id, money(acceptedQuote.amountTTC), acceptedQuote.currency);
+
+      // One open payment per job: the same request again (a second tap) is answered with the open payment, another one is refused.
+      const open = await claimOpenPayment(tx, { interventionId: intervention.id, method: dto.method, amount });
+
+      if (open) {
+        // The reference of the transfer, sent after it was made, is kept on the open payment.
+        await refreshOpenPayment(tx, open, { reference: dto.reference, clientNote: dto.clientNote });
+
+        // A request made during the work and asked for again when the work is done moves the job then.
+        await transitionStatus(tx, {
+          id: intervention.id,
+          to: Status.PAYMENT_PENDING,
+          actor: { kind: 'client', userId: intervention.clientId },
+          dataOnChange: { paymentPendingAt: new Date() },
+          soft: true,
+        });
+
+        payment = await tx.payment.findUnique({ where: { id: open.id } });
+        reused = true;
+      } else {
+        payment = await tx.payment.create({
+          data: {
+            interventionId: intervention.id,
+            quoteId: acceptedQuote.id,
+            method: dto.method,
+            status,
+            amount,
+            currency: acceptedQuote.currency,
+            reference: dto.reference,
+            clientNote: dto.clientNote,
+          },
+        });
+
+        // A payment request must not overwrite a job that is still being worked on: soft, so the payment is recorded and the
+        // status only moves when it should. Right after the quote was accepted the job does not move, and the date of the request
+        // is not written either (it is written only when the job really moves to PAYMENT_PENDING).
+        await transitionStatus(tx, {
+          id: intervention.id,
+          to: Status.PAYMENT_PENDING,
+          actor: { kind: 'client', userId: intervention.clientId },
+          dataOnChange: { paymentPendingAt: new Date() },
+          soft: true,
+        });
+      }
     });
 
-    // A payment request must not overwrite a job that is still being worked on:
-    // soft, so the payment is recorded and the status only moves when it should.
-    await transitionStatus(this.prisma, {
-      id: intervention.id,
-      to: Status.PAYMENT_PENDING,
-      actor: { kind: 'client', userId: intervention.clientId },
-      data: { paymentPendingAt: new Date() },
-      soft: true,
-    });
+    const instructions =
+      online
+        ? 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente.'
+        : dto.method === PaymentMethod.BANK_TRANSFER
+          ? 'Effectuez le virement puis envoyez la référence.'
+          : 'Paiement en espèces à confirmer par l’administration.';
+
+    if (reused) {
+      return { payment: paymentForClient(payment), instructions, replayed: true };
+    }
 
     await this.events.create({
       interventionId: intervention.id,
       type: InterventionEventType.PAYMENT_PENDING,
       title: 'Paiement en attente',
       message:
-        dto.method === PaymentMethod.ONLINE
+        online
           ? 'Demande de paiement en ligne créée. Aucun prestataire externe n’est encore connecté.'
           : `Paiement ${dto.method} en attente de confirmation.`,
       createdById: intervention.clientId,
     });
 
-    return {
-      payment: paymentForClient(payment),
-      instructions:
-        dto.method === PaymentMethod.ONLINE
-          ? 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente.'
-          : dto.method === PaymentMethod.BANK_TRANSFER
-            ? 'Effectuez le virement puis envoyez la référence.'
-            : 'Paiement en espèces à confirmer par l’administration.',
-    };
+    return { payment: paymentForClient(payment), instructions };
   }
 
   // ==========================================================

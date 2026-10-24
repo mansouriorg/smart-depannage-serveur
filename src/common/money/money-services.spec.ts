@@ -348,8 +348,12 @@ describe('the reports of the business are exact (P2-01)', () => {
     const { world, admin, job } = shop();
     const other = world.memory.plant('intervention', { clientId: job.clientId, artisanId: job.artisanId, status: 'COMPLETED', serviceType: 'PLOMBIER' });
 
-    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', job.id, { totalPrice: 12.345, commissionRate: 20 });
-    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', other.id, { totalPrice: 0.1, commissionRate: 20 });
+    // the figures are worked out from the confirmed payments (P2-03)
+    world.memory.plant('payment', { interventionId: job.id, method: 'BANK_TRANSFER', status: 'PAID', amount: 12.345, amountRefunded: 0, currency: 'TND', createdById: job.clientId });
+    world.memory.plant('payment', { interventionId: other.id, method: 'BANK_TRANSFER', status: 'PAID', amount: 0.1, amountRefunded: 0, currency: 'TND', createdById: job.clientId });
+
+    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', job.id, { commissionRate: 20 });
+    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', other.id, { commissionRate: 20 });
 
     const first = rowsOf(world, 'interventionFinancials')[0];
 
@@ -371,7 +375,8 @@ describe('the reports of the business are exact (P2-01)', () => {
   it('the exports are in dinars with three decimals', async () => {
     const { world, admin, job } = shop();
 
-    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', job.id, { totalPrice: 12.345, commissionRate: 20 });
+    world.memory.plant('payment', { interventionId: job.id, method: 'BANK_TRANSFER', status: 'PAID', amount: 12.345, amountRefunded: 0, currency: 'TND', createdById: job.clientId });
+    await world.svc.business.calculateInterventionFinancials(admin.id, 'ADMIN', job.id, { commissionRate: 20 });
 
     const csv = (await world.svc.business.exportRevenueCsv(admin.id, 'ADMIN', {})).buffer.toString('utf8');
 

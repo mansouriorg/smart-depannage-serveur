@@ -192,15 +192,32 @@ describe('an artisan says they took cash, and owes the platform its commission (
     expect(rowsOf(world, 'payment').length).toBe(2);
   });
 
-  it('keeps an online payment that is waiting where it is, and makes a cash payment next to it', async () => {
+  it('an online request nobody can pay (no provider took it) is cancelled when the artisan declares cash (P2-03)', async () => {
     const { world, client, artisan, job } = desk();
 
     world.memory.plant('payment', { interventionId: job.id, method: 'ONLINE', status: 'PENDING', amount: 119, createdById: client.id });
 
     await tap(world.svc.cashLedger, artisan.id, ARTISAN, job.id, { amount: 119 });
 
+    const online = rowsOf(world, 'payment').find((row) => row.method === 'ONLINE');
+
     expect(rowsOf(world, 'payment').map((row) => row.method).sort()).toEqual(['CASH', 'ONLINE']);
-    expect(rowsOf(world, 'payment').find((row) => row.method === 'ONLINE')?.status).toBe('PENDING');
+    expect(online?.status).toBe('CANCELLED');
+    expect(online?.cancelReason).toBe('Remplacé par une autre demande de paiement.');
+    expect(online?.cancelledAt).toBeInstanceOf(Date);
+  });
+
+  it('a payment that is really waiting (a provider took it, or a transfer to confirm) is not cancelled: the declaration is refused and nothing is written (P2-03)', async () => {
+    const { world, client, artisan, job } = desk();
+
+    world.memory.plant('payment', { interventionId: job.id, method: 'ONLINE', status: 'PENDING', amount: 119, providerPaymentId: 'pi_1', createdById: client.id });
+    world.memory.plant('payment', { interventionId: job.id, method: 'BANK_TRANSFER', status: 'AWAITING_CONFIRMATION', amount: 119, createdById: client.id });
+
+    const refused = await refusal(() => tap(world.svc.cashLedger, artisan.id, ARTISAN, job.id, { amount: 50 }));
+
+    expect(refused?.message).toBe('Un paiement de 119,000 TND est déjà en attente pour cette mission: contactez l’administration.');
+    expect(rowsOf(world, 'payment').map((row) => row.status)).toEqual(['PENDING', 'AWAITING_CONFIRMATION']);
+    expect(rowsOf(world, 'cashLedgerEntry')).toEqual([]);
   });
 
   it('says it on the timeline of the job', async () => {
@@ -540,8 +557,8 @@ describe('the ledger follows the payment it belongs to (P2-02)', () => {
     expect(lines[0].recordedById).toBe(admin.id);
     expect(await balance(world, artisan.id)).toEqual({ currency: 'TND', cashCollected: 119, commissionDue: 23.8, commissionRemitted: 0, balance: 23.8 });
 
-    // confirmed again: refused, and nothing is written a second time
-    expect((await refusal(() => world.svc.payments.confirm(payment.id, admin.id, {})))?.status).toBe(400);
+    // confirmed again (a double click): the same answer, and nothing is written a second time (P2-03)
+    expect(await refusal(() => world.svc.payments.confirm(payment.id, admin.id, {}))).toBe(null);
     expect(rowsOf(world, 'cashLedgerEntry').length).toBe(1);
   });
 
@@ -550,10 +567,13 @@ describe('the ledger follows the payment it belongs to (P2-02)', () => {
 
     world.memory.plant('interventionFinancials', { interventionId: job.id, commissionRate: 15, totalPrice: 119, platformCommission: 17.85, artisanPayout: 101.15, netRevenue: 17.85, companyMargin: 17.85 });
 
+    // one open payment per job (P2-03): the second is asked for once the first is confirmed
     const first = await world.svc.payments.createAdminManualPayment(admin.id, job.id, { method: 'CASH', amount: 50 });
-    const second = await world.svc.payments.createAdminManualPayment(admin.id, job.id, { method: 'CASH', amount: 69 });
 
     await world.svc.payments.confirm(first.id, admin.id, {});
+
+    const second = await world.svc.payments.createAdminManualPayment(admin.id, job.id, { method: 'CASH', amount: 69 });
+
     await world.svc.payments.confirm(second.id, admin.id, {});
 
     expect(rowsOf(world, 'cashLedgerEntry').map((line) => [text(line.cashAmount), text(line.commissionAmount)])).toEqual([['50', '7.5'], ['69', '10.35']]);
@@ -614,7 +634,9 @@ describe('the ledger follows the payment it belongs to (P2-02)', () => {
     expect(rowsOf(world, 'intervention')[0].status).toBe('IN_PROGRESS');
     expect((await balance(world, artisan.id)).balance).toBe(0);
 
-    // up to the last millime is accepted
+    // up to the last millime is accepted (the refused one is cancelled first: one open payment per job, P2-03)
+    await world.svc.payments.cancel(big.id, admin.id, {});
+
     const exact = await world.svc.payments.createAdminManualPayment(admin.id, job.id, { method: 'CASH', amount: 119 });
 
     await world.svc.payments.confirm(exact.id, admin.id, {});
@@ -671,7 +693,9 @@ describe('the ledger follows the payment it belongs to (P2-02)', () => {
     expect(await settle(loose.id)).toBe('standing');
     expect(rowsOf(world, 'cashLedgerEntry').filter((line) => line.paymentId === loose.id).length).toBe(1);
 
-    // not cash: skipped
+    // not cash: skipped (the other payment is decided first: one open payment per job, P2-03)
+    rowsOf(world, 'payment').find((row) => row.id === loose.id)!.status = 'PAID';
+
     const card = await world.svc.payments.createAdminManualPayment(admin.id, job.id, { method: 'ONLINE', amount: 100 });
 
     expect(await settle(card.id)).toBe('skipped');

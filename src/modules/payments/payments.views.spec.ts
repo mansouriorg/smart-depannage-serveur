@@ -22,7 +22,8 @@ function makeWorld(payment: Record<string, unknown> = {}) {
 
         return poisonedPayment({ ...data, id: 9 });
       },
-      findMany: async () => [poisonedPayment(), poisonedPayment({ id: 2 })],
+      // The rows as the database gives them for the statuses asked (the open payments of a job, P2-03).
+      findMany: async ({ where }: any = {}) => [poisonedPayment(), poisonedPayment({ id: 2 })].filter((row) => !where?.status?.in || where.status.in.includes(row.status)),
       findUnique: async () => poisonedPayment(payment),
       update: async ({ data }: any) => poisonedPayment({ ...payment, ...data }),
     },
@@ -31,20 +32,23 @@ function makeWorld(payment: Record<string, unknown> = {}) {
       update: async ({ data }: any) => ({ ...nestedJob(), ...data }),
     },
     invoice: { findUnique: async () => ({ id: 1, interventionId: 1, amountTTC: 120 }) },
+    // A refund works the financials out and decides the complaints that waited for it (P2-03); there are none here.
+    interventionFinancials: { findUnique: async () => null, upsert: async ({ create }: any) => create },
+    complaint: { findMany: async () => [], updateMany: async () => ({ count: 0 }) },
     // A cancel or a fail changes the payment and the cash ledger in one transaction (P2-02); no cash was declared here.
     cashLedgerEntry: { findMany: async () => [] },
     $executeRaw: async () => 1,
     $transaction: async (work: (tx: any) => unknown) => work(prisma),
   };
   const eventsService: any = { create: async (event: any) => events.push(event) };
-  const notifications: any = { notifyPaymentReceived: async () => undefined };
+  const notifications: any = { notifyPaymentReceived: async () => undefined, notifyPaymentRefunded: async () => undefined };
 
   return { service: new PaymentsService(prisma, eventsService, notifications), events, created };
 }
 
 describe('the payments a customer reads (P1-08)', () => {
   it('a payment request: the payment as the customer may read it, with the instructions', async () => {
-    const answer: any = await makeWorld().service.createClientPaymentRequest(10, 1, { method: 'CASH', invoiceId: 1 } as any);
+    const answer: any = await makeWorld().service.createClientPaymentRequest(10, 1, { method: 'CASH', invoiceId: 1, amount: 120 } as any);
 
     expect(leakedTo(answer, 'client', OWN_INVOICE)).toEqual([]);
     expect(answer.amount).toBe(120);

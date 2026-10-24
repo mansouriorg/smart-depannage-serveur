@@ -3,6 +3,8 @@ import { Household, World, mark } from '../world';
 
 const job = (h: Household, w: World) => w.ids[h].intervention;
 const invoice = (h: Household, w: World) => w.ids[h].invoice;
+/** The payment the seed holds (online, waiting) is out of the way: a job has one open payment at a time (P2-03). */
+const noOpenPayment = (w: World) => w.set('payment', { status: 'CANCELLED', cancelledAt: new Date('2026-01-02T00:00:00Z') });
 const paid = (w: World) => w.set('payment', { status: 'PAID', confirmedAt: new Date('2026-01-02T00:00:00Z') });
 
 /** What neither the customer nor the artisan may read on an invoice, and what the artisan may not read of the customer. */
@@ -68,6 +70,7 @@ export const paymentScenarios: Scenario[] = [
     route: 'POST /payments/interventions/:',
     note: 'a customer asks to pay for their own job',
     allowed: ['client'],
+    prepare: noOpenPayment,
     request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { method: 'CASH', amount: 120 } }),
   },
   {

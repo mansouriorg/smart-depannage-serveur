@@ -12,7 +12,7 @@ import {
 
 import { PaymentsService } from './payments.service';
 import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
-import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
+import { CancelPaymentDto, ConfirmPaymentDto, FailPaymentDto, RefundPaymentDto } from './dto/payment.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -155,7 +155,7 @@ export class PaymentsController {
   confirm(
     @CurrentUser('id') adminId: number,
     @Param('paymentId', ParseIntPipe) paymentId: number,
-    @Body() dto: AdminPaymentActionDto,
+    @Body() dto: ConfirmPaymentDto,
   ) {
     return this.service.confirm(paymentId, adminId, dto);
   }
@@ -180,7 +180,7 @@ export class PaymentsController {
   fail(
     @CurrentUser('id') adminId: number,
     @Param('paymentId', ParseIntPipe) paymentId: number,
-    @Body() dto: AdminPaymentActionDto,
+    @Body() dto: FailPaymentDto,
   ) {
     return this.service.fail(paymentId, adminId, dto);
   }
@@ -205,7 +205,7 @@ export class PaymentsController {
   cancel(
     @CurrentUser('id') adminId: number,
     @Param('paymentId', ParseIntPipe) paymentId: number,
-    @Body() dto: AdminPaymentActionDto,
+    @Body() dto: CancelPaymentDto,
   ) {
     return this.service.cancel(paymentId, adminId, dto);
   }
@@ -222,20 +222,22 @@ export class PaymentsController {
    *
    * Body examples:
    * {
-   *   "adminNote": "Remboursement total"
+   *   "reason": "Remboursement total"
    * }
    *
    * {
    *   "amount": 50,
-   *   "adminNote": "Remboursement partiel"
+   *   "reason": "Remboursement partiel"
    * }
+   *
+   * No amount refunds what is left of the payment.
    */
   @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
   @Patch(':paymentId/refund')
   refund(
     @CurrentUser('id') adminId: number,
     @Param('paymentId', ParseIntPipe) paymentId: number,
-    @Body() dto: AdminPaymentActionDto,
+    @Body() dto: RefundPaymentDto,
   ) {
     return this.service.refund(paymentId, adminId, dto);
   }

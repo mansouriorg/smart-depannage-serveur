@@ -3,6 +3,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
 } from 'class-validator';
 import { IsMoney } from '../../../common/money/money-validation';
 
@@ -51,9 +52,11 @@ export class CreatePaymentDto {
   adminNote?: string;
 }
 
+/** PATCH /payments/:id/confirm */
 export class ConfirmPaymentDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   reference?: string;
 
   @IsOptional()
@@ -61,18 +64,31 @@ export class ConfirmPaymentDto {
   adminNote?: string;
 }
 
+/** PATCH /payments/:id/fail: the reason is kept on the payment (for the back office only). */
 export class FailPaymentDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  adminNote?: string;
 }
 
+/** PATCH /payments/:id/cancel: the reason is kept on the payment (for the back office only). */
 export class CancelPaymentDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  adminNote?: string;
 }
 
+/** PATCH /payments/:id/refund: no amount refunds what is left of the payment. */
 export class RefundPaymentDto {
   @IsOptional()
   @IsMoney({ min: 0.001 })
@@ -80,7 +96,12 @@ export class RefundPaymentDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  adminNote?: string;
 }
 
 export class LinkPaymentToInvoiceDto {

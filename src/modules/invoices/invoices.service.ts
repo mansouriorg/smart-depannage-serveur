@@ -14,7 +14,10 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { isDeliverableEmail } from '../notifications/delivery/contact';
 import { invoiceForArtisan, invoiceForClient } from '../../common/views/views';
 import { totalsFromAmount, totalsFromItems } from '../../common/money/document-totals';
-import { formatMoney, money, toMoneyString } from '../../common/money/money';
+import { compareMoney, formatMoney, money, toMoneyString } from '../../common/money/money';
+import { lockJob } from '../assignment/artisan-lock';
+import { paymentFigures, syncFinancials } from '../payments/financials-ops';
+import { jobIsInPaidPayout } from '../cash-ledger/cash-ledger-ops';
 import { currencyCode, getLocale } from '../../common/locale/locale';
 import { businessYearMonth } from '../../common/locale/business-time';
 
@@ -336,7 +339,6 @@ export class InvoicesService {
     const company = await this.getCompanySettings();
 
     const quote = intervention.quotes[0];
-    const paidPayment = intervention.payments[0];
 
     const amountHT = dto.amountHT ?? quote?.amountHT;
     const taxRate = dto.taxRate ?? quote?.taxRate ?? company?.defaultTaxRate ?? getLocale().defaultTaxRate;
@@ -371,13 +373,30 @@ export class InvoicesService {
         ];
 
     const invoice = await this.prisma.$transaction(async (tx) => {
+      // The payments are read again under the lock of the job: a confirmation that comes in between pays the invoice that exists
+      // then, and this one is made with what was received at that moment.
+      await lockJob(tx, interventionId);
+
+      const received = await tx.payment.findMany({
+        where: { interventionId, status: { in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED] } },
+        orderBy: { createdAt: 'desc' },
+      });
+      const paidPayment = received[0];
+
+      // The invoice is paid when what the customer kept covers it, not when a payment of some part of it was confirmed (a
+      // deposit). An invoice in another currency than the sums of the company cannot be compared: a payment settles it.
+      const paidInFull =
+        Boolean(paidPayment) &&
+        (currency !== currencyCode() ||
+          compareMoney(paymentFigures(received).kept, totals.amountTTC) >= 0);
+
       const created = await tx.invoice.create({
         data: {
           interventionId,
           invoiceNumber: dto.invoiceNumber || this.generateInvoiceNumber(),
 
-          status: paidPayment ? InvoiceStatus.PAID : InvoiceStatus.ISSUED,
-          paymentStatus: paidPayment
+          status: paidInFull ? InvoiceStatus.PAID : InvoiceStatus.ISSUED,
+          paymentStatus: paidInFull
             ? PaymentStatus.PAID
             : PaymentStatus.PENDING,
 
@@ -407,7 +426,7 @@ export class InvoicesService {
           pdfUrl: dto.pdfUrl,
           notes: dto.notes,
           issuedAt: new Date(),
-          paidAt: paidPayment ? new Date() : undefined,
+          paidAt: paidInFull ? new Date() : undefined,
 
           items: {
             create: invoiceItems,
@@ -426,6 +445,10 @@ export class InvoicesService {
           },
         });
       }
+
+      // The invoice is now what the job asks for: the price in its financials follows it (the payments may be above it). Not
+      // when a payout that was paid already took the figures of the job: the platform gave the artisan that share.
+      if (!(await jobIsInPaidPayout(tx, interventionId))) await syncFinancials(tx, interventionId, { userId: adminId });
 
       await transitionStatus(tx, {
         id: interventionId,

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -7,12 +8,14 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
-import { AdminPaymentActionDto } from './dto/admin-payment-action.dto';
+import { CancelPaymentDto, ConfirmPaymentDto, FailPaymentDto, RefundPaymentDto } from './dto/payment.dto';
+import { claimOpenPayment, leftToPay, refreshOpenPayment } from './open-payment';
+import { paymentFigures, settleComplaintRefund, syncFinancials } from './financials-ops';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 import { lockJob } from '../assignment/artisan-lock';
-import { reverseCollectionsOfPayment, settleCashOnConfirm } from '../cash-ledger/cash-ledger-ops';
+import { paymentPosition, reverseCollectionsOfPayment, settleCashOnConfirm } from '../cash-ledger/cash-ledger-ops';
 
 import {
   InterventionEventType,
@@ -27,7 +30,7 @@ import {
 import { isBackOffice } from '../../common/auth/role-policy';
 import { pick } from '../../common/views/pick';
 import { paymentForArtisan, paymentForClient } from '../../common/views/views';
-import { compareMoney, formatMoney, money, sumMoney } from '../../common/money/money';
+import { compareMoney, formatMoney, money, subtractMoney, sumMoney } from '../../common/money/money';
 import { currencyCode } from '../../common/locale/locale';
 import { businessYearMonth } from '../../common/locale/business-time';
 
@@ -277,6 +280,13 @@ export class PaymentsService {
         'Un paiement payé ou remboursé ne peut pas être marqué comme échoué.',
       );
     }
+
+    // A cancelled payment is over: failing it would make it one that can be confirmed again.
+    if (payment.status === PaymentStatus.CANCELLED) {
+      throw new BadRequestException(
+        'Un paiement annulé ne peut pas être marqué comme échoué.',
+      );
+    }
   }
 
   private ensurePaymentCanBeCancelled(payment: any) {
@@ -354,11 +364,11 @@ export class PaymentsService {
     const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const amount = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    const asked = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
     // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
     const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 
-    if (!amount || amount <= 0) {
+    if (!asked || asked <= 0) {
       throw new BadRequestException(
         'Montant introuvable. Acceptez un devis, liez une facture ou envoyez un montant.',
       );
@@ -368,33 +378,70 @@ export class PaymentsService {
       | PaymentProvider
       | undefined;
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        interventionId,
-        quoteId: acceptedQuote?.id,
-        invoiceId,
-        method: dto.method,
-        provider: providerFromDto || this.providerFromMethod(dto.method),
-        status: this.initialStatusFromMethod(dto.method),
-        amount,
-        amountRefunded: 0,
-        currency,
-        reference: dto.reference,
-        clientNote: dto.clientNote,
-        createdById: clientId,
-      },
-      include: this.paymentInclude,
+    const { payment, reused } = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, interventionId);
+
+      // No amount typed: what is left to pay (a deposit that was paid is not asked for twice).
+      const amount = amountFromDto !== undefined ? asked : await leftToPay(tx, interventionId, asked, currency);
+
+      // One open payment per job: the same request again is answered with the open payment, another one is refused.
+      const open = await claimOpenPayment(tx, { interventionId, method: dto.method, amount });
+
+      if (open) {
+        // The reference of the transfer, sent after it was made, is kept on the open payment.
+        await refreshOpenPayment(tx, open, { reference: dto.reference, clientNote: dto.clientNote });
+
+        // A request made during the work and asked for again when the work is done moves the job then (it does nothing when
+        // the job is already waiting for payment, or still being worked on).
+        await transitionStatus(tx, {
+          id: interventionId,
+          to: Status.PAYMENT_PENDING,
+          actor: { kind: 'client', userId: clientId },
+          dataOnChange: { paymentPendingAt: new Date() },
+          soft: true,
+        });
+
+        return { payment: (await tx.payment.findUnique({ where: { id: open.id }, include: this.paymentInclude })) as any, reused: true };
+      }
+
+      const created = await tx.payment.create({
+        data: {
+          interventionId,
+          quoteId: acceptedQuote?.id,
+          invoiceId,
+          method: dto.method,
+          provider: providerFromDto || this.providerFromMethod(dto.method),
+          status: this.initialStatusFromMethod(dto.method),
+          amount,
+          amountRefunded: 0,
+          currency,
+          reference: dto.reference,
+          clientNote: dto.clientNote,
+          createdById: clientId,
+        },
+        include: this.paymentInclude,
+      });
+
+      // The payment request is recorded whatever the job status is; the job only moves to PAYMENT_PENDING when the work is
+      // done (never while it is in progress, and the date of the request is written only when it moves).
+      await transitionStatus(tx, {
+        id: interventionId,
+        to: Status.PAYMENT_PENDING,
+        actor: { kind: 'client', userId: clientId },
+        dataOnChange: { paymentPendingAt: new Date() },
+        soft: true,
+      });
+
+      return { payment: created as any, reused: false };
     });
 
-    // The payment request is recorded whatever the job status is; the job only
-    // moves to PAYMENT_PENDING when the work is done (never while it is in progress).
-    await transitionStatus(this.prisma, {
-      id: interventionId,
-      to: Status.PAYMENT_PENDING,
-      actor: { kind: 'client', userId: clientId },
-      data: { paymentPendingAt: new Date() },
-      soft: true,
-    });
+    if (reused) {
+      return {
+        ...paymentForClient(payment),
+        instructions: this.getPaymentInstructions(dto.method),
+        replayed: true,
+      };
+    }
 
     await this.createEvent({
       interventionId,
@@ -502,9 +549,14 @@ export class PaymentsService {
   async confirm(
     paymentId: number,
     adminId: number,
-    dto: AdminPaymentActionDto,
+    dto: ConfirmPaymentDto,
   ) {
     const payment = await this.getPaymentOrFail(paymentId);
+
+    // A second click on a payment that is already confirmed is answered with the payment as it is: one confirmation.
+    if (payment.status === PaymentStatus.PAID) {
+      return payment;
+    }
 
     this.ensurePaymentCanBeConfirmed(payment);
 
@@ -512,15 +564,22 @@ export class PaymentsService {
     const receiptNumber =
       payment.receiptNumber || this.generateReceiptNumber(payment.id);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx) => {
       await lockJob(tx, payment.interventionId);
 
-      // Read again under the lock: a cancel or a fail may have come in between.
+      // Read again under the lock: a cancel or a fail may have come in between, or another click on confirm.
       const current = await tx.payment.findUnique({ where: { id: paymentId } });
 
       if (!current) throw new NotFoundException('Paiement introuvable.');
 
+      if (current.status === PaymentStatus.PAID) {
+        return { replayed: true, confirmed: await tx.payment.findUnique({ where: { id: paymentId }, include: this.paymentInclude }) };
+      }
+
       this.ensurePaymentCanBeConfirmed(current);
+
+      // Nothing is confirmed above what the job has to pay: the figures of the job are worked out from what was confirmed.
+      await this.ensureRoomLeft(tx, current);
 
       // A cash payment is in the artisan's ledger once it is confirmed: the cash they declared stays (or counts again, when
       // the payment had failed), and cash nobody declared is written now. Before the payment is marked as paid, so that what
@@ -535,49 +594,68 @@ export class PaymentsService {
           status: PaymentStatus.PAID,
           confirmedAt: new Date(),
           confirmedById: adminId,
-          reference: reference || payment.reference,
+          // What is found under the lock, not what was read before it: the customer may have sent the reference of the
+          // transfer meanwhile.
+          reference: reference || current.reference,
           adminNote: dto.adminNote,
-          receiptNumber,
-          receiptGeneratedAt: payment.receiptGeneratedAt || new Date(),
+          receiptNumber: current.receiptNumber || receiptNumber,
+          receiptGeneratedAt: current.receiptGeneratedAt || new Date(),
         },
         include: this.paymentInclude,
       });
 
-      await transitionStatus(tx, {
-        id: payment.interventionId,
-        to: Status.PAID,
-        actor: { kind: 'staff', userId: adminId },
-        data: { paidAt: new Date() },
-        soft: true,
-      });
+      // The job and its invoice are paid when what was confirmed covers what they ask for: a part payment (30 in cash on a
+      // job of 100) leaves them as they are.
+      const position = await paymentPosition(tx, payment.interventionId);
 
-      if (payment.invoiceId) {
-        await tx.invoice.update({
-          where: {
-            id: payment.invoiceId,
-          },
-          data: {
-            status: InvoiceStatus.PAID,
-            paidAt: new Date(),
-          },
+      if (this.coversDocument(position.payments, position.document)) {
+        await transitionStatus(tx, {
+          id: payment.interventionId,
+          to: Status.PAID,
+          actor: { kind: 'staff', userId: adminId },
+          data: { paidAt: new Date() },
+          soft: true,
         });
+
+        if (payment.invoiceId || position.invoice) {
+          // An invoice that was cancelled stays cancelled, whatever it is linked to.
+          await tx.invoice.updateMany({
+            where: {
+              id: (payment.invoiceId ?? position.invoice?.id) as number,
+              status: { not: InvoiceStatus.CANCELLED },
+            },
+            data: {
+              status: InvoiceStatus.PAID,
+              paidAt: new Date(),
+            },
+          });
+        }
       }
 
-      return confirmedPayment;
+      // What the job brought in, the commission and the artisan's share follow the payments.
+      await syncFinancials(tx, payment.interventionId, { userId: adminId });
+
+      return { replayed: false, confirmed: confirmedPayment };
     });
+
+    if (outcome.replayed) {
+      return outcome.confirmed;
+    }
+
+    const updated = outcome.confirmed as NonNullable<typeof outcome.confirmed>;
 
     await this.createEvent({
       interventionId: payment.interventionId,
       type: InterventionEventType.PAYMENT_CONFIRMED,
       title: 'Paiement confirmé',
-      message: `Le paiement de ${formatMoney(payment.amount, { currency: payment.currency })} a été confirmé.`,
+      message: `Le paiement de ${formatMoney(updated.amount, { currency: updated.currency })} a été confirmé.`,
       createdById: adminId,
       metadata: {
         paymentId,
-        amount: money(payment.amount),
-        currency: payment.currency,
-        method: payment.method,
-        provider: payment.provider,
+        amount: money(updated.amount),
+        currency: updated.currency,
+        method: updated.method,
+        provider: updated.provider,
         reference: updated.reference,
         receiptNumber: updated.receiptNumber,
       },
@@ -590,12 +668,47 @@ export class PaymentsService {
     return updated;
   }
 
+  /**
+   * A payment that is not cash cannot be confirmed above what is left to pay on the job (the invoice, else the accepted quote,
+   * less what was received and the cash that artisans declared). Cash has its own check, which also counts the cash the artisan
+   * declared for this very payment. A job with no document, or money in another currency than the company's, has nothing to
+   * compare with.
+   */
+  private async ensureRoomLeft(tx: any, payment: any) {
+    if (String(payment.method) === PaymentMethod.CASH) return;
+
+    if (payment.currency && String(payment.currency) !== currencyCode()) return;
+
+    const position = await paymentPosition(tx, payment.interventionId);
+
+    if (position.document?.currency && String(position.document.currency) !== currencyCode()) return;
+
+    if (position.remaining !== null && compareMoney(money(payment.amount), position.remaining) > 0) {
+      throw new ConflictException('Ce paiement dépasse ce qu’il reste à payer sur cette mission.');
+    }
+  }
+
+  /** Whether what was received covers the document that is paid (the invoice, else the accepted quote). No document: yes. */
+  private coversDocument(payments: any[], document: any): boolean {
+    if (!document) return true;
+
+    // The sums are in the currency of the company: a document in another one cannot be compared, a confirmation settles it.
+    if (document.currency && String(document.currency) !== currencyCode()) return true;
+
+    return compareMoney(paymentFigures(payments).kept, money(document.amountTTC)) >= 0;
+  }
+
   // ==========================================================
   // Admin marks payment as failed
   // ==========================================================
 
-  async fail(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+  async fail(paymentId: number, adminId: number, dto: FailPaymentDto) {
     const payment = await this.getPaymentOrFail(paymentId);
+
+    // A second click on a payment that already failed is answered with it as it is: the reason, the date and the timeline stay.
+    if (payment.status === PaymentStatus.FAILED) {
+      return payment;
+    }
 
     this.ensurePaymentCanFail(payment);
 
@@ -604,13 +717,17 @@ export class PaymentsService {
       dto.adminNote ||
       'Le paiement a échoué.';
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx) => {
       await lockJob(tx, payment.interventionId);
 
       // Read again under the lock: the payment may have been confirmed in the meantime.
       const current = await tx.payment.findUnique({ where: { id: paymentId } });
 
       if (!current) throw new NotFoundException('Paiement introuvable.');
+
+      if (current.status === PaymentStatus.FAILED) {
+        return { replayed: true, failed: await tx.payment.findUnique({ where: { id: paymentId }, include: this.paymentInclude }) };
+      }
 
       this.ensurePaymentCanFail(current);
 
@@ -630,8 +747,14 @@ export class PaymentsService {
       // The cash an artisan declared for this payment was not taken after all: it leaves their ledger.
       await reverseCollectionsOfPayment(tx, paymentId, { userId: adminId, reason: 'Paiement marqué comme échoué.' });
 
-      return failed;
+      return { replayed: false, failed };
     });
+
+    if (outcome.replayed) {
+      return outcome.failed;
+    }
+
+    const updated = outcome.failed as NonNullable<typeof outcome.failed>;
 
     await this.createEvent({
       interventionId: payment.interventionId,
@@ -654,7 +777,7 @@ export class PaymentsService {
   // Admin cancels payment
   // ==========================================================
 
-  async cancel(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+  async cancel(paymentId: number, adminId: number, dto: CancelPaymentDto) {
     const payment = await this.getPaymentOrFail(paymentId);
 
     this.ensurePaymentCanBeCancelled(payment);
@@ -681,6 +804,7 @@ export class PaymentsService {
         data: {
           status: PaymentStatus.CANCELLED,
           cancelledAt: new Date(),
+          cancelReason: reason,
           adminNote: dto.adminNote,
         },
         include: this.paymentInclude,
@@ -711,51 +835,79 @@ export class PaymentsService {
   // Admin refund / partial refund
   // ==========================================================
 
-  async refund(paymentId: number, adminId: number, dto: AdminPaymentActionDto) {
+  /**
+   * Gives money back on a paid payment, in full or in part (no amount: what is left of it). In one step, under the lock of the
+   * job: the payment (amount refunded, status), the financials of the job (refund, revenue) and the complaints of the job that
+   * were waiting for a refund (decided). The customer is told afterwards.
+   */
+  async refund(paymentId: number, adminId: number, dto: RefundPaymentDto) {
     const payment = await this.getPaymentOrFail(paymentId);
 
     this.ensurePaymentCanBeRefunded(payment);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const refundAmount = money(amountFromDto ?? payment.amount);
 
-    if (refundAmount <= 0) {
-      throw new BadRequestException(
-        'Le montant du remboursement doit être supérieur à 0.',
-      );
-    }
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, payment.interventionId);
 
-    const newRefundedTotal = sumMoney(payment.amountRefunded, refundAmount);
+      // Read again under the lock: another refund may have been made in the meantime, and the total can never go above the payment.
+      const current = await tx.payment.findUnique({ where: { id: paymentId } });
 
-    if (compareMoney(newRefundedTotal, payment.amount) > 0) {
-      throw new BadRequestException(
-        'Le montant total remboursé ne peut pas dépasser le montant du paiement.',
-      );
-    }
+      if (!current) throw new NotFoundException('Paiement introuvable.');
 
-    const isFullRefund = compareMoney(newRefundedTotal, payment.amount) === 0;
+      this.ensurePaymentCanBeRefunded(current);
 
-    const reason =
-      this.getOptionalString(dto, 'reason') ||
-      dto.adminNote ||
-      `Remboursement de ${formatMoney(refundAmount, { currency: payment.currency })}.`;
+      const left = subtractMoney(money(current.amount), money(current.amountRefunded));
+      const refundAmount = money(amountFromDto ?? left);
 
-    const updated = await this.prisma.payment.update({
-      where: {
-        id: paymentId,
-      },
-      data: {
-        status: isFullRefund
-          ? PaymentStatus.REFUNDED
-          : PaymentStatus.PARTIALLY_REFUNDED,
-        amountRefunded: newRefundedTotal,
-        refundedAt: new Date(),
-        refundedById: adminId,
-        refundReason: reason,
-        adminNote: dto.adminNote,
-      },
-      include: this.paymentInclude,
+      if (refundAmount <= 0) {
+        throw new BadRequestException(
+          'Le montant du remboursement doit être supérieur à 0.',
+        );
+      }
+
+      const newRefundedTotal = sumMoney(current.amountRefunded, refundAmount);
+
+      if (compareMoney(newRefundedTotal, current.amount) > 0) {
+        throw new BadRequestException(
+          'Le montant total remboursé ne peut pas dépasser le montant du paiement.',
+        );
+      }
+
+      const isFullRefund = compareMoney(newRefundedTotal, current.amount) === 0;
+
+      const reason =
+        this.getOptionalString(dto, 'reason') ||
+        dto.adminNote ||
+        `Remboursement de ${formatMoney(refundAmount, { currency: current.currency })}.`;
+
+      const refunded = await tx.payment.update({
+        where: {
+          id: paymentId,
+        },
+        data: {
+          status: isFullRefund
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.PARTIALLY_REFUNDED,
+          amountRefunded: newRefundedTotal,
+          refundedAt: new Date(),
+          refundedById: adminId,
+          refundReason: reason,
+          adminNote: dto.adminNote,
+        },
+        include: this.paymentInclude,
+      });
+
+      // The financials follow the payments, and the complaints that asked for this refund are decided.
+      await syncFinancials(tx, payment.interventionId, { userId: adminId });
+
+      const figures = paymentFigures(await tx.payment.findMany({ where: { interventionId: payment.interventionId } }));
+      const complaints = await settleComplaintRefund(tx, payment.interventionId, { userId: adminId }, figures);
+
+      return { refunded, refundAmount, newRefundedTotal, isFullRefund, reason, complaints };
     });
+
+    const { refunded, refundAmount, newRefundedTotal, isFullRefund, reason, complaints } = outcome;
 
     await this.createEvent({
       interventionId: payment.interventionId,
@@ -771,10 +923,14 @@ export class PaymentsService {
         refundAmount,
         totalRefunded: newRefundedTotal,
         isFullRefund,
+        complaintsDecided: complaints,
       },
     });
 
-    return updated;
+    // The customer is told what went back to them. Never throws.
+    await this.notifications.notifyPaymentRefunded(paymentId, refundAmount, adminId);
+
+    return refunded;
   }
 
   // ==========================================================
@@ -944,34 +1100,56 @@ export class PaymentsService {
     const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
 
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const amount = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    const asked = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
     // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
     const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 
-    if (!amount || amount <= 0) {
+    if (!asked || asked <= 0) {
       throw new BadRequestException(
         'Montant introuvable. Envoyez un montant, liez une facture ou utilisez un devis accepté.',
       );
     }
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        interventionId,
-        quoteId: acceptedQuote?.id,
-        invoiceId,
-        method: dto.method,
-        provider: this.providerFromMethod(dto.method),
-        status: this.initialStatusFromMethod(dto.method),
-        amount,
-        amountRefunded: 0,
-        currency,
-        reference: dto.reference,
-        clientNote: dto.clientNote,
-        adminNote: this.getOptionalString(dto, 'adminNote'),
-        createdById: adminId,
-      },
-      include: this.paymentInclude,
+    const { payment, reused } = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, interventionId);
+
+      // No amount typed: what is left to pay (a deposit that was paid is not asked for twice).
+      const amount = amountFromDto !== undefined ? asked : await leftToPay(tx, interventionId, asked, currency);
+
+      // One open payment per job: the same request again is answered with the open payment, another one is refused.
+      const open = await claimOpenPayment(tx, { interventionId, method: dto.method, amount });
+
+      if (open) {
+        await refreshOpenPayment(tx, open, { reference: dto.reference, clientNote: dto.clientNote, adminNote: this.getOptionalString(dto, 'adminNote') });
+
+        return { payment: (await tx.payment.findUnique({ where: { id: open.id }, include: this.paymentInclude })) as any, reused: true };
+      }
+
+      const created = await tx.payment.create({
+        data: {
+          interventionId,
+          quoteId: acceptedQuote?.id,
+          invoiceId,
+          method: dto.method,
+          provider: this.providerFromMethod(dto.method),
+          status: this.initialStatusFromMethod(dto.method),
+          amount,
+          amountRefunded: 0,
+          currency,
+          reference: dto.reference,
+          clientNote: dto.clientNote,
+          adminNote: this.getOptionalString(dto, 'adminNote'),
+          createdById: adminId,
+        },
+        include: this.paymentInclude,
+      });
+
+      return { payment: created as any, reused: false };
     });
+
+    if (reused) {
+      return payment;
+    }
 
     await this.createEvent({
       interventionId,

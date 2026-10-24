@@ -1141,6 +1141,7 @@ model Payment {
   adminNote  String?
 
   failureReason String?
+  cancelReason  String?
   refundReason  String?
 
   createdById   Int?

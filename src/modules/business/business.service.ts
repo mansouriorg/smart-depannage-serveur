@@ -12,16 +12,15 @@ import {
   PayoutStatus,
   Prisma,
   Role,
-  Status,
 } from '../../../generated/prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { compareMoney, divideMoney, formatMoney, money, percentOf, ratioPercent, subtractMoney, sumMoneyOf, toMoneyString } from '../../common/money/money';
+import { compareMoney, divideMoney, formatMoney, money, ratioPercent, subtractMoney, sumMoneyOf, toMoneyString } from '../../common/money/money';
 import { decimalsToNumbers } from '../../common/money/money-numbers';
 import { currencyCode } from '../../common/locale/locale';
 import { businessDateOf, businessMonthRange, instantOf, startOfBusinessMonth } from '../../common/locale/business-time';
-import { DEFAULT_COMMISSION_RATE } from '../cash-ledger/cash-ledger.types';
-import { lockPayouts } from '../assignment/artisan-lock';
+import { lockJob, lockPayouts } from '../assignment/artisan-lock';
+import { syncFinancials } from '../payments/financials-ops';
 import { PayoutDecision, payoutDecisions } from './payout-holds';
 
 import {
@@ -83,16 +82,6 @@ export class BusinessService {
   /** The month on the clock of the business: from its first instant to its last millisecond. */
   private monthRange(year: number, month: number) {
     return businessMonthRange(year, month);
-  }
-
-  private paidStatuses(): Status[] {
-    return [
-      Status.COMPLETED,
-      Status.PAYMENT_PENDING,
-      Status.PAID,
-      Status.INVOICE_SENT,
-      Status.INVOICE_READY,
-    ];
   }
 
   private financialInclude() {
@@ -253,6 +242,13 @@ export class BusinessService {
   // Intervention financials
   // ==========================================================
 
+  /**
+   * Works the financials of a job out again from its confirmed payments (they are also worked out by themselves whenever a
+   * payment is confirmed or refunded). What the back office can still decide is the commission rate, the payment provider's fee
+   * and the notes; the amounts come from the payments.
+   *
+   * POST /business/interventions/:interventionId/financials
+   */
   async calculateInterventionFinancials(
     userId: number,
     role: Role,
@@ -269,65 +265,27 @@ export class BusinessService {
       );
     }
 
-    const totalPrice = money(dto.totalPrice);
-    const commissionRate = dto.commissionRate ?? DEFAULT_COMMISSION_RATE;
-    const paymentProviderFee = money(dto.paymentProviderFee ?? 0);
-    const refundAmount = money(dto.refundAmount ?? 0);
-    const currency = dto.currency || currencyCode();
+    return this.prisma.$transaction(async (tx) => {
+      // The same lock as a confirmation or a refund: the payments do not change while the figures are worked out.
+      await lockJob(tx, interventionId);
 
-    let platformCommission = percentOf(totalPrice, commissionRate);
-
-    const artisanPayout =
-      dto.artisanPayout !== undefined
-        ? money(dto.artisanPayout)
-        : subtractMoney(totalPrice, platformCommission);
-
-    if (dto.artisanPayout !== undefined) {
-      platformCommission = subtractMoney(totalPrice, artisanPayout);
-    }
-
-    if (artisanPayout < 0 || platformCommission < 0) {
-      throw new BadRequestException(
-        'Montants invalides: vérifiez totalPrice, artisanPayout et commissionRate.',
+      const worked = await syncFinancials(
+        tx,
+        interventionId,
+        { userId },
+        { commissionRate: dto.commissionRate, paymentProviderFee: dto.paymentProviderFee, notes: dto.notes },
       );
-    }
 
-    const netRevenue = subtractMoney(subtractMoney(platformCommission, paymentProviderFee), refundAmount);
+      if (!worked) {
+        throw new BadRequestException(
+          'Aucun paiement confirmé: les montants sont calculés à partir des paiements confirmés de l’intervention.',
+        );
+      }
 
-    const companyMargin = netRevenue;
-
-    return this.prisma.interventionFinancials.upsert({
-      where: {
-        interventionId,
-      },
-      update: {
-        totalPrice,
-        commissionRate,
-        platformCommission,
-        artisanPayout,
-        paymentProviderFee,
-        refundAmount,
-        netRevenue,
-        companyMargin,
-        currency,
-        notes: dto.notes?.trim() || null,
-        calculatedById: userId,
-      },
-      create: {
-        interventionId,
-        totalPrice,
-        commissionRate,
-        platformCommission,
-        artisanPayout,
-        paymentProviderFee,
-        refundAmount,
-        netRevenue,
-        companyMargin,
-        currency,
-        notes: dto.notes?.trim() || null,
-        calculatedById: userId,
-      },
-      include: this.financialInclude(),
+      return tx.interventionFinancials.findUnique({
+        where: { interventionId },
+        include: this.financialInclude(),
+      });
     });
   }
 
@@ -421,9 +379,17 @@ export class BusinessService {
 
     const interventionCount = financials.length;
 
-    const paidInterventionCount = financials.filter((item) =>
-      this.paidStatuses().includes(item.intervention.status),
-    ).length;
+    // A job is paid when it has a payment that was confirmed (and not given back in full): not when it is only finished, or waiting for its payment.
+    const paidPayments = await this.prisma.payment.findMany({
+      where: {
+        interventionId: { in: financials.map((item) => item.interventionId) },
+        status: { in: ['PAID', 'PARTIALLY_REFUNDED'] },
+      },
+      select: { interventionId: true },
+    });
+    const paidJobs = new Set(paidPayments.map((payment) => payment.interventionId));
+
+    const paidInterventionCount = financials.filter((item) => paidJobs.has(item.interventionId)).length;
 
     const refundedCount = financials.filter(
       (item) => compareMoney(item.refundAmount, 0) > 0,
@@ -670,7 +636,7 @@ export class BusinessService {
       if (!free.length) {
         throw new BadRequestException(
           held.length
-            ? `Aucune intervention financière ne peut être payée maintenant: ${held.length} intervention(s) sont retenues (litige, remboursement ou espèces déjà encaissées).`
+            ? `Aucune intervention financière ne peut être payée maintenant: ${held.length} intervention(s) sont retenues (litige, remboursement, espèces déjà encaissées, travail non terminé ou paiement incomplet).`
             : 'Aucune intervention financière disponible pour ce payout.',
         );
       }
@@ -816,7 +782,7 @@ export class BusinessService {
 
       if (changed.length > 0) {
         throw new ConflictException(
-          `Ce payout ne peut pas être marqué comme payé: ${changed.length} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées ou montant). Annulez-le puis refaites-le.`,
+          `Ce payout ne peut pas être marqué comme payé: ${changed.length} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées, travail non terminé, paiement incomplet ou montant). Annulez-le puis refaites-le.`,
         );
       }
 

@@ -11,6 +11,7 @@ import { isValidAmount } from '../../common/money/money-rules';
 import { pick } from '../../common/views/pick';
 import { CollectCashDto, LedgerQueryDto, RecordAdjustmentDto, RecordRemittanceDto } from './dto/cash-ledger.dto';
 import { COLLECT_CASH_IN, LedgerEntryView, LedgerTotals } from './cash-ledger.types';
+import { describeAmount, isPlaceholder, supersede } from '../payments/open-payment';
 import { TypeSums, commissionRateFor, jobIsInPaidPayout, ledgerTotals, paymentPosition, totalsOfSums, viewOfEntry } from './cash-ledger-ops';
 
 const MAX_ROW_ID = 2_147_483_647;
@@ -172,6 +173,20 @@ export class CashLedgerService {
         const open = payments
           .filter((payment) => payment.method === PaymentMethod.CASH && ([PaymentStatus.PENDING, PaymentStatus.AWAITING_CONFIRMATION] as string[]).includes(payment.status) && !declared.has(payment.id))
           .sort((a, b) => b.id - a.id)[0];
+
+        // One open payment per job: what the customer asked for in another way than cash is not paid twice. An online request
+        // that nobody can pay is cancelled; a transfer waiting for its confirmation is for the back office to cancel first.
+        // (Cash that was declared before is a fact, not a request: it is never in the way.)
+        const others = payments.filter((other) => ([PaymentStatus.PENDING, PaymentStatus.AWAITING_CONFIRMATION] as string[]).includes(other.status) && other.method !== PaymentMethod.CASH);
+        const blocking = others.find((other) => !isPlaceholder(other));
+
+        if (blocking) {
+          throw new ConflictException(`Un paiement de ${describeAmount(blocking)} est déjà en attente pour cette mission: contactez l’administration.`);
+        }
+
+        for (const other of others) {
+          if (!(await supersede(tx, other))) throw new ConflictException('Un paiement vient d’être modifié sur cette mission. Réessayez.');
+        }
 
         let payment: Record<string, any>;
 

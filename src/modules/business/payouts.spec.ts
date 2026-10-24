@@ -2,6 +2,7 @@ import { Decimal } from '../../common/testing/decimal-double';
 import { World, emptyWorld } from '../../common/testing/world';
 import { resetLocale } from '../../common/locale/locale';
 import { lockPayouts } from '../assignment/artisan-lock';
+import { payoutDecisions } from './payout-holds';
 
 /**
  * What a payout pays, what it leaves out and why, and paying it twice (P2-02), on the real services and a database that
@@ -70,10 +71,28 @@ const isIncluded = async (d: Desk, interventionId: number) => (await preview(d))
 
 let taps = 0;
 
-/** The job is under way with an accepted quote of this amount, so its artisan may say they were paid. */
-const underWay = (d: Desk, interventionId: number, total: number) => {
+/**
+ * The work is done and the job has an accepted quote of this amount, so its artisan may say they were paid; `online` of it was
+ * paid by the customer and confirmed. A payout waits for the work and for the whole price (P2-03): cash the artisan declares
+ * counts once the back office has confirmed it.
+ */
+const underWay = (d: Desk, interventionId: number, total: number, online = 0) => {
   d.world.memory.plant('quote', { interventionId, createdById: d.artisan.id, status: 'ACCEPTED', amountHT: total, taxAmount: 0, amountTTC: total });
-  rowsOf(d.world, 'intervention').find((row) => row.id === interventionId)!.status = 'IN_PROGRESS';
+  rowsOf(d.world, 'intervention').find((row) => row.id === interventionId)!.status = 'COMPLETED';
+
+  if (online > 0) d.world.memory.plant('payment', { interventionId, method: 'ONLINE', status: 'PAID', amount: online, amountRefunded: 0, createdById: d.client.id });
+};
+
+/** The back office has confirmed the payment (set directly, so that the financials typed in the fixture stay as they are). */
+const confirmed = (d: Desk, paymentId: number) => {
+  rowsOf(d.world, 'payment').find((row) => row.id === paymentId)!.status = 'PAID';
+};
+
+/** The customer paid it all online and was given 30 back (recorded in the financials): 30 are still to be paid, and may be paid in cash. */
+const advanceRefunded = (d: Desk, interventionId: number) => {
+  underWay(d, interventionId, 100);
+  d.world.memory.plant('payment', { interventionId, method: 'ONLINE', status: 'PARTIALLY_REFUNDED', amount: 100, amountRefunded: 30, createdById: d.client.id });
+  rowsOf(d.world, 'interventionFinancials').find((row) => row.interventionId === interventionId)!.refundAmount = 30;
 };
 
 const collect = (d: Desk, interventionId: number, amount: number) => d.world.svc.cashLedger.collectCash(d.artisan.id, 'ARTISAN', interventionId, { amount, requestKey: `tap-payouts-${(taps += 1)}` });
@@ -287,17 +306,22 @@ describe('a payout pays the jobs that are free, and says which are not and why (
     const d = desk();
     const { intervention } = d.job(100);
 
-    d.world.memory.plant('quote', { interventionId: intervention.id, createdById: d.artisan.id, status: 'ACCEPTED', amountHT: 100, taxAmount: 0, amountTTC: 100 });
-    rowsOf(d.world, 'intervention').find((row) => row.id === intervention.id)!.status = 'IN_PROGRESS';
+    underWay(d, intervention.id, 100);
 
     const collected = await d.world.svc.cashLedger.collectCash(d.artisan.id, 'ARTISAN', intervention.id, { amount: 100, requestKey: 'tap-payouts-01' });
 
-    expect(await heldReasons(d, intervention.id)).toEqual(['PAID_IN_CASH']);
+    // the cash is declared and the back office has not confirmed it yet: the job is not paid, and the cash is in the artisan's hand
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID', 'PAID_IN_CASH']);
     expect((await preview(d)).included).toEqual([]);
-    expect((await refusal(() => create(d)))?.message).toBe('Aucune intervention financière ne peut être payée maintenant: 1 intervention(s) sont retenues (litige, remboursement ou espèces déjà encaissées).');
+    expect((await refusal(() => create(d)))?.message).toBe('Aucune intervention financière ne peut être payée maintenant: 1 intervention(s) sont retenues (litige, remboursement, espèces déjà encaissées, travail non terminé ou paiement incomplet).');
     expect(rowsOf(d.world, 'artisanPayout').length).toBe(0);
 
     await d.world.svc.payments.cancel(collected.payment.id, d.admin.id, {});
+
+    // the cash is taken back, and nobody has paid the job: it waits for the customer
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+
+    d.world.memory.plant('payment', { interventionId: intervention.id, method: 'ONLINE', status: 'PAID', amount: 100, amountRefunded: 0, createdById: d.client.id });
 
     expect(await isIncluded(d, intervention.id)).toBe(true);
   });
@@ -353,8 +377,13 @@ describe('a payout pays the jobs that are free, and says which are not and why (
     const d = desk();
     const { intervention } = d.job(100, { share: 80 });
 
-    underWay(d, intervention.id, 100);
-    await collect(d, intervention.id, 30);
+    underWay(d, intervention.id, 100, 70);
+
+    const declared = await collect(d, intervention.id, 30);
+
+    // declared and not confirmed: the job is not paid yet
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+    confirmed(d, declared.payment.id);
 
     const shown = await preview(d);
 
@@ -376,8 +405,8 @@ describe('a payout pays the jobs that are free, and says which are not and why (
       const d = desk();
       const { intervention } = d.job(total, { share });
 
-      underWay(d, intervention.id, total);
-      await collect(d, intervention.id, cash);
+      underWay(d, intervention.id, total, Number((total - cash).toFixed(3)));
+      confirmed(d, (await collect(d, intervention.id, cash)).payment.id);
       outcomes.push(`${total}/${share}/${cash}: ${(await preview(d)).included[0]?.amount}`);
     }
 
@@ -392,9 +421,11 @@ describe('a payout pays the jobs that are free, and says which are not and why (
 
     const taken = await collect(d, intervention.id, 30);
 
+    // the rest was paid online: the financials are worked out from the confirmed payments (P2-03), 30 + 70 = the 100 of the job
+    d.world.memory.plant('payment', { interventionId: intervention.id, method: 'ONLINE', status: 'PAID', amount: 70, amountRefunded: 0, createdById: d.client.id });
     await d.world.svc.payments.confirm(taken.payment.id, d.admin.id, {});
 
-    expect(rowsOf(d.world, 'payment')[0].status).toBe('PAID');
+    expect(rowsOf(d.world, 'payment').find((row) => row.id === taken.payment.id)?.status).toBe('PAID');
     expect((await preview(d)).included.map((item) => [item.amount, item.cashHeld])).toEqual([[56, 30]]);
   });
 
@@ -457,7 +488,7 @@ describe('a payout pays the jobs that are free, and says which are not and why (
     const { intervention } = d.job(100, { share: 80 });
 
     underWay(d, intervention.id, 100);
-    await collect(d, intervention.id, 100);
+    confirmed(d, (await collect(d, intervention.id, 100)).payment.id);
 
     const shown = await preview(d);
 
@@ -677,7 +708,7 @@ describe('a payout is paid once (P2-02)', () => {
     }
   });
 
-  const HELD = (count: number) => `Ce payout ne peut pas être marqué comme payé: ${count} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées ou montant). Annulez-le puis refaites-le.`;
+  const HELD = (count: number) => `Ce payout ne peut pas être marqué comme payé: ${count} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées, travail non terminé, paiement incomplet ou montant). Annulez-le puis refaites-le.`;
 
   it('a payout whose job has been disputed since it was made is not paid until the dispute is decided', async () => {
     const { d, payout } = await ready();
@@ -725,14 +756,15 @@ describe('a payout is paid once (P2-02)', () => {
     const d = desk();
     const { intervention } = d.job(100, { share: 80 });
 
-    underWay(d, intervention.id, 100);
+    advanceRefunded(d, intervention.id);
 
     const payout = await create(d);
 
     expect(String(payout.grossAmount)).toBe('80');
 
-    await collect(d, intervention.id, 30);
+    const declared = await collect(d, intervention.id, 30);
 
+    // declared and not confirmed: the job is not paid in full, the payout cannot be marked as paid
     const answer = await refusal(() => pay(d, payout.id));
 
     expect(answer?.status).toBe(409);
@@ -740,6 +772,9 @@ describe('a payout is paid once (P2-02)', () => {
     expect(rowsOf(d.world, 'artisanPayout')[0].status).toBe('READY');
 
     await d.world.svc.business.cancelPayout(d.admin.id, 'ADMIN', payout.id);
+
+    // confirmed: the payout is made again, and pays the part that did not go through the artisan's hand
+    confirmed(d, declared.payment.id);
 
     const again = await create(d);
 
@@ -751,38 +786,56 @@ describe('a payout is paid once (P2-02)', () => {
     const d = desk();
     const { intervention } = d.job(100, { share: 80 });
 
-    underWay(d, intervention.id, 100);
+    advanceRefunded(d, intervention.id);
+
+    const payout = await create(d);
+
+    // a cash payment confirmed the way it was before the ledger: the financials were not worked out again
+    d.world.memory.plant('payment', { interventionId: intervention.id, method: 'CASH', status: 'PAID', amount: 30, amountRefunded: 0, createdById: d.client.id });
+
+    expect((await refusal(() => pay(d, payout.id)))?.message).toBe(HELD(1));
+    expect(rowsOf(d.world, 'artisanPayout')[0].status).toBe('READY');
+  });
+
+  it('... and when the back office confirms the cash through the payments, the price stays the 100 of the job: the payout is made again for 56 (P2-03)', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    advanceRefunded(d, intervention.id);
 
     const payout = await create(d);
     const loose = await d.world.svc.payments.createAdminManualPayment(d.admin.id, intervention.id, { method: 'CASH', amount: 30 });
 
     await d.world.svc.payments.confirm(loose.id, d.admin.id, {});
 
-    expect((await refusal(() => pay(d, payout.id)))?.message).toBe(HELD(1));
-    expect(rowsOf(d.world, 'artisanPayout')[0].status).toBe('READY');
-  });
-
-  it('... nor when the part of the cash that the payout took off was given back since (the payment was cancelled)', async () => {
-    const d = desk();
-    const { intervention } = d.job(100, { share: 80 });
-
-    underWay(d, intervention.id, 100);
-
-    const declared = await collect(d, intervention.id, 30);
-    const payout = await create(d);
-
-    expect(String(payout.grossAmount)).toBe('56');
-
-    await d.world.svc.payments.cancel(declared.payment.id, d.admin.id, {});
-
+    // 130 was received but 30 of it came back and was paid again: the job is paid for once
+    expect(rowsOf(d.world, 'interventionFinancials').map((row) => [String(row.totalPrice), String(row.artisanPayout), String(row.refundAmount)])).toEqual([['100', '80', '30']]);
     expect((await refusal(() => pay(d, payout.id)))?.message).toBe(HELD(1));
 
     await d.world.svc.business.cancelPayout(d.admin.id, 'ADMIN', payout.id);
 
-    const again = await create(d);
+    expect(String((await create(d)).grossAmount)).toBe('56');
+  });
 
-    expect(String(again.grossAmount)).toBe('80');
-    expect((await pay(d, again.id)).status).toBe('PAID');
+  it('... a cash declaration that is cancelled leaves the payout at the full share: the job was never paid in cash', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    advanceRefunded(d, intervention.id);
+
+    const declared = await collect(d, intervention.id, 30);
+
+    // the 100 paid online cover the job; the cash declared on top of it is held back from the share until it is cancelled or confirmed
+    expect((await preview(d)).included.map((item) => [item.amount, item.cashHeld])).toEqual([[56, 30]]);
+
+    await d.world.svc.payments.cancel(declared.payment.id, d.admin.id, {});
+
+    expect((await preview(d)).included.map((item) => [item.amount, item.cashHeld])).toEqual([[80, 0]]);
+
+    const payout = await create(d);
+
+    expect(String(payout.grossAmount)).toBe('80');
+    expect((await pay(d, payout.id)).status).toBe('PAID');
   });
 
   it('... nor when the share of the job was worked out again since', async () => {
@@ -964,5 +1017,255 @@ describe('a payout that was not paid can be cancelled (P2-02)', () => {
     expect(run.seen).toBe('READY');
     expect(run.answer).toBe(null);
     expect(rowsOf(d.world, 'artisanPayout')[0].status).toBe('CANCELLED');
+  });
+});
+
+describe('a payout waits for the work and for the whole price (P2-03)', () => {
+  const quoteFor = (d: Desk, interventionId: number, amountTTC: number, fields: Record<string, unknown> = {}) =>
+    d.world.memory.plant('quote', { interventionId, createdById: d.artisan.id, status: 'ACCEPTED', amountHT: amountTTC, taxAmount: 0, amountTTC, ...fields });
+  const paid = (d: Desk, interventionId: number, amount: number, fields: Record<string, unknown> = {}) =>
+    d.world.memory.plant('payment', { interventionId, method: 'ONLINE', status: 'PAID', amount, amountRefunded: 0, createdById: d.client.id, ...fields });
+  const pay = (d: Desk, id: number) => d.world.svc.business.markPayoutPaid(d.accountant.id, 'ACCOUNTANT' as any, id, {} as any);
+  const HELD = (count: number) => `Ce payout ne peut pas être marqué comme payé: ${count} intervention(s) ont changé depuis sa création (litige, remboursement, espèces déjà encaissées, travail non terminé, paiement incomplet ou montant). Annulez-le puis refaites-le.`;
+  const statusOf = (d: Desk, interventionId: number, status: string) => {
+    rowsOf(d.world, 'intervention').find((row) => row.id === interventionId)!.status = status;
+  };
+
+  it('a deposit is not the whole price: the job is held as NOT_PAID until the rest is received', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 40);
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+    expect((await refusal(() => create(d)))?.status).toBe(400);
+
+    paid(d, intervention.id, 60);
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+    expect(await isIncluded(d, intervention.id)).toBe(true);
+  });
+
+  it('the invoice is what the job asks for when it has one, over the quote; a cancelled invoice is not', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 100);
+
+    const invoice = d.world.memory.plant('invoice', { interventionId: intervention.id, status: 'ISSUED', amountHT: 150, taxAmount: 0, amountTTC: 150, currency: 'TND' });
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+
+    rowsOf(d.world, 'invoice').find((row) => row.id === invoice.id)!.status = 'CANCELLED';
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('the latest accepted quote is what it asks for when there is no invoice', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100, { createdAt: new Date('2026-10-01T09:00:00.000Z') });
+    quoteFor(d, intervention.id, 150, { createdAt: new Date('2026-10-02T09:00:00.000Z') });
+    paid(d, intervention.id, 100);
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+
+    paid(d, intervention.id, 50);
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('a quote that was not accepted asks for nothing', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 500, { status: 'REJECTED' });
+    paid(d, intervention.id, 100);
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('one millime short is not paid', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 99.999);
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+
+    paid(d, intervention.id, 0.001);
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('what went back to the customer does not make the job unpaid: what was received is what counts', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80, refundAmount: 30 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 100, { status: 'PARTIALLY_REFUNDED', amountRefunded: 30 });
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('only confirmed payments count: waiting, failed and cancelled ones do not', async () => {
+    const outcomes: string[] = [];
+
+    for (const status of ['PENDING', 'AWAITING_CONFIRMATION', 'FAILED', 'CANCELLED', 'PAID', 'PARTIALLY_REFUNDED', 'REFUNDED']) {
+      const d = desk();
+      const { intervention } = d.job(100, { share: 80, refundAmount: 100 });
+
+      quoteFor(d, intervention.id, 100);
+      paid(d, intervention.id, 100, { status, amountRefunded: status === 'REFUNDED' ? 100 : 0 });
+      outcomes.push(`${status}: ${(await heldReasons(d, intervention.id))?.join(',') ?? 'free'}`);
+    }
+
+    expect(outcomes).toEqual(['PENDING: NOT_PAID', 'AWAITING_CONFIRMATION: NOT_PAID', 'FAILED: NOT_PAID', 'CANCELLED: NOT_PAID', 'PAID: free', 'PARTIALLY_REFUNDED: free', 'REFUNDED: free']);
+  });
+
+  it('a price in another currency cannot be compared with the sums of the company: it does not hold the job', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 500, { currency: 'EUR' });
+    paid(d, intervention.id, 100);
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('a job with no accepted quote and no invoice has nothing to compare with: the payments it has are enough', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    paid(d, intervention.id, 10);
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+  });
+
+  it('financials typed by hand with a quote and no payment are held: they come from payments now', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+  });
+
+  it('a job whose work is not done is held as NOT_FINISHED, even when the customer paid it all in advance', async () => {
+    const outcomes: string[] = [];
+
+    for (const status of ['PENDING', 'ASSIGNED', 'ARTISAN_ARRIVED', 'ARRIVED', 'ON_THE_WAY', 'IN_PROGRESS', 'WAITING_CLIENT_VALIDATION', 'CANCELLED', 'COMPLETED', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT', 'INVOICE_READY', 'SOMETHING_ELSE']) {
+      const d = desk();
+      const { intervention } = d.job(100, { share: 80 });
+
+      quoteFor(d, intervention.id, 100);
+      paid(d, intervention.id, 100);
+      statusOf(d, intervention.id, status);
+      outcomes.push(`${status}: ${(await heldReasons(d, intervention.id))?.join(',') ?? 'free'}`);
+    }
+
+    expect(outcomes).toEqual([
+      'PENDING: NOT_FINISHED',
+      'ASSIGNED: NOT_FINISHED',
+      'ARTISAN_ARRIVED: NOT_FINISHED',
+      'ARRIVED: NOT_FINISHED',
+      'ON_THE_WAY: NOT_FINISHED',
+      'IN_PROGRESS: NOT_FINISHED',
+      'WAITING_CLIENT_VALIDATION: NOT_FINISHED',
+      'CANCELLED: NOT_FINISHED',
+      'COMPLETED: free',
+      'PAYMENT_PENDING: free',
+      'PAID: free',
+      'INVOICE_SENT: free',
+      'INVOICE_READY: free',
+      'SOMETHING_ELSE: NOT_FINISHED',
+    ]);
+  });
+
+  it('a financial whose job cannot be found is not held for the work: nothing is known about it', async () => {
+    const d = desk();
+    const decisions = await payoutDecisions(d.world.prisma, d.artisan.id, [{ id: 1, interventionId: 999, totalPrice: 100, artisanPayout: 80, refundAmount: 0 }]);
+
+    expect(decisions.get(1)?.reasons).toEqual([]);
+  });
+
+  it('a job in dispute is held for the dispute, not also as unfinished', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80, status: 'DISPUTED' });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 100);
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['OPEN_DISPUTE']);
+  });
+
+  it('a job can be unfinished, unpaid and in dispute at once: each reason is named', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80, status: 'IN_PROGRESS' });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 30);
+    d.world.memory.plant('complaint', { interventionId: intervention.id, userId: d.client.id, title: 'Souci', description: 'Fuite', status: 'OPEN' });
+
+    expect(await heldReasons(d, intervention.id)).toEqual(['OPEN_DISPUTE', 'NOT_FINISHED', 'NOT_PAID']);
+  });
+
+  it('the cash the artisan declared counts as paid once the back office has confirmed it, and only once', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    underWay(d, intervention.id, 100, 60);
+
+    const declared = await collect(d, intervention.id, 40);
+
+    // declared, not confirmed: 60 of 100 are paid
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+
+    // confirmed: the cash is a payment of 40 and the ledger line is the same 40; 60 + 40 is 100, and 40 are in the artisan's hand
+    confirmed(d, declared.payment.id);
+    expect((await preview(d)).included.map((item) => [item.amount, item.cashHeld])).toEqual([[48, 40]]);
+
+    // short of 10: 50 online and 40 in cash do not make 100
+    rowsOf(d.world, 'payment').find((row) => row.method === 'ONLINE')!.amount = 50;
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+  });
+
+  it('the preview and the payout agree: a payout is made only for the jobs that are finished and paid', async () => {
+    const d = desk();
+    const ready = d.job(100, { share: 80 });
+    const deposit = d.job(200, { share: 160 });
+    const working = d.job(300, { share: 240, status: 'IN_PROGRESS' });
+
+    for (const [job, total, received] of [[ready, 100, 100], [deposit, 200, 50], [working, 300, 300]] as const) {
+      quoteFor(d, job.intervention.id, total);
+      paid(d, job.intervention.id, received);
+    }
+
+    const shown = await preview(d);
+
+    expect(shown.included.map((item) => item.interventionId)).toEqual([ready.intervention.id]);
+    expect(shown.held.map((item) => [item.interventionId, item.reasons])).toEqual([[deposit.intervention.id, ['NOT_PAID']], [working.intervention.id, ['NOT_FINISHED']]]);
+
+    const payout = await create(d);
+
+    expect(String(payout.netAmount)).toBe('80');
+    expect(rowsOf(d.world, 'artisanPayoutItem').map((item) => item.interventionId)).toEqual([ready.intervention.id]);
+  });
+
+  it('a payout that was made is not paid when the job it holds went back to the work meanwhile', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 100);
+
+    const payout = await create(d);
+
+    statusOf(d, intervention.id, 'IN_PROGRESS');
+
+    expect((await refusal(() => pay(d, payout.id)))?.message).toBe(HELD(1));
+    expect(rowsOf(d.world, 'artisanPayout')[0].status).toBe('READY');
   });
 });

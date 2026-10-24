@@ -15,11 +15,11 @@ import {
   BusinessExportFormat,
 } from '../../../../generated/prisma/client';
 
+/**
+ * What the back office can still decide on the financials of a job. The amounts (what was paid, the refunds, the commission and
+ * the artisan's share) are worked out from the confirmed payments, and cannot be typed in.
+ */
 export class CalculateInterventionFinancialsDto {
-  @Type(() => Number)
-  @IsMoney()
-  totalPrice: number;
-
   @IsOptional()
   @Type(() => Number)
   @IsTaxRate()
@@ -28,21 +28,7 @@ export class CalculateInterventionFinancialsDto {
   @IsOptional()
   @Type(() => Number)
   @IsMoney()
-  artisanPayout?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsMoney()
   paymentProviderFee?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsMoney()
-  refundAmount?: number;
-
-  @IsOptional()
-  @IsString()
-  currency?: string;
 
   @IsOptional()
   @IsString()

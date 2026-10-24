@@ -1751,6 +1751,43 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * The customer is told that money went back to them. It travels as a payment notice (the same channels and the same switch in
+   * the notification preferences): a type of its own would change the shared contract of all four other projects.
+   */
+  async notifyPaymentRefunded(paymentId: number, amount: number, actorId?: number) {
+    return this.guarded('payment refunded', async () => {
+      const payment = await this.prisma.payment.findUnique({
+        where: {
+          id: paymentId,
+        },
+        include: {
+          intervention: true,
+        },
+      });
+
+      if (!payment) {
+        return null;
+      }
+
+      return this.notify({
+        recipientId: payment.intervention.clientId,
+        actorId,
+        type: NotificationType.PAYMENT_RECEIVED,
+        title: 'Remboursement effectué',
+        message: `Un remboursement de ${formatMoney(amount, { currency: payment.currency })} a été effectué sur votre paiement.`,
+        entityType: 'PAYMENT',
+        entityId: paymentId,
+        data: {
+          paymentId,
+          interventionId: payment.interventionId,
+          amount,
+          refund: true,
+        },
+      });
+    });
+  }
+
   async notifyInvoiceReady(invoiceId: number, actorId?: number) {
     return this.guarded('invoice ready', async () => {
       const invoice = await this.prisma.invoice.findUnique({

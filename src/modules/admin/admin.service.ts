@@ -41,7 +41,9 @@ import { InviteReason, inviteArtisan } from '../auth/invite';
 import { artisanZoneRowsFor } from '../service-zones/zone-pick';
 import { isStoredFileUrl } from '../files/stored-file-url';
 import { totalsFromItems } from '../../common/money/document-totals';
-import { formatMoney, money, sumMoney, sumMoneyOf } from '../../common/money/money';
+import { compareMoney, formatMoney, money, subtractMoney, sumMoney, sumMoneyOf } from '../../common/money/money';
+import { paymentFigures, REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS, settleComplaintRefund } from '../payments/financials-ops';
+import { lockJob } from '../assignment/artisan-lock';
 import { startOfBusinessDay, startOfBusinessMonth } from '../../common/locale/business-time';
 import { DEFAULT_LOCALE, DEFAULT_TAX_RATES, TaxRateOption, applyLocale, currencyCode, getLocale, parseTaxRates, resolveLocale } from '../../common/locale/locale';
 import { effectiveTaxRates, localeOfRow } from '../../common/locale/locale.service';
@@ -89,6 +91,7 @@ import {
   ArtisanDocumentStatus,
   ArtisanDocumentType,
   ArtisanVerificationStatus,
+  ComplaintRefundDecision,
   ComplaintStatus,
   InterventionEventType,
   MessageAudience,
@@ -109,6 +112,9 @@ const MAX_ROW_ID = 2_147_483_647;
 
 /** The answer when someone else decided the same profile first. */
 const ALREADY_DECIDED = 'Ce profil vient d’être traité par un autre membre de l’équipe: rechargez la liste.';
+
+/** The payments that still hold money received: paid, and paid then partly given back (what is left of them counts). */
+const PAID_PAYMENT_STATUSES: PaymentStatus[] = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED];
 
 @Injectable()
 export class AdminService {
@@ -408,25 +414,27 @@ export class AdminService {
 
       this.prisma.payment.aggregate({
         where: {
-          status: PaymentStatus.PAID,
+          status: { in: PAID_PAYMENT_STATUSES },
           createdAt: {
             gte: startOfMonth,
           },
         },
         _sum: {
           amount: true,
+          amountRefunded: true,
         },
       }),
 
       this.prisma.payment.aggregate({
         where: {
-          status: PaymentStatus.PAID,
+          status: { in: PAID_PAYMENT_STATUSES },
           createdAt: {
             gte: startOfToday,
           },
         },
         _sum: {
           amount: true,
+          amountRefunded: true,
         },
       }),
 
@@ -477,8 +485,8 @@ export class AdminService {
           end: row.workCompletedAt,
         })),
       ),
-      monthlyRevenue: money(monthlyRevenue._sum.amount),
-      todayRevenue: money(todayRevenue._sum.amount),
+      monthlyRevenue: subtractMoney(money(monthlyRevenue._sum.amount), money(monthlyRevenue._sum.amountRefunded)),
+      todayRevenue: subtractMoney(money(todayRevenue._sum.amount), money(todayRevenue._sum.amountRefunded)),
       activeArtisans,
       averageRating: averageRating._avg.rating || 0,
       complaintsCount,
@@ -1504,7 +1512,7 @@ export class AdminService {
 
     const payments = await this.prisma.payment.findMany({
       where: {
-        status: PaymentStatus.PAID,
+        status: { in: PAID_PAYMENT_STATUSES },
         intervention: {
           artisanId: profile.userId,
         },
@@ -1517,7 +1525,8 @@ export class AdminService {
       },
     });
 
-    const totalRevenue = sumMoneyOf(payments.map((payment) => payment.amount));
+    // What the customers paid and kept: a payment that was partly given back counts for what is left of it.
+    const totalRevenue = sumMoneyOf(payments.map((payment) => subtractMoney(money(payment.amount), money(payment.amountRefunded))));
 
     return {
       artisanProfileId: profileId,
@@ -1986,16 +1995,52 @@ export class AdminService {
   ) {
     const complaint = await this.getComplaintDetail(complaintId);
 
-    const updated = await this.prisma.complaint.update({
-      where: { id: complaintId },
-      data: {
-        refundApproved: dto.approved,
-        refundAmount: dto.approved ? dto.amount : null,
-        refundDecidedAt: new Date(),
-        status: dto.approved
-          ? ComplaintStatus.REFUNDED
-          : ComplaintStatus.IN_REVIEW,
-      },
+    // Under the lock of the job, as a refund of a payment is: the two cannot pass each other, so a complaint is never left
+    // waiting for a refund that was made a moment before.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, complaint.interventionId);
+
+      const current = await tx.complaint.findUnique({ where: { id: complaintId }, select: { refundDecision: true } });
+
+      if (!current) throw new NotFoundException('Réclamation introuvable.');
+
+      // A refund that was made settles the complaint: it cannot be turned into a refusal or an approval of another amount.
+      if (REFUND_MADE_DECISIONS.includes(String(current.refundDecision))) {
+        throw new ConflictException(REFUND_ALREADY_MADE);
+      }
+
+      const figures = paymentFigures(await tx.payment.findMany({ where: { interventionId: complaint.interventionId } }));
+
+      // What is approved goes back out of what was received on the job: more than that could never be paid back, and the
+      // complaint (and the payout of the job) would wait for ever.
+      if (dto.approved && dto.amount !== undefined && compareMoney(figures.received, 0) > 0 && compareMoney(dto.amount, figures.received) > 0) {
+        throw new BadRequestException(`Le montant approuvé dépasse ce qui a été encaissé sur cette mission (${formatMoney(figures.received)}).`);
+      }
+
+      const claimed = await tx.complaint.updateMany({
+        where: { id: complaintId, refundDecision: { notIn: [...REFUND_MADE_DECISIONS] } },
+        data: {
+          // The decision itself is written too (it was left at PENDING): what the payouts and a later refund read.
+          refundDecision: dto.approved ? ComplaintRefundDecision.APPROVED : ComplaintRefundDecision.REJECTED,
+          refundApproved: dto.approved,
+          refundAmount: dto.approved ? dto.amount : null,
+          refundDecidedById: adminId,
+          refundDecidedAt: new Date(),
+          status: dto.approved
+            ? ComplaintStatus.REFUNDED
+            : ComplaintStatus.IN_REVIEW,
+        },
+      });
+
+      if (claimed.count !== 1) throw new ConflictException(REFUND_ALREADY_MADE);
+
+      // Money that already went back to the customer is the answer to an approval: the complaint is settled now, not at a
+      // refund that will never come (the payment cannot be refunded twice).
+      if (dto.approved && compareMoney(figures.refunded, 0) > 0) {
+        await settleComplaintRefund(tx, complaint.interventionId, { userId: adminId }, figures, complaintId);
+      }
+
+      return tx.complaint.findUnique({ where: { id: complaintId } });
     });
 
     await this.addInternalNote({

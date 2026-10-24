@@ -1,9 +1,14 @@
 /**
  * Which jobs a payout leaves out, why, and what it pays for the others (P2-02).
  *
- * A payout pays an artisan the share that the platform owes them for jobs it has been paid for. Three things make a job not
- * ready to be paid out, and each is a reason that the back office is shown:
+ * A payout pays an artisan the share that the platform owes them for jobs it has been paid for. These make a job not ready to
+ * be paid out, and each is a reason that the back office is shown:
  *
+ *  - NOT_FINISHED: the work is not done (the job is still being arranged or worked on). A customer may have paid in advance;
+ *    the artisan is paid when the work is done.
+ *  - NOT_PAID: the customer has not paid all of what the job asks for (its invoice, else its accepted quote): the financials
+ *    of a job exist from the first confirmed payment, and the share is only known when everything was received. Cash that the
+ *    artisan declared counts once the back office has confirmed it.
  *  - OPEN_DISPUTE: a complaint on the job is still being handled (or the job itself is in dispute). What is owed is not known
  *    until the complaint is decided.
  *  - REFUND: a refund is being decided (asked for or approved but not made), or money has gone back to the customer and the
@@ -17,9 +22,15 @@
  * gone; nothing is deleted.
  */
 import { cashHeldByJob } from '../cash-ledger/cash-ledger-ops';
+import { canonicalStatus } from '../intervention-workflow/intervention-status';
+import { paymentFigures, refundedOn } from '../payments/financials-ops';
+import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, proportionOf, subtractMoney, sumMoneyOf } from '../../common/money/money';
 
-export type PayoutHold = 'OPEN_DISPUTE' | 'REFUND' | 'PAID_IN_CASH';
+export type PayoutHold = 'OPEN_DISPUTE' | 'REFUND' | 'PAID_IN_CASH' | 'NOT_FINISHED' | 'NOT_PAID';
+
+/** The statuses (in their canonical spelling) of a job whose work is done. */
+export const WORK_DONE_STATUSES = ['COMPLETED', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT'];
 
 /** The complaints that are still being handled. */
 export const OPEN_COMPLAINT_STATUSES = ['OPEN', 'IN_REVIEW', 'WAITING_CLIENT', 'WAITING_ARTISAN'];
@@ -56,13 +67,6 @@ export interface PayoutFinancial {
   refundAmount?: unknown;
 }
 
-/** What went back to the customer on a payment: its refunded amount, or all of it when the payment is marked as refunded. */
-function refundedOn(payment: Row): number {
-  const refunded = money(payment.amountRefunded);
-
-  return String(payment.status) === 'REFUNDED' && compareMoney(money(payment.amount), refunded) > 0 ? money(payment.amount) : refunded;
-}
-
 /**
  * The decision for each of these financials (by the id of the financial) of the jobs of this artisan: held with its reasons, or
  * free with what it pays. The cash of the ledger is the cash of this artisan: a job that another artisan had before is not
@@ -77,8 +81,22 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
 
   const complaints: Row[] = await db.complaint.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, status: true, refundDecision: true } });
   const jobs: Row[] = await db.intervention.findMany({ where: { id: { in: ids } }, select: { id: true, status: true } });
-  const payments: Row[] = await db.payment.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, method: true, status: true, amount: true, amountRefunded: true } });
+  const payments: Row[] = await db.payment.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, method: true, status: true, amount: true, amountRefunded: true, currency: true } });
+  const invoices: Row[] = await db.invoice.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, status: true, amountTTC: true, currency: true } });
+  const quotes: Row[] = await db.quote.findMany({ where: { interventionId: { in: ids }, status: 'ACCEPTED' }, orderBy: { createdAt: 'desc' }, select: { interventionId: true, amountTTC: true, currency: true } });
   const ledgerCash = await cashHeldByJob(db, artisanId, ids);
+
+  const statusOf = new Map<number, string>(jobs.map((job) => [job.id as number, String(job.status)]));
+  const paymentsByJob = new Map<number, Row[]>();
+
+  for (const payment of payments) paymentsByJob.set(payment.interventionId, [...(paymentsByJob.get(payment.interventionId) ?? []), payment]);
+
+  // What each job asks for: its invoice when it has one that was not cancelled, else its latest accepted quote.
+  const documentOf = new Map<number, Row>();
+
+  for (const quote of quotes) if (!documentOf.has(quote.interventionId)) documentOf.set(quote.interventionId, quote);
+
+  for (const invoice of invoices) if (String(invoice.status) !== 'CANCELLED') documentOf.set(invoice.interventionId, invoice);
 
   const disputed = new Set<number>();
   const refundPending = new Set<number>();
@@ -123,6 +141,20 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
     const cashHeld = compareMoney(paid, ledger) > 0 ? paid : ledger;
 
     if (disputed.has(item.interventionId)) reasons.push('OPEN_DISPUTE');
+
+    // The work first, then the money: an advance on a job being worked on, or a deposit on a job that is done, is not the
+    // whole of it.
+    const status = statusOf.get(item.interventionId);
+
+    const meaning = canonicalStatus(status);
+
+    // Whichever spelling the row uses (an invoiced job may be stored as INVOICE_READY).
+    if (status !== undefined && !(meaning && WORK_DONE_STATUSES.includes(meaning)) && meaning !== 'DISPUTED') reasons.push('NOT_FINISHED');
+
+    const document = documentOf.get(item.interventionId);
+    const documentInCompanyCurrency = document && String(document.currency) === currencyCode();
+
+    if (document && documentInCompanyCurrency && compareMoney(paymentFigures(paymentsByJob.get(item.interventionId) ?? []).received, money(document.amountTTC)) < 0) reasons.push('NOT_PAID');
 
     // A refund still to be decided; or money that went back and that the financials do not record; or a complaint that says
     // a refund was made when nothing records an amount anywhere.

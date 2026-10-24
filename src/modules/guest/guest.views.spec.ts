@@ -34,7 +34,14 @@ function makeWorld(job: Record<string, unknown> = {}) {
     },
     payment: {
       create: async ({ data }: any) => ({ ...poisonedJob().payments[0], ...data }),
+      // No payment is open on this job (one open payment per job, P2-03).
+      findMany: async () => [],
     },
+    // What is left to pay is worked out from the document and the payments (P2-03): no invoice, no cash declared.
+    invoice: { findUnique: async () => null },
+    cashLedgerEntry: { findMany: async () => [] },
+    // The job is locked while its payment is asked for.
+    $executeRaw: async () => 1,
     // The opinion is saved with the job in one transaction (P1-16).
     review: {
       create: async ({ data }: any) => ({ id: 1, createdAt: new Date(), updatedAt: new Date(), ...data }),

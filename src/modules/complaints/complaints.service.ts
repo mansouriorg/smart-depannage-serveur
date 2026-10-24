@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { complaintForClient, complaintMessageForParties } from '../../common/views/views';
 import { NotificationsService } from '../notifications/notifications.service';
+import { REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS } from '../payments/financials-ops';
 
 import {
   ComplaintDecision,
@@ -797,25 +799,39 @@ export class ComplaintsService {
   ) {
     this.assertStaff(role);
 
-    await this.getComplaintOrFail(complaintId);
+    const before = await this.getComplaintOrFail(complaintId);
 
     const refundRequested =
       dto.decision === ComplaintDecision.PARTIAL_REFUND ||
       dto.decision === ComplaintDecision.FULL_REFUND;
 
-    const updated = await this.prisma.complaint.update({
-      where: {
-        id: complaintId,
-      },
+    // A refund that was made stays what the complaint says: it is not asked for again, and a decision that asks for none does
+    // not erase it.
+    const refundMade = REFUND_MADE_DECISIONS.includes(String(before.refundDecision));
+
+    if (refundMade && refundRequested) throw new ConflictException(REFUND_ALREADY_MADE);
+
+    const claimed = await this.prisma.complaint.updateMany({
+      // Written only if no refund was made in the meantime (the refund of a payment settles the complaint under the job's lock).
+      where: refundMade ? { id: complaintId } : { id: complaintId, refundDecision: { notIn: [...REFUND_MADE_DECISIONS] } },
       data: {
         adminDecision: dto.decision,
         adminDecisionNote: dto.note?.trim() || null,
         adminDecisionById: userId,
         adminDecisionAt: new Date(),
-        refundRequested,
-        refundDecision: refundRequested
-          ? ComplaintRefundDecision.PENDING
-          : ComplaintRefundDecision.NOT_REQUESTED,
+        ...(refundMade
+          ? {}
+          : {
+              refundRequested,
+              refundDecision: refundRequested
+                ? ComplaintRefundDecision.PENDING
+                : ComplaintRefundDecision.NOT_REQUESTED,
+              // The refund starts from nothing: an earlier answer (a refusal, an approval, its amount) is void.
+              refundApproved: false,
+              refundAmount: null,
+              refundDecidedById: null,
+              refundDecidedAt: null,
+            }),
         status: refundRequested
           ? ComplaintStatus.IN_REVIEW
           : ComplaintStatus.RESOLVED,
@@ -826,6 +842,12 @@ export class ComplaintsService {
               closedAt: new Date(),
             }),
       },
+    });
+
+    if (claimed.count !== 1) throw new ConflictException(REFUND_ALREADY_MADE);
+
+    const updated = await this.prisma.complaint.findUnique({
+      where: { id: complaintId },
       include: this.complaintInclude(),
     });
 
@@ -845,6 +867,7 @@ export class ComplaintsService {
     await this.getComplaintOrFail(complaintId);
 
     const refundApproved = this.isApprovedRefundDecision(dto.decision);
+    const refundDecided = dto.decision !== ComplaintRefundDecision.PENDING && dto.decision !== ComplaintRefundDecision.NOT_REQUESTED;
 
     const status =
       dto.decision === ComplaintRefundDecision.REJECTED
@@ -861,8 +884,10 @@ export class ComplaintsService {
         refundDecision: dto.decision,
         refundApproved,
         refundAmount: dto.refundAmount,
-        refundDecidedById: userId,
-        refundDecidedAt: new Date(),
+        // Putting a refund back to "pending" (or "not requested") decides nothing: nobody and no date is written, so that a
+        // refund made later settles it (a decision with a date and a refusal is the one that a refund leaves alone).
+        refundDecidedById: refundDecided ? userId : null,
+        refundDecidedAt: refundDecided ? new Date() : null,
         adminNotes: dto.note?.trim() || undefined,
         status,
         ...this.statusDateFields(status),

@@ -117,9 +117,13 @@ export async function cashHeldByJob(db: Db, artisanId: number, interventionIds: 
   return held;
 }
 
-/** What has been paid on a job: money that was received, and cash an artisan says they took. */
+/**
+ * What has been paid on a job: money that was received, and cash an artisan says they took. Money in another currency than the
+ * company's is not in the sum: it cannot be set against the price of the job (the figures of the job leave it out too).
+ */
 export function receivedOn(payments: Row[], declared: Set<number>): number {
   const parts = payments.map((payment) => {
+    if (payment.currency && String(payment.currency) !== currencyCode()) return 0;
     if (payment.status === 'PAID' || payment.status === 'PARTIALLY_REFUNDED') return subtractMoney(money(payment.amount), money(payment.amountRefunded));
     if (payment.status === 'AWAITING_CONFIRMATION' && declared.has(payment.id)) return money(payment.amount);
 
@@ -241,6 +245,17 @@ export async function restoreCollectionOfPayment(tx: Db, paymentId: number, by: 
 /** What `settleCashOnConfirm` did. */
 export type CashSettlement = 'standing' | 'restored' | 'booked' | 'skipped';
 
+const CASH_OVER_WHAT_IS_LEFT = 'Ce paiement en espèces dépasse ce qu’il reste à payer sur cette mission.';
+
+/** Whether a payment is above what its job has left to pay. A job with no document, or one in another currency, has nothing to compare with. */
+function exceedsWhatIsLeft(position: { remaining: number | null; document: Row | null }, payment: Row): boolean {
+  if (position.remaining === null) return false;
+
+  if (position.document?.currency && String(position.document.currency) !== currencyCode()) return false;
+
+  return compareMoney(money(payment.amount), position.remaining) > 0;
+}
+
 /**
  * A cash payment is confirmed: the cash it stands for is in the artisan's ledger, once.
  *
@@ -265,7 +280,17 @@ export async function settleCashOnConfirm(tx: Db, payment: Row, by: { userId: nu
   const job: Row | null = await tx.intervention.findUnique({ where: { id: payment.interventionId }, select: { artisanId: true } });
   const artisanId: number | null = job?.artisanId ?? null;
 
-  if (everyCollection.length === 0 && (artisanId === null || (payment.currency && String(payment.currency) !== currencyCode()))) return 'skipped';
+  const otherCurrency = Boolean(payment.currency) && String(payment.currency) !== currencyCode();
+
+  // No ledger to write (nobody took the cash, or it is not in the currency of the company): the cash is still not confirmed
+  // above what the job has left to pay, when that can be told (money in another currency is not in the figures of the job).
+  if (everyCollection.length === 0 && (artisanId === null || otherCurrency)) {
+    if (!otherCurrency && exceedsWhatIsLeft(await paymentPosition(tx, payment.interventionId), payment)) {
+      throw new ConflictException(CASH_OVER_WHAT_IS_LEFT);
+    }
+
+    return 'skipped';
+  }
 
   const ledgerOf = everyCollection.length > 0 ? (everyCollection[0].artisanId as number) : (artisanId as number);
 
@@ -279,8 +304,8 @@ export async function settleCashOnConfirm(tx: Db, payment: Row, by: { userId: nu
 
   const position = await paymentPosition(tx, payment.interventionId);
 
-  if (position.remaining !== null && compareMoney(money(payment.amount), position.remaining) > 0) {
-    throw new ConflictException('Ce paiement en espèces dépasse ce qu’il reste à payer sur cette mission.');
+  if (exceedsWhatIsLeft(position, payment)) {
+    throw new ConflictException(CASH_OVER_WHAT_IS_LEFT);
   }
 
   if (everyCollection.length > 0) return (await restoreCollectionOfPayment(tx, payment.id, by)) ? 'restored' : 'standing';
