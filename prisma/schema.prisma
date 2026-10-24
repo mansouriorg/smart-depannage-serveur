@@ -982,7 +982,8 @@ model Intervention {
   events     InterventionEvent[]
   quotes     Quote[]
   payments   Payment[]
-  invoice    Invoice?
+  // A job can have several invoices over time (a cancelled or credited one, then the one that replaces it): the one that counts is the latest that is not cancelled (P2-07).
+  invoices   Invoice[]
   complaints Complaint[]
   messages   Message[]
   review     Review?
@@ -1225,10 +1226,16 @@ model Payment {
 
 model Invoice {
   id             Int          @id @default(autoincrement())
-  interventionId Int          @unique
-  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+  interventionId Int
+  // Restrict, not Cascade (P2-07): an invoice is a legal document with a number in a series without gaps. Deleting its job must not
+  // delete it quietly (and leave a gap that the audit would flag); the job is closed or cancelled, not removed.
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Restrict)
 
   invoiceNumber String        @unique
+  // The number is taken from a counter, in order and without gaps (P2-07): the year and the rank in that year.
+  // Invoices numbered before the counter existed have neither.
+  numberYear Int?
+  sequence   Int?
   status        InvoiceStatus @default(DRAFT)
 
   paymentStatus PaymentStatus @default(PENDING)
@@ -1240,10 +1247,23 @@ model Invoice {
   companyTaxId   String?
   companyWebsite String?
 
+  // What the invoice printed on the day it was issued, kept so that it reads the same later (P2-07).
+  companyRegistre   String?
+  legalMentions     String?
+  paymentTerms      String?
+  // The bank account (RIB) printed on an invoice that is not paid yet.
+  companyRib        String?
+  // The stamp duty (timbre fiscal) added to the total to pay; 0 when none.
+  stampDuty         Decimal @db.Decimal(14, 3) @default(0)
+  // Whether the accountant had confirmed the mentions, the VAT rates and the stamp duty when the invoice was issued.
+  mentionsConfirmed Boolean @default(false)
+
   clientName    String?
   clientEmail   String?
   clientPhone   String?
   clientAddress String?
+  // The matricule fiscal of a customer that is a business (printed when there is one).
+  clientTaxId   String?
 
   interventionDescription String?
   interventionAddress     String?
@@ -1257,6 +1277,9 @@ model Invoice {
   taxRate   Decimal @db.Decimal(5, 2) @default(19)
   taxAmount Decimal @db.Decimal(14, 3)
   amountTTC Decimal @db.Decimal(14, 3)
+
+  // What the credit notes took off (the total and the stamp duty): the amount to pay is the total, plus the stamp duty, less this.
+  creditedAmount Decimal @db.Decimal(14, 3) @default(0)
 
   pdfUrl    String?
   emailedTo String?
@@ -1272,9 +1295,11 @@ model Invoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items    InvoiceItem[]
-  payments Payment[]
+  items       InvoiceItem[]
+  payments    Payment[]
+  creditNotes CreditNote[]
 
+  @@unique([numberYear, sequence])
   @@index([interventionId])
   @@index([invoiceNumber])
   @@index([status])
@@ -1300,6 +1325,55 @@ model InvoiceItem {
   createdAt DateTime @default(now())
 
   @@index([invoiceId])
+}
+
+// A credit note (avoir): the document that takes back all or part of an invoice that was issued. It has its own series of
+// numbers, in order and without gaps, and it is never deleted (P2-07).
+model CreditNote {
+  id Int @id @default(autoincrement())
+
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  interventionId Int
+
+  creditNoteNumber String @unique
+  numberYear       Int
+  sequence         Int
+
+  // Printed on the credit note: the customer reads it.
+  reason String
+
+  currency  String  @default("TND")
+  amountHT  Decimal @db.Decimal(14, 3)
+  taxRate   Decimal @db.Decimal(5, 2)
+  taxAmount Decimal @db.Decimal(14, 3)
+  amountTTC Decimal @db.Decimal(14, 3)
+  // The part of the invoice's stamp duty this credit note takes back (all of it when the credit note closes the invoice).
+  stampDuty Decimal @db.Decimal(14, 3) @default(0)
+
+  createdById Int?
+  issuedAt    DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  @@unique([numberYear, sequence])
+  @@index([invoiceId])
+  @@index([interventionId])
+  @@index([issuedAt])
+}
+
+// The last number given in a series for a year (P2-07): INVOICE or CREDIT_NOTE. A number is taken under a lock, in the
+// transaction that writes the document, so that a document that fails to save does not use up a number.
+model DocumentCounter {
+  id     Int    @id @default(autoincrement())
+  series String
+  year   Int
+  last   Int    @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([series, year])
 }
 
 // ==========================================================
@@ -2100,6 +2174,18 @@ model CompanySettings {
   // What an invoice prints: the bank account (RIB, 20 digits) and the matricule fiscal of the company.
   rib             String?
   matriculeFiscal String?
+
+  // The rest of what an invoice and a credit note print (P2-07), to be confirmed by the accountant: the address and the
+  // trade register of the company, the legal lines at the foot of the page, the terms of payment, and the stamp duty
+  // (timbre fiscal, 0 when none) added to the total to pay. Until `invoiceRulesConfirmedAt` is set, the invoices that are
+  // issued say in their data that the mentions were not confirmed.
+  companyAddress          String?
+  registreCommerce        String?
+  invoiceLegalMentions    String?
+  paymentTerms            String?
+  stampDuty               Decimal @db.Decimal(14, 3) @default(0)
+  invoiceRulesConfirmedAt DateTime?
+  invoiceRulesConfirmedBy String?
 
   openingHours Json?
 

@@ -58,7 +58,7 @@ const PERSON_KEYS: ReadonlySet<string> = new Set(['client', 'artisan', 'sender',
 const OTHER_PEOPLES_KEYS: readonly string[] = ['email', 'taxId', 'website', 'address'];
 
 /** Copies of the customer's details that an invoice keeps: not for the artisan. */
-const CLIENT_SNAPSHOT_KEYS: readonly string[] = ['clientEmail', 'clientPhone', 'clientAddress'];
+const CLIENT_SNAPSHOT_KEYS: readonly string[] = ['clientEmail', 'clientPhone', 'clientAddress', 'clientTaxId'];
 
 export type ViewerContext = {
   /** Who is reading; null for a visitor with a tracking link. */

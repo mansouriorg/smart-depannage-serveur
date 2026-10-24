@@ -12,7 +12,7 @@ const pdf = () => ({ fieldname: 'file', originalname: 'devis.pdf', mimetype: 'ap
 const FILES: Array<{ id: string; entityType: string; entity: (h: Household, w: World) => number; readers: Party[]; editors: Party[]; what: string }> = [
   { id: 'damagePhoto', entityType: 'INTERVENTION', entity: (h, w) => w.ids[h].intervention, readers: ['client', 'artisan', 'backOffice'], editors: ['client', 'backOffice'], what: 'the photo of the damage' },
   { id: 'quotePdf', entityType: 'QUOTE', entity: (h, w) => w.ids[h].quote, readers: ['client', 'artisan', 'backOffice'], editors: ['artisan', 'backOffice'], what: 'the PDF of a quote' },
-  { id: 'invoicePdf', entityType: 'INVOICE', entity: (h, w) => w.ids[h].invoice, readers: ['client', 'artisan', 'backOffice'], editors: ['backOffice'], what: 'the PDF of an invoice' },
+  { id: 'invoicePdf', entityType: 'INVOICE', entity: (h, w) => w.ids[h].invoice, readers: ['client', 'backOffice'], editors: ['backOffice'], what: 'the PDF of an invoice (not the artisan: it carries the customer\'s details)' },
   { id: 'complaintAttachment', entityType: 'COMPLAINT', entity: (h, w) => w.ids[h].complaint, readers: ['client', 'artisan', 'backOffice'], editors: ['client', 'backOffice'], what: 'a paper attached to a complaint' },
   { id: 'identityDocument', entityType: 'ARTISAN_PROFILE', entity: (h, w) => w.ids[h].artisanProfile, readers: ['artisan', 'verifiers'], editors: ['verifiers'], what: 'the identity card of the artisan (only the team that verifies them reads it)' },
 ];

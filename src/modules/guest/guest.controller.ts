@@ -9,14 +9,17 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Res,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { memoryStorage } from 'multer';
 
 import { GuestService } from './guest.service';
+import { sendPdf } from '../invoices/pdf/pdf-files';
 import { BotCheckGuard } from '../../common/bot-check/bot-check.guard';
 import { BotCheckService } from '../../common/bot-check/bot-check.service';
 import { GuestTrackingLinkGuard } from './guest-tracking-link.guard';
@@ -82,6 +85,36 @@ export class GuestController {
     @Query('token') token: string,
   ) {
     return this.guestService.track(id, token);
+  }
+
+  // ==========================================================
+  // 2b. THE INVOICE AND ITS CREDIT NOTES AS PDF FILES (P2-07)
+  // GET /guest/interventions/:id/invoice/pdf?token=RAW_TOKEN
+  // GET /guest/interventions/:id/credit-notes/:creditNoteId/pdf?token=RAW_TOKEN
+  // Drawn when asked for, so the visits are counted like the other things this link does that cost something.
+  // ==========================================================
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-invoice-pdf', limit: 60, windowMs: 60 * 60_000 })
+  @Get('interventions/:id/invoice/pdf')
+  async invoicePdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    sendPdf(res, await this.guestService.invoicePdf(id, token));
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-invoice-pdf', limit: 60, windowMs: 60 * 60_000 })
+  @Get('interventions/:id/credit-notes/:creditNoteId/pdf')
+  async creditNotePdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('creditNoteId', ParseIntPipe) creditNoteId: number,
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    sendPdf(res, await this.guestService.creditNotePdf(id, token, creditNoteId));
   }
 
   // ==========================================================

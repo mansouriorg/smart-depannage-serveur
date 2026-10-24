@@ -11,7 +11,8 @@ import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { CancelPaymentDto, ConfirmPaymentDto, FailPaymentDto, RefundPaymentDto } from './dto/payment.dto';
 import { claimOpenPayment, leftToPay, refreshOpenPayment } from './open-payment';
 import { ensureJobTakesPayment, ensureMethodOffered } from './payment-options';
-import { isLiveInvoice, paymentFigures, settleComplaintRefund, syncFinancials } from './financials-ops';
+import { settleInvoice } from '../invoices/invoice-settlement';
+import { amountToPay, isLiveInvoice, liveInvoiceOf, paymentFigures, settleComplaintRefund, syncFinancials } from './financials-ops';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -202,7 +203,7 @@ export class PaymentsService {
           },
           take: 1,
         },
-        invoice: true,
+        invoices: true,
       },
     });
 
@@ -244,7 +245,7 @@ export class PaymentsService {
             createdAt: 'desc',
           },
         },
-        invoice: true,
+        invoices: true,
       },
     });
 
@@ -319,9 +320,7 @@ export class PaymentsService {
 
   /** The invoice of the job when it asks something of the customer (not cancelled, not a draft). */
   private async liveInvoiceOf(interventionId: number) {
-    const invoice = await this.prisma.invoice.findUnique({ where: { interventionId } });
-
-    return isLiveInvoice(invoice) ? invoice : undefined;
+    return (await liveInvoiceOf(this.prisma, interventionId)) ?? undefined;
   }
 
   private async validateLinkedInvoice(
@@ -384,7 +383,7 @@ export class PaymentsService {
     // Nothing named and nothing typed: the invoice that is out is what is asked, as for a visitor of the tracking page (the two
     // ways in ask the same amount, and a payment is linked to the invoice it pays).
     const invoice = named ?? (amountFromDto === undefined ? await this.liveInvoiceOf(interventionId) : undefined);
-    const asked = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    const asked = money(amountFromDto ?? (invoice ? amountToPay(invoice) : undefined) ?? acceptedQuote?.amountTTC ?? 0);
     // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
     const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 
@@ -624,8 +623,7 @@ export class PaymentsService {
         include: this.paymentInclude,
       });
 
-      // The job and its invoice are paid when what was confirmed covers what they ask for: a part payment (30 in cash on a
-      // job of 100) leaves them as they are.
+      // The job is paid when what was confirmed covers what it asks for: a part payment (30 in cash on a job of 100) leaves it as it is.
       const position = await paymentPosition(tx, payment.interventionId);
 
       if (this.coversDocument(position.payments, position.document)) {
@@ -636,21 +634,11 @@ export class PaymentsService {
           data: { paidAt: new Date() },
           soft: true,
         });
-
-        if (payment.invoiceId || position.invoice) {
-          // An invoice that was cancelled stays cancelled, whatever it is linked to.
-          await tx.invoice.updateMany({
-            where: {
-              id: (payment.invoiceId ?? position.invoice?.id) as number,
-              status: { not: InvoiceStatus.CANCELLED },
-            },
-            data: {
-              status: InvoiceStatus.PAID,
-              paidAt: new Date(),
-            },
-          });
-        }
       }
+
+      // The invoice follows the payments by its own rule (P2-07): paid when what was kept covers what is to be paid on it; a
+      // cancelled invoice stays cancelled.
+      await settleInvoice(tx, payment.interventionId);
 
       // What the job brought in, the commission and the artisan's share follow the payments.
       await syncFinancials(tx, payment.interventionId, { userId: adminId });
@@ -715,7 +703,7 @@ export class PaymentsService {
     // The sums are in the currency of the company: a document in another one cannot be compared, a confirmation settles it.
     if (document.currency && String(document.currency) !== currencyCode()) return true;
 
-    return compareMoney(paymentFigures(payments).kept, money(document.amountTTC)) >= 0;
+    return compareMoney(paymentFigures(payments).kept, amountToPay(document)) >= 0;
   }
 
   // ==========================================================
@@ -921,6 +909,9 @@ export class PaymentsService {
       // The financials follow the payments, and the complaints that asked for this refund are decided.
       await syncFinancials(tx, payment.interventionId, { userId: adminId });
 
+      // An invoice that the payments no longer cover asks for the rest again, until a credit note matches the refund (P2-07).
+      await settleInvoice(tx, payment.interventionId);
+
       const figures = paymentFigures(await tx.payment.findMany({ where: { interventionId: payment.interventionId } }));
       const complaints = await settleComplaintRefund(tx, payment.interventionId, { userId: adminId }, figures);
 
@@ -1089,6 +1080,11 @@ export class PaymentsService {
       );
     }
 
+    // A payment goes to the invoice that is out: the one that was cancelled (credited in full, or replaced) asks nothing any more.
+    if (invoice.status === InvoiceStatus.CANCELLED) {
+      throw new BadRequestException('Cette facture est annulée : le paiement se rattache à la facture qui la remplace.');
+    }
+
     return this.prisma.payment.update({
       where: {
         id: paymentId,
@@ -1119,8 +1115,14 @@ export class PaymentsService {
     const invoiceId = this.getOptionalNumber(dto, 'invoiceId');
     const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
 
+    // As for the customer and for `linkToInvoice`: a payment goes to the invoice that is out. One that was cancelled (credited in
+    // full, or replaced) asks nothing any more, and a draft is not out yet; a payment recorded on either would never settle anything.
+    if (invoice && !isLiveInvoice(invoice)) {
+      throw new BadRequestException('Cette facture est annulée ou n’est pas encore émise : le paiement se rattache à la facture en cours.');
+    }
+
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
-    const asked = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
+    const asked = money(amountFromDto ?? (invoice ? amountToPay(invoice) : undefined) ?? acceptedQuote?.amountTTC ?? 0);
     // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
     const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
 

@@ -2,6 +2,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { matchesWhere } from '../../common/testing/fake-tables';
 import { leakedTo, nestedJob, poisonedInvoice, secret } from '../../common/testing/poison';
+import { buildWorld } from '../../common/testing/world';
 import { InvoicesService } from './invoices.service';
 
 /**
@@ -25,9 +26,18 @@ function makeWorld() {
       findMany: async (args: any) => {
         asked.push(args);
 
-        return invoices().filter((invoice) => matchesWhere(invoice, args.where?.status ? { status: args.where.status } : {}));
+        return invoices()
+          .filter((invoice) => matchesWhere(invoice, args.where?.status ? { status: args.where.status } : {}))
+          .filter((invoice) => args.where?.interventionId === undefined || invoice.interventionId === args.where.interventionId);
       },
       update: async ({ data }: any) => ({ ...invoices()[0], ...data }),
+    },
+    creditNote: {
+      findUnique: async ({ where }: any) => {
+        const note = { id: 1, invoiceId: 1, interventionId: 1, creditNoteNumber: 'AV-2026-0001', reason: 'Erreur', currency: 'TND', amountHT: 10, taxRate: 20, taxAmount: 2, amountTTC: 12, stampDuty: 0, issuedAt: new Date('2026-10-26T10:00:00Z') };
+
+        return where.id === 1 ? { ...note, invoice: invoices()[0] } : null;
+      },
     },
   };
   const eventsService: any = { create: async (event: any) => events.push(event) };
@@ -68,6 +78,9 @@ describe('the invoices a customer reads (P1-08)', () => {
     expect(download.invoiceNumber).toBe('F-2026-1');
     expect(download.invoice.id).toBe(1);
     expect(downloadGeneral.invoice.id).toBe(1);
+    // The PDF is drawn from the invoice, and the answer says where to ask for it.
+    expect(download.pdfPath).toBe('/invoices/1/pdf');
+    expect(downloadGeneral.pdfPath).toBe('/invoices/1/pdf');
   });
 
   it('a draft is not the customer\'s yet: not found, by any route', async () => {
@@ -103,6 +116,16 @@ describe('the invoices an artisan reads (P1-08)', () => {
     }
   });
 
+  it('is not given the link to the PDF, which carries the customer\'s details: it is the customer\'s and the back office\'s', async () => {
+    const world = makeWorld();
+    const download: any = await world.service.downloadInvoice(artisan, 1);
+
+    expect(download.pdfPath).toBeNull();
+    expect(download.message).toContain('réservé au client et à l’administration');
+    await expect(world.service.pdfOfInvoice(artisan, 1)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(world.service.pdfOfCreditNote(artisan, 1)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
   it('a draft is not shown to them either', async () => {
     await expect(makeWorld().service.findOne(artisan, 2)).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -119,13 +142,16 @@ describe('the back office and the invoices (P1-08)', () => {
   });
 
   it('a cancelled invoice: the line the customer reads is fixed, the reason stays in the data', async () => {
-    const world = makeWorld();
+    const w = buildWorld();
+    const invoiceId = w.ids.A.invoice;
 
-    await world.service.cancelInvoice({ id: 5, role: 'ACCOUNTANT' as any }, 1, { reason: 'Client mauvais payeur, ne plus relancer' });
+    await w.svc.invoices.cancelInvoice({ id: w.people.accountant.id, role: 'ACCOUNTANT' as any }, invoiceId, { reason: 'Client mauvais payeur, ne plus relancer' });
 
-    expect(world.events.length).toBe(1);
-    expect(world.events[0].message).toBe('La facture F-2026-1 a été annulée.');
-    expect(JSON.stringify([world.events[0].title, world.events[0].message])).not.toContain('mauvais payeur');
-    expect(world.events[0].metadata.reason).toBe('Client mauvais payeur, ne plus relancer');
+    const line = w.memory.rows('interventionEvent').find((event) => event.type === 'CANCELLED' && event.metadata?.invoiceId === invoiceId);
+
+    expect(line).toBeDefined();
+    expect(String(line?.message)).toMatch(/^La facture .+ a été annulée\.$/);
+    expect(JSON.stringify([line?.title, line?.message])).not.toContain('mauvais payeur');
+    expect(line?.metadata.reason).toBe('Client mauvais payeur, ne plus relancer');
   });
 });

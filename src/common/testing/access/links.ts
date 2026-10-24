@@ -34,7 +34,29 @@ const otherQuote = (what: string) => ({
   }),
 });
 
+const creditNoteOf = (h: Household, w: World) => w.ids[h].creditNote;
+
 export const linkScenarios: LinkScenario[] = [
+  {
+    route: 'GET /guest/interventions/:/invoice/pdf',
+    note: 'the invoice of the job as a PDF: only the holder of the link of this job has it (P2-07)',
+    reads: true,
+    hidden: hiddenFromVisitor,
+    request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token) }),
+  },
+  {
+    route: 'GET /guest/interventions/:/credit-notes/:/pdf',
+    note: 'a credit note of the job as a PDF: the holder of the link of this job, and not for another job\'s credit note',
+    reads: true,
+    hidden: hiddenFromVisitor,
+    request: (h, token, w) => ({ params: { id: job(h, w), creditNoteId: creditNoteOf(h, w) }, query: withLink(token) }),
+    crossed: [
+      {
+        what: 'the credit note of the other job',
+        request: (jobOf, other, w) => ({ params: { id: job(jobOf, w), creditNoteId: creditNoteOf(other, w) }, query: withLink(`link-of-household-${jobOf}`) }),
+      },
+    ],
+  },
   {
     route: 'GET /guest/tracking/:',
     note: 'the job a visitor made without an account, followed with its link',

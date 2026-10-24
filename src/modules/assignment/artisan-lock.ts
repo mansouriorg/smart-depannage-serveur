@@ -20,6 +20,13 @@ export const LOCK_ARTISAN = 71_002;
 export const LOCK_CASH_LEDGER = 71_003;
 export const LOCK_PAYOUT = 71_004;
 
+/**
+ * The numbers of the invoices and of the credit notes (P2-07): one lock per series and year, taken after the lock of the job
+ * and held until the document is saved, so that two documents never get the same number and a document that fails to save
+ * leaves its number to the next one.
+ */
+export const LOCK_DOCUMENT_NUMBER = 71_005;
+
 type RawDb = { $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown> };
 
 export async function lockJob(tx: RawDb, interventionId: number): Promise<void> {
@@ -36,4 +43,8 @@ export async function lockCashLedger(tx: RawDb, artisanId: number): Promise<void
 
 export async function lockPayouts(tx: RawDb, artisanId: number): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_PAYOUT}::int, ${artisanId}::int)`;
+}
+
+export async function lockDocumentNumbers(tx: RawDb, key: number): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_DOCUMENT_NUMBER}::int, ${key}::int)`;
 }

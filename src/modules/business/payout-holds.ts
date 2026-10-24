@@ -23,7 +23,7 @@
  */
 import { cashHeldByJob } from '../cash-ledger/cash-ledger-ops';
 import { canonicalStatus } from '../intervention-workflow/intervention-status';
-import { isLiveInvoice, paymentFigures, refundedOn } from '../payments/financials-ops';
+import { amountOfDocument, isLiveInvoice, paymentFigures, refundedOn } from '../payments/financials-ops';
 import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, proportionOf, subtractMoney, sumMoneyOf } from '../../common/money/money';
 
@@ -82,7 +82,7 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
   const complaints: Row[] = await db.complaint.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, status: true, refundDecision: true } });
   const jobs: Row[] = await db.intervention.findMany({ where: { id: { in: ids } }, select: { id: true, status: true } });
   const payments: Row[] = await db.payment.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, method: true, status: true, amount: true, amountRefunded: true, currency: true } });
-  const invoices: Row[] = await db.invoice.findMany({ where: { interventionId: { in: ids } }, select: { interventionId: true, status: true, amountTTC: true, currency: true } });
+  const invoices: Row[] = await db.invoice.findMany({ where: { interventionId: { in: ids } }, orderBy: { id: 'asc' }, select: { interventionId: true, status: true, amountTTC: true, creditedAmount: true, currency: true } });
   const quotes: Row[] = await db.quote.findMany({ where: { interventionId: { in: ids }, status: 'ACCEPTED' }, orderBy: { createdAt: 'desc' }, select: { interventionId: true, amountTTC: true, currency: true } });
   const ledgerCash = await cashHeldByJob(db, artisanId, ids);
 
@@ -96,6 +96,7 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
 
   for (const quote of quotes) if (!documentOf.has(quote.interventionId)) documentOf.set(quote.interventionId, quote);
 
+  // A job can have had several invoices (P2-07): the latest live one is what it asks for.
   for (const invoice of invoices) if (isLiveInvoice(invoice)) documentOf.set(invoice.interventionId, invoice);
 
   const disputed = new Set<number>();
@@ -154,7 +155,7 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
     const document = documentOf.get(item.interventionId);
     const documentInCompanyCurrency = document && String(document.currency) === currencyCode();
 
-    if (document && documentInCompanyCurrency && compareMoney(paymentFigures(paymentsByJob.get(item.interventionId) ?? []).received, money(document.amountTTC)) < 0) reasons.push('NOT_PAID');
+    if (document && documentInCompanyCurrency && compareMoney(paymentFigures(paymentsByJob.get(item.interventionId) ?? []).received, amountOfDocument(document)) < 0) reasons.push('NOT_PAID');
 
     // A refund still to be decided; or money that went back and that the financials do not record; or a complaint that says
     // a refund was made when nothing records an amount anywhere.

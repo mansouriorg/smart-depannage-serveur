@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,14 +13,19 @@ import { InterventionEventsService } from '../intervention-events/intervention-e
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 import { isDeliverableEmail } from '../notifications/delivery/contact';
-import { invoiceForArtisan, invoiceForClient } from '../../common/views/views';
+import { currentInvoice, invoiceForArtisan, invoiceForClient } from '../../common/views/views';
 import { totalsFromAmount, totalsFromItems } from '../../common/money/document-totals';
-import { compareMoney, formatMoney, money, toMoneyString } from '../../common/money/money';
+import { compareMoney, formatMoney, money, sumMoney, toMoneyString } from '../../common/money/money';
 import { lockJob } from '../assignment/artisan-lock';
-import { paymentFigures, syncFinancials } from '../payments/financials-ops';
+import { amountToPay, paymentFigures, syncFinancials } from '../payments/financials-ops';
 import { jobIsInPaidPayout } from '../cash-ledger/cash-ledger-ops';
 import { currencyCode, getLocale } from '../../common/locale/locale';
-import { businessYearMonth } from '../../common/locale/business-time';
+import { takeDocumentNumber } from './document-number';
+import { creditNoteTotals } from './credit-note-totals';
+import { assertConfiguredRate, isConfiguredRate, printedCompanyOf } from './invoice-legal';
+import { settleInvoice } from './invoice-settlement';
+import { serviceLabel } from './service-labels';
+import { creditNotePdfFile, invoicePdfFile, type PdfFile } from './pdf/pdf-files';
 
 import {
   InterventionEventType,
@@ -40,6 +46,11 @@ type CancelInvoiceDto = {
   reason?: string;
 };
 
+type CreditNoteDto = {
+  reason?: string;
+  amountTTC?: number;
+};
+
 type ExportInvoicesQuery = {
   status?: InvoiceStatus;
   paymentStatus?: PaymentStatus;
@@ -48,14 +59,20 @@ type ExportInvoicesQuery = {
   format?: 'json' | 'csv';
 };
 
-type SetInvoicePdfDto = {
-  pdfUrl: string;
-};
-
 type AuthenticatedUser = {
   id: number;
   role: Role;
 };
+
+const ALREADY_INVOICED = 'Une facture existe déjà pour cette intervention.';
+
+/** The reason of a credit note is printed on it. */
+const CREDIT_REASON_MAX = 500;
+/** A credit note that repeats the one just made (same amount, same reason) within this time is a double click, not a second credit note. */
+const CREDIT_NOTE_REPEAT_MS = 60_000;
+
+/** Where the PDF of an invoice is read (the route of the invoices): drawn from the invoice as it was issued, so it is the same every time. */
+const pdfPathOf = (invoiceId: number) => `/invoices/${invoiceId}/pdf`;
 
 @Injectable()
 export class InvoicesService {
@@ -71,6 +88,11 @@ export class InvoicesService {
 
   private invoiceInclude: Prisma.InvoiceInclude = {
     items: {
+      orderBy: {
+        id: 'asc',
+      },
+    },
+    creditNotes: {
       orderBy: {
         id: 'asc',
       },
@@ -118,13 +140,6 @@ export class InvoicesService {
     return adminRoles.includes(role);
   }
 
-  private generateInvoiceNumber(): string {
-    // The year and the month of the invoice are the ones on the clock of the business, not of the server.
-    const { year, month } = businessYearMonth();
-
-    return `INV-${year}${String(month).padStart(2, '0')}-${Date.now()}`;
-  }
-
   private async createEvent(data: {
     interventionId: number;
     type: InterventionEventType;
@@ -168,7 +183,7 @@ export class InvoicesService {
         client: true,
         artisan: true,
         subService: true,
-        invoice: true,
+        invoices: true,
         quotes: {
           where: {
             status: QuoteStatus.ACCEPTED,
@@ -180,14 +195,6 @@ export class InvoicesService {
             createdAt: 'desc',
           },
           take: 1,
-        },
-        payments: {
-          where: {
-            status: PaymentStatus.PAID,
-          },
-          orderBy: {
-            createdAt: 'desc',
-          },
         },
       },
     });
@@ -225,6 +232,28 @@ export class InvoicesService {
     return invoice.intervention.clientId === user.id
       ? invoiceForClient(invoice)
       : invoiceForArtisan(invoice);
+  }
+
+  /**
+   * Who may have the PDF: the back office and the customer. The artisan sees that there is an invoice and what it says, not the
+   * customer's details, and the PDF is the invoice with those details on it. A draft is not the customer's yet.
+   */
+  private canReadPdf(user: AuthenticatedUser, invoice: any): boolean {
+    if (this.isAdminRole(user.role)) return true;
+
+    return invoice.status !== InvoiceStatus.DRAFT && invoice.intervention.clientId === user.id;
+  }
+
+  private checkCanReadPdf(user: AuthenticatedUser, invoice: any) {
+    if (this.isAdminRole(user.role)) return;
+
+    if (invoice.status === InvoiceStatus.DRAFT) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    if (!this.canReadPdf(user, invoice)) {
+      throw new ForbiddenException('Le PDF de la facture est réservé au client et à l’administration.');
+    }
   }
 
   private calculateTotalsFromAmount(amountHT: unknown, taxRate?: unknown) {
@@ -312,6 +341,10 @@ export class InvoicesService {
       paidAt: invoice.paidAt,
       cancelledAt: invoice.cancelledAt,
       createdAt: invoice.createdAt,
+      // The columns of P2-07 come after the others: a file read by position keeps reading the same columns.
+      stampDuty: toMoneyString(invoice.stampDuty ?? 0),
+      creditedAmount: toMoneyString(invoice.creditedAmount ?? 0),
+      mentionsConfirmed: Boolean(invoice.mentionsConfirmed),
     };
   }
 
@@ -327,18 +360,19 @@ export class InvoicesService {
   ) {
     const intervention = await this.getInterventionForInvoice(interventionId);
 
-    if (
-      intervention.invoice &&
-      intervention.invoice.status !== InvoiceStatus.CANCELLED
-    ) {
-      throw new BadRequestException(
-        'Une facture existe déjà pour cette intervention.',
-      );
+    // A job has one invoice at a time. A new one replaces one that was cancelled (an invoice credited in full is cancelled): the
+    // number of the cancelled one stays in the series, and the payments received move to the new one.
+    if (intervention.invoices.some((invoice) => invoice.status !== InvoiceStatus.CANCELLED)) {
+      throw new BadRequestException(ALREADY_INVOICED);
     }
 
     const company = await this.getCompanySettings();
+    const printed = printedCompanyOf(company);
 
     const quote = intervention.quotes[0];
+
+    // A rate typed by the back office is one of the rates of the company (the ones the accountant confirmed).
+    if (dto.taxRate !== undefined && dto.taxRate !== null) assertConfiguredRate(dto.taxRate);
 
     const amountHT = dto.amountHT ?? quote?.amountHT;
     const taxRate = dto.taxRate ?? quote?.taxRate ?? company?.defaultTaxRate ?? getLocale().defaultTaxRate;
@@ -358,13 +392,15 @@ export class InvoicesService {
       : this.calculateTotalsFromAmount(amountHT, taxRate);
     const currency = quote?.currency ?? currencyCode();
 
-    const invoiceItems = quote?.items?.length
+    // The lines of the quote go with the quote's amount: an amount sent by the back office is not the sum of those lines, so the invoice
+    // then has the one line for the service (lines that add up to something else than the invoice would be printed on it).
+    const invoiceItems = quote?.items?.length && money(totals.amountHT) === money(quote.amountHT)
       ? this.getInvoiceItemsFromQuote(quote)
       : [
           {
             label:
               intervention.subService?.name ||
-              String(intervention.serviceType),
+              serviceLabel(intervention.serviceType),
             description: intervention.description,
             quantity: 1,
             unitPrice: totals.amountHT,
@@ -377,40 +413,44 @@ export class InvoicesService {
       // then, and this one is made with what was received at that moment.
       await lockJob(tx, interventionId);
 
-      const received = await tx.payment.findMany({
-        where: { interventionId, status: { in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED] } },
-        orderBy: { createdAt: 'desc' },
-      });
-      const paidPayment = received[0];
+      // Read again under the lock: another invoice may have been made in the meantime.
+      const open = await tx.invoice.findFirst({ where: { interventionId, status: { not: InvoiceStatus.CANCELLED } }, select: { id: true } });
 
-      // The invoice is paid when what the customer kept covers it, not when a payment of some part of it was confirmed (a
-      // deposit). An invoice in another currency than the sums of the company cannot be compared: a payment settles it.
-      const paidInFull =
-        Boolean(paidPayment) &&
-        (currency !== currencyCode() ||
-          compareMoney(paymentFigures(received).kept, totals.amountTTC) >= 0);
+      if (open) throw new BadRequestException(ALREADY_INVOICED);
+
+      // The number is taken last, with the date of the invoice: nothing below can fail without taking the number back with it.
+      const given = await takeDocumentNumber(tx, 'INVOICE');
 
       const created = await tx.invoice.create({
         data: {
           interventionId,
-          invoiceNumber: dto.invoiceNumber || this.generateInvoiceNumber(),
+          invoiceNumber: given.number,
+          numberYear: given.year,
+          sequence: given.sequence,
 
-          status: paidInFull ? InvoiceStatus.PAID : InvoiceStatus.ISSUED,
-          paymentStatus: paidInFull
-            ? PaymentStatus.PAID
-            : PaymentStatus.PENDING,
+          status: InvoiceStatus.ISSUED,
+          paymentStatus: PaymentStatus.PENDING,
 
-          companyName: company?.companyName,
-          companyPhone: company?.companyPhone,
-          companyEmail: company?.companyEmail,
-          companyAddress: undefined,
-          companyTaxId: company?.matriculeFiscal ?? undefined,
+          // What is printed, as it is today: the invoice reads the same later, whatever the settings become.
+          companyName: printed.companyName,
+          companyPhone: printed.companyPhone,
+          companyEmail: printed.companyEmail,
+          companyAddress: printed.companyAddress,
+          companyTaxId: printed.companyTaxId,
+          companyRegistre: printed.companyRegistre,
+          companyRib: printed.companyRib,
           companyWebsite: undefined,
+          legalMentions: printed.legalMentions,
+          paymentTerms: printed.paymentTerms,
+          stampDuty: printed.stampDuty,
+          // The accountant confirmed the rates of the company: an invoice at another rate (a quote written before the list changed) does not claim it.
+          mentionsConfirmed: printed.mentionsConfirmed && isConfiguredRate(totals.taxRate),
 
           clientName: intervention.contactName || intervention.client.name,
           clientEmail: intervention.contactEmail || intervention.client.email,
           clientPhone: intervention.contactPhone || intervention.client.phone,
           clientAddress: intervention.address,
+          clientTaxId: intervention.client.taxId?.trim() || null,
 
           interventionDescription: intervention.description,
           interventionAddress: intervention.address,
@@ -423,28 +463,27 @@ export class InvoicesService {
           taxAmount: totals.taxAmount,
           amountTTC: totals.amountTTC,
 
-          pdfUrl: dto.pdfUrl,
           notes: dto.notes,
-          issuedAt: new Date(),
-          paidAt: paidInFull ? new Date() : undefined,
+          issuedAt: given.issuedAt,
 
           items: {
             create: invoiceItems,
           },
         },
-        include: this.invoiceInclude,
       });
 
-      if (paidPayment) {
-        await tx.payment.update({
-          where: {
-            id: paidPayment.id,
-          },
-          data: {
-            invoiceId: created.id,
-          },
-        });
-      }
+      // What the customer kept on the job pays this invoice (the money of an invoice that was cancelled moves to the one that
+      // replaces it). A payment that was given back in full paid nothing: it stays with the invoice it was made for.
+      const received = await tx.payment.findMany({
+        where: { interventionId, status: { in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED] } },
+        select: { id: true, invoiceId: true },
+      });
+      const moving = received.filter((payment) => payment.invoiceId !== created.id).map((payment) => payment.id);
+
+      if (moving.length > 0) await tx.payment.updateMany({ where: { id: { in: moving } }, data: { invoiceId: created.id } });
+
+      // Paid when what the customer kept covers it, not when a payment of some part of it was confirmed (a deposit).
+      await settleInvoice(tx, interventionId, given.issuedAt);
 
       // The invoice is now what the job asks for: the price in its financials follows it (the payments may be above it). Not
       // when a payout that was paid already took the figures of the job: the platform gave the artisan that share.
@@ -458,7 +497,11 @@ export class InvoicesService {
         soft: true,
       });
 
-      return created;
+      const settled = await tx.invoice.findUnique({ where: { id: created.id }, include: this.invoiceInclude });
+
+      if (!settled) throw new NotFoundException('Facture introuvable.');
+
+      return settled;
     });
 
     await this.createEvent({
@@ -511,6 +554,11 @@ export class InvoicesService {
       },
       include: {
         items: {
+          orderBy: {
+            id: 'asc',
+          },
+        },
+        creditNotes: {
           orderBy: {
             id: 'asc',
           },
@@ -583,12 +631,18 @@ export class InvoicesService {
   // ==========================================================
 
   async findByIntervention(user: AuthenticatedUser, interventionId: number) {
-    const invoice = await this.prisma.invoice.findUnique({
-      where: {
-        interventionId,
-      },
-      include: this.invoiceInclude,
-    });
+    // The invoice the job shows: the latest that is not cancelled (a job can have had several).
+    const invoice = currentInvoice(
+      await this.prisma.invoice.findMany({
+        where: {
+          interventionId,
+        },
+        include: this.invoiceInclude,
+        orderBy: {
+          id: 'desc',
+        },
+      }),
+    );
 
     if (!invoice) {
       throw new NotFoundException('Aucune facture pour cette intervention.');
@@ -612,9 +666,8 @@ export class InvoicesService {
       invoiceNumber: invoice.invoiceNumber,
       pdfUrl: invoice.pdfUrl,
       invoice,
-      message: invoice.pdfUrl
-        ? 'PDF disponible.'
-        : 'Aucun PDF généré pour le moment. Vous pouvez générer le PDF côté frontend avec ces données.',
+      pdfPath: pdfPathOf(invoice.id),
+      message: 'Le PDF de la facture est disponible à l’adresse pdfPath.',
     };
   }
 
@@ -623,43 +676,52 @@ export class InvoicesService {
   // ==========================================================
 
   async downloadInvoice(user: AuthenticatedUser, invoiceId: number) {
-    const invoice = await this.findOne(user, invoiceId);
+    const row = await this.getInvoiceOrFail(invoiceId);
+
+    this.checkCanAccessInvoice(user, row);
+
+    const invoice = this.forReader(user, row);
+    const readsPdf = this.canReadPdf(user, row);
 
     return {
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
       pdfUrl: invoice.pdfUrl,
       invoice,
-      message: invoice.pdfUrl
-        ? 'PDF disponible.'
-        : 'Aucun PDF généré pour le moment. Utilisez les données de la facture pour afficher ou imprimer la facture côté frontend.',
+      // The artisan is not given a link they could not open.
+      pdfPath: readsPdf ? pdfPathOf(invoice.id) : null,
+      message: readsPdf ? 'Le PDF de la facture est disponible à l’adresse pdfPath.' : 'Le PDF de la facture est réservé au client et à l’administration.',
     };
   }
 
   // ==========================================================
-  // Admin: set PDF URL
+  // The PDF of an invoice, and of a credit note (P2-07)
+  // Drawn when it is asked for, from the document as it was issued: nothing to store, nothing that can drift from the invoice.
   // ==========================================================
 
-  async setPdfUrl(
-    user: AuthenticatedUser,
-    invoiceId: number,
-    dto: SetInvoicePdfDto,
-  ) {
-    if (!this.isAdminRole(user.role)) {
-      throw new ForbiddenException('Action réservée à l’administration.');
+  async pdfOfInvoice(user: AuthenticatedUser, invoiceId: number): Promise<PdfFile> {
+    const invoice = await this.getInvoiceOrFail(invoiceId);
+
+    this.checkCanAccessInvoice(user, invoice);
+    this.checkCanReadPdf(user, invoice);
+
+    return invoicePdfFile(invoice);
+  }
+
+  async pdfOfCreditNote(user: AuthenticatedUser, creditNoteId: number): Promise<PdfFile> {
+    const creditNote = await this.prisma.creditNote.findUnique({
+      where: { id: creditNoteId },
+      include: { invoice: { include: this.invoiceInclude } },
+    });
+
+    if (!creditNote) {
+      throw new NotFoundException('Avoir introuvable.');
     }
 
-    await this.getInvoiceOrFail(invoiceId);
+    this.checkCanAccessInvoice(user, creditNote.invoice);
+    this.checkCanReadPdf(user, creditNote.invoice);
 
-    return this.prisma.invoice.update({
-      where: {
-        id: invoiceId,
-      },
-      data: {
-        pdfUrl: dto.pdfUrl,
-      },
-      include: this.invoiceInclude,
-    });
+    return creditNotePdfFile(creditNote, creditNote.invoice);
   }
 
   // ==========================================================
@@ -696,9 +758,9 @@ export class InvoicesService {
       dto.message ||
       `Bonjour,
 
-Votre facture ${invoice.invoiceNumber} d’un montant de ${formatMoney(invoice.amountTTC, { currency: invoice.currency })} TTC est disponible.
+Votre facture ${invoice.invoiceNumber} d’un montant de ${formatMoney(amountToPay(invoice), { currency: invoice.currency })} TTC${money(invoice.stampDuty ?? 0) > 0 ? ' (timbre fiscal compris)' : ''} est disponible.
 
-${invoice.pdfUrl ? `Lien PDF : ${invoice.pdfUrl}` : 'Le PDF sera disponible prochainement.'}
+Vous pouvez la télécharger en PDF depuis votre page de suivi.
 
 Cordialement.`;
 
@@ -728,19 +790,25 @@ Cordialement.`;
       );
     }
 
-    const updated = await this.prisma.invoice.update({
-      where: {
-        id: invoiceId,
-      },
-      data: {
-        status:
-          invoice.status === InvoiceStatus.PAID
-            ? InvoiceStatus.PAID
-            : InvoiceStatus.SENT,
-        sentAt: new Date(),
-        emailedTo: email,
-      },
-      include: this.invoiceInclude,
+    // The state of the invoice is read again under the lock of the job, after the e-mail left: while it was being queued the invoice may
+    // have been paid or credited in full, and a state written from the first read would undo that.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, invoice.interventionId);
+
+      const now = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { status: true } });
+      const kept = now?.status === InvoiceStatus.PAID || now?.status === InvoiceStatus.CANCELLED ? now.status : InvoiceStatus.SENT;
+
+      return tx.invoice.update({
+        where: {
+          id: invoiceId,
+        },
+        data: {
+          status: kept,
+          sentAt: new Date(),
+          emailedTo: email,
+        },
+        include: this.invoiceInclude,
+      });
     });
 
     await transitionStatus(this.prisma, {
@@ -782,26 +850,34 @@ Cordialement.`;
 
     const invoice = await this.getInvoiceOrFail(invoiceId);
 
-    if (invoice.status === InvoiceStatus.PAID) {
-      throw new BadRequestException(
-        'Une facture payée ne peut pas être annulée sans remboursement ou avoir.',
-      );
-    }
+    this.ensureCanBeCancelled(invoice);
 
-    if (invoice.status === InvoiceStatus.CANCELLED) {
-      throw new BadRequestException('Cette facture est déjà annulée.');
-    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, invoice.interventionId);
 
-    const updated = await this.prisma.invoice.update({
-      where: {
-        id: invoiceId,
-      },
-      data: {
-        status: InvoiceStatus.CANCELLED,
-        cancelReason: dto.reason,
-        cancelledAt: new Date(),
-      },
-      include: this.invoiceInclude,
+      // Read again under the lock: a payment may have paid it, or a credit note may have been issued, in the meantime.
+      const current = await tx.invoice.findUnique({ where: { id: invoiceId } });
+
+      if (!current) throw new NotFoundException('Facture introuvable.');
+
+      this.ensureCanBeCancelled(current);
+
+      const cancelled = await tx.invoice.update({
+        where: {
+          id: invoiceId,
+        },
+        data: {
+          status: InvoiceStatus.CANCELLED,
+          cancelReason: dto.reason,
+          cancelledAt: new Date(),
+        },
+        include: this.invoiceInclude,
+      });
+
+      // The job asks for its accepted quote again: the figures of its financials follow (unless a payout took them).
+      if (!(await jobIsInPaidPayout(tx, invoice.interventionId))) await syncFinancials(tx, invoice.interventionId, { userId: user.id });
+
+      return cancelled;
     });
 
     await this.createEvent({
@@ -820,6 +896,135 @@ Cordialement.`;
     });
 
     return updated;
+  }
+
+  /** An invoice that is paid, or has a credit note, is taken back by a credit note, not cancelled: its number and its amounts stay in the books. */
+  private ensureCanBeCancelled(invoice: { status: unknown; creditedAmount?: unknown }) {
+    if (invoice.status === InvoiceStatus.PAID) {
+      throw new BadRequestException(
+        'Une facture payée ne peut pas être annulée : émettez un avoir, puis remboursez le client si besoin.',
+      );
+    }
+
+    if (invoice.status === InvoiceStatus.CANCELLED) {
+      throw new BadRequestException('Cette facture est déjà annulée.');
+    }
+
+    if (compareMoney(money(invoice.creditedAmount as any), 0) > 0) {
+      throw new BadRequestException('Cette facture a déjà un avoir : émettez un avoir pour le reste au lieu de l’annuler.');
+    }
+  }
+
+  // ==========================================================
+  // Admin: credit note (avoir)
+  // ==========================================================
+
+  /**
+   * Takes back all or part of an invoice that was issued (P2-07), with a credit note of its own number. For an invoice that was
+   * paid this is how it is corrected: the money that went back to the customer is a refund of the payment, made in the usual way;
+   * the credit note is the document. An invoice that all its credit notes took back is cancelled (and a new one can be made for the
+   * job). A part leaves the invoice, now for less: it is paid again when what the customer kept covers what is left.
+   */
+  async createCreditNote(user: AuthenticatedUser, invoiceId: number, dto: CreditNoteDto) {
+    if (!this.isAdminRole(user.role)) {
+      throw new ForbiddenException('Action réservée à l’administration.');
+    }
+
+    const reason = typeof dto?.reason === 'string' ? dto.reason.trim() : '';
+
+    if (!reason) throw new BadRequestException('Le motif de l’avoir est obligatoire : le client le lit sur le document.');
+    if (reason.length > CREDIT_REASON_MAX) throw new BadRequestException(`Le motif de l’avoir est limité à ${CREDIT_REASON_MAX} caractères.`);
+
+    const header = await this.getInvoiceOrFail(invoiceId);
+
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, header.interventionId);
+
+      // Read again under the lock: a payment, a cancellation or another credit note may have come in.
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, include: { creditNotes: true } });
+
+      if (!invoice) throw new NotFoundException('Facture introuvable.');
+
+      if (![InvoiceStatus.ISSUED, InvoiceStatus.SENT, InvoiceStatus.PAID].some((status) => status === invoice.status)) {
+        throw new BadRequestException('Un avoir ne se fait que sur une facture émise : ni brouillon, ni annulée.');
+      }
+
+      const totals = creditNoteTotals(invoice, invoice.creditNotes, dto.amountTTC);
+
+      // Two clicks on the button are two requests: the second finds the credit note of the first and does not make another (each one takes
+      // a number of the series for good).
+      const repeated = invoice.creditNotes.find(
+        (earlier) =>
+          earlier.reason === reason &&
+          compareMoney(money(earlier.amountTTC), totals.amountTTC) === 0 &&
+          Date.now() - new Date(earlier.issuedAt).getTime() < CREDIT_NOTE_REPEAT_MS,
+      );
+
+      if (repeated) {
+        throw new ConflictException(`L’avoir ${repeated.creditNoteNumber} vient d’être émis avec le même montant et le même motif. Patientez une minute pour en émettre un autre identique.`);
+      }
+
+      const given = await takeDocumentNumber(tx, 'CREDIT_NOTE');
+
+      const note = await tx.creditNote.create({
+        data: {
+          invoiceId,
+          interventionId: invoice.interventionId,
+          creditNoteNumber: given.number,
+          numberYear: given.year,
+          sequence: given.sequence,
+          reason,
+          currency: invoice.currency,
+          amountHT: totals.amountHT,
+          taxRate: totals.taxRate,
+          taxAmount: totals.taxAmount,
+          amountTTC: totals.amountTTC,
+          stampDuty: totals.stampDuty,
+          createdById: user.id,
+          issuedAt: given.issuedAt,
+        },
+      });
+
+      const creditedAmount = sumMoney(invoice.creditedAmount, totals.amountTTC, totals.stampDuty);
+
+      const updated = await tx.invoice.update({
+        where: { id: invoiceId },
+        data: totals.closes
+          ? { creditedAmount, status: InvoiceStatus.CANCELLED, cancelledAt: given.issuedAt, cancelReason: `Avoir ${note.creditNoteNumber}` }
+          : { creditedAmount },
+      });
+
+      // A part leaves the invoice for less: it follows the payments again (a deposit may now cover it).
+      if (!totals.closes) await settleInvoice(tx, invoice.interventionId, given.issuedAt);
+
+      if (!(await jobIsInPaidPayout(tx, invoice.interventionId))) await syncFinancials(tx, invoice.interventionId, { userId: user.id });
+
+      // What the customer still holds above what they now owe: to be given back by a refund of the payment.
+      const payments = await tx.payment.findMany({ where: { interventionId: invoice.interventionId } });
+      const kept = paymentFigures(payments).kept;
+      const owed = totals.closes ? 0 : amountToPay(updated);
+      const refundToMake = compareMoney(kept, owed) > 0 ? money(kept - owed) : 0;
+
+      return { note, invoiceNumber: invoice.invoiceNumber, closes: totals.closes, refundToMake };
+    });
+
+    await this.createEvent({
+      interventionId: header.interventionId,
+      type: InterventionEventType.STATUS_CHANGED,
+      title: 'Avoir émis',
+      // The reason is printed on the credit note; the line of the timeline says that there is one.
+      message: `L’avoir ${outcome.note.creditNoteNumber} de ${formatMoney(outcome.note.amountTTC, { currency: outcome.note.currency })} a été émis sur la facture ${outcome.invoiceNumber}.`,
+      createdById: user.id,
+      metadata: {
+        invoiceId,
+        creditNoteId: outcome.note.id,
+        creditNoteNumber: outcome.note.creditNoteNumber,
+        amountTTC: money(outcome.note.amountTTC),
+        closesInvoice: outcome.closes,
+      },
+    });
+
+    return { creditNote: outcome.note, invoice: await this.getInvoiceOrFail(invoiceId), refundToMake: outcome.refundToMake };
   }
 
   // ==========================================================

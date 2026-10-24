@@ -4,7 +4,7 @@ import { RolesGuard } from '../guards/roles.guard';
 import { GuestTrackingLinkGuard } from '../../modules/guest/guest-tracking-link.guard';
 import { BACK_OFFICE_ROLES, TICKET_STAFF_ROLES } from '../auth/role-policy';
 import { FakeRequest } from './route-invoker';
-import { Household, HOUSEHOLDS, Person, World, buildWorld, marksOf } from './world';
+import { Household, HOUSEHOLDS, Person, World, buildWorld, marksOf, textOfAnswer } from './world';
 
 /**
  * The wrong-user check of a route (P1-17).
@@ -133,7 +133,7 @@ function status(error: any): number | null {
  * name at all (a view that sends the row with the column in it, even empty, is a leak of the shape).
  */
 export function showsHidden(value: unknown, hidden: string): boolean {
-  if (!hidden.startsWith('column:')) return (JSON.stringify(value) ?? '').includes(hidden);
+  if (!hidden.startsWith('column:')) return textOfAnswer(value).includes(hidden);
 
   const name = hidden.slice('column:'.length);
   const look = (found: unknown): boolean => {

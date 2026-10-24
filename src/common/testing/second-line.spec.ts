@@ -96,7 +96,7 @@ describe('the second line is really tried (controls)', () => {
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n');
 const BACK_OFFICE_ONLY: Array<{ route: string; what: string; request: (ids: Record<string, number>) => Record<string, unknown> }> = [
   { route: 'POST /invoices/generate', what: 'issuing the invoice of a job', request: (ids) => ({ body: { interventionId: ids.intervention, amountHT: 100 } }) },
-  { route: 'PATCH /invoices/:/pdf', what: 'setting the address of the PDF of an invoice', request: (ids) => ({ params: { invoiceId: ids.invoice }, body: { pdfUrl: 'https://example.test/invoice.pdf' } }) },
+  { route: 'POST /invoices/:/credit-notes', what: 'issuing a credit note on an invoice', request: (ids) => ({ params: { invoiceId: ids.invoice }, body: { reason: 'Erreur de facturation', amountTTC: 10 } }) },
   { route: 'POST /invoices/:/send-email', what: 'sending an invoice by e-mail', request: (ids) => ({ params: { invoiceId: ids.invoice }, body: {} }) },
   { route: 'PATCH /invoices/:/cancel', what: 'cancelling an invoice', request: (ids) => ({ params: { invoiceId: ids.invoice }, body: { reason: 'no' } }) },
   { route: 'GET /invoices/export', what: 'the export of every invoice', request: () => ({ query: {} }) },

@@ -812,13 +812,15 @@ describe('the job and its invoice are paid when the confirmed payments cover the
     expect(invoiceRow(d).status).toBe('PAID');
   });
 
-  it('a refund afterwards does not put the job back: it stays paid', async () => {
+  it('a refund afterwards does not put the job back: it stays paid; the invoice asks for what is no longer covered (P2-07)', async () => {
     const d = desk({ invoice: 120, status: 'PAYMENT_PENDING' });
     const id = await pay(d, 120);
 
     await d.world.svc.payments.refund(id, d.admin.id, { amount: 20 });
 
-    expect([jobRow(d).status, invoiceRow(d).status]).toEqual(['PAID', 'PAID']);
+    // 100 kept of 120: the invoice is not covered any more, as the payment position of the job has always said. A credit note of 20
+    // is what makes the invoice 100 and paid again.
+    expect([jobRow(d).status, invoiceRow(d).status]).toEqual(['PAID', 'ISSUED']);
   });
 
   it('a job that is still being worked on takes the payment (and notes the day the money came) but does not move', async () => {

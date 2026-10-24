@@ -26,6 +26,7 @@ import { money } from '../../common/money/money';
 import { paymentForClient } from '../../common/views/views';
 import { canonicalStatus } from '../intervention-workflow/intervention-status';
 import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
+import { amountToPay } from './financials-ops';
 import { OPEN_PAYMENT_STATUSES, PAID_WORDS, amountLeft, isPlaceholder, isSameRequest, otherPaymentOpenWords } from './open-payment';
 
 type Db = any;
@@ -130,7 +131,7 @@ export async function paymentOptionsOf(db: Db, job: { id: number; status: string
     reason = PAYMENT_WORDS.noQuote;
   } else {
     // The same rule as the request: what is left of what the document asks, and nothing when it is all paid.
-    amount = amountLeft(position, money(document.amountTTC), document.currency);
+    amount = amountLeft(position, amountToPay(document), document.currency);
 
     if (amount === null) reason = PAID_WORDS;
   }
@@ -164,7 +165,7 @@ export async function paymentOptionsOf(db: Db, job: { id: number; status: string
     interventionId: job.id,
     currency,
     document: position.invoice ? 'INVOICE' : quote ? 'QUOTE' : null,
-    total: document ? money(document.amountTTC) : null,
+    total: document ? amountToPay(document) : null,
     received: position.received,
     amount,
     canPay: blocked === null,

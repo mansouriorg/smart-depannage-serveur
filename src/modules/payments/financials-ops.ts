@@ -16,7 +16,7 @@
  *
  * What cannot be known from a payment stays what the back office wrote: the rate, the payment provider's fee and the notes.
  */
-import { compareMoney, money, percentOf, subtractMoney, sumMoneyOf } from '../../common/money/money';
+import { compareMoney, money, percentOf, subtractMoney, sumMoney, sumMoneyOf } from '../../common/money/money';
 import { currencyCode } from '../../common/locale/locale';
 import { DEFAULT_COMMISSION_RATE } from '../cash-ledger/cash-ledger.types';
 
@@ -63,13 +63,34 @@ export function paymentFigures(payments: Row[]): PaymentFigures {
  */
 export const isLiveInvoice = (invoice: Row | null | undefined): invoice is Row => Boolean(invoice) && String(invoice!.status) !== 'CANCELLED' && String(invoice!.status) !== 'DRAFT';
 
+/**
+ * The invoice of the job that asks something of the customer (P2-07): the latest one that is not cancelled and not a draft. A job
+ * can have had several (one cancelled or credited, then the one that replaced it); only one at a time is live, and it is that one.
+ */
+export async function liveInvoiceOf(db: Db, interventionId: number): Promise<Row | null> {
+  return db.invoice.findFirst({ where: { interventionId, status: { notIn: ['CANCELLED', 'DRAFT'] } }, orderBy: { id: 'desc' } });
+}
+
 /** What the job asks for: its invoice when it has a live one (see `isLiveInvoice`), else its latest accepted quote. */
 export async function documentOfJob(db: Db, interventionId: number): Promise<Row | null> {
-  const invoice: Row | null = await db.invoice.findUnique({ where: { interventionId } });
+  const invoice = await liveInvoiceOf(db, interventionId);
 
   if (isLiveInvoice(invoice)) return invoice;
 
   return db.quote.findFirst({ where: { interventionId, status: 'ACCEPTED' }, orderBy: { createdAt: 'desc' } });
+}
+
+/**
+ * What a document is worth for the job (P2-07): its total, less what credit notes took off. A quote has no credit notes.
+ * The stamp duty is not in it: it is collected for the State, not earned by the job (see `amountToPay`).
+ */
+export function amountOfDocument(document: Row): number {
+  return subtractMoney(document.amountTTC, document.creditedAmount ?? 0);
+}
+
+/** What the customer has to pay on a document: what it is worth, plus the stamp duty an invoice carries. */
+export function amountToPay(document: Row): number {
+  return sumMoney(amountOfDocument(document), document.stampDuty ?? 0);
 }
 
 /** What the back office can still decide for itself on the financials of a job. */
@@ -102,7 +123,7 @@ export async function syncFinancials(db: Db, interventionId: number, by: { userI
 
   // What is paid for: what was received, up to what the job asks for (a document in another currency cannot be compared).
   const document = await documentOfJob(db, interventionId);
-  const asked = document && String(document.currency) === currencyCode() ? money(document.amountTTC) : 0;
+  const asked = document && String(document.currency) === currencyCode() ? amountOfDocument(document) : 0;
   const price = compareMoney(asked, 0) > 0 && compareMoney(figures.received, asked) > 0 ? asked : figures.received;
 
   // A refund out of what was received above the price gives back an overpayment: the platform does not bear it.

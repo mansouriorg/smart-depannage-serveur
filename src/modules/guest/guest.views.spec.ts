@@ -46,7 +46,7 @@ function makeWorld(job: Record<string, unknown> = {}) {
     // The ways of paying the company offers, and its account for a transfer (P2-06).
     companySettings: { findFirst: async () => ({ paymentMethods: ['ONLINE', 'CASH', 'BANK_TRANSFER'], rib: '08006012345678901234' }) },
     // What is left to pay is worked out from the document and the payments (P2-03): no invoice, no cash declared.
-    invoice: { findUnique: async () => null },
+    invoice: { findUnique: async () => null, findFirst: async () => null },
     cashLedgerEntry: { findMany: async () => [] },
     // The job is locked while its payment is asked for.
     $executeRaw: async () => 1,

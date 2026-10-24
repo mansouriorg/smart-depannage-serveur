@@ -14,6 +14,7 @@ import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
 import { checkRequestedService } from '../service-catalog/catalog-check';
 import { chatsOf, interventionForClient, interventionForTracking } from '../../common/views/views';
+import { INVOICES_OF_JOB, INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import {
   InterventionEventType,
@@ -164,7 +165,7 @@ export class ClientInterventionsService {
           orderBy: { createdAt: 'desc' },
           take: 1,
         },
-        invoice: true,
+        invoices: INVOICES_OF_JOB,
         review: true,
       },
       orderBy: { createdAt: 'desc' },
@@ -197,7 +198,7 @@ export class ClientInterventionsService {
         payments: {
           orderBy: { createdAt: 'desc' },
         },
-        invoice: true,
+        invoices: INVOICES_OF_JOB_WITH_LINES,
         complaints: {
           orderBy: { createdAt: 'desc' },
         },
@@ -258,7 +259,7 @@ export class ClientInterventionsService {
         payments: {
           orderBy: { createdAt: 'desc' },
         },
-        invoice: true,
+        invoices: INVOICES_OF_JOB_WITH_LINES,
         review: true,
       },
     });

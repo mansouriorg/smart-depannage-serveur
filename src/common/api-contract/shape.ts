@@ -64,6 +64,16 @@ function plainNode(value: unknown): Node {
   return { k: 'prim', t: typeof value };
 }
 
+/**
+ * A view may show the one element of a relation the row holds as a list: a job has `invoices`, and answers the invoice it shows as
+ * `invoice` (the latest that is not cancelled, P2-07). That key is typed as the single, optional relation it stands for.
+ */
+function singleOfList(model: SchemaModel | null, key: string): SchemaField | undefined {
+  const list = model?.fields.find((candidate) => candidate.kind === 'model' && candidate.list && candidate.name === `${key}s`);
+
+  return list ? { name: key, type: list.type, kind: 'model', list: false, optional: true } : undefined;
+}
+
 /** The node of a row of `model`: schema types for its columns, and its relations, which a route may or may not include. */
 function rowNode(row: Record<string, unknown>, model: SchemaModel | null, schema: ParsedSchema): Node {
   const props = new Map<string, { node: Node; optional: boolean }>();
@@ -71,7 +81,7 @@ function rowNode(row: Record<string, unknown>, model: SchemaModel | null, schema
   const partial = model?.name === 'User';
 
   for (const [key, value] of Object.entries(row)) {
-    const field = model?.fields.find((candidate) => candidate.name === key);
+    const field = model?.fields.find((candidate) => candidate.name === key) ?? singleOfList(model, key);
 
     if (!field) {
       props.set(key, { node: plainNode(value), optional: false });

@@ -127,7 +127,7 @@ export class BusinessService {
         id: interventionId,
       },
       include: {
-        invoice: true,
+        invoices: true,
         payments: true,
         client: {
           select: {

@@ -219,7 +219,9 @@ describe('payments, refunds and invoices add up to the millime (P2-01)', () => {
     expect(stored.currency).toBe('TND');
     expect(stored.companyTaxId).toBe('1234567A/M/000');
     expect(text(rowsOf(world, 'invoiceItem')[0].total)).toBe('12.345');
-    expect(/^INV-\d{6}-\d+$/.test(stored.invoiceNumber)).toBe(true);
+    // The number comes from the counter of the year, in order (P2-07).
+    expect(/^F-\d{4}-0001$/.test(stored.invoiceNumber)).toBe(true);
+    expect(stored.sequence).toBe(1);
   });
 });
 

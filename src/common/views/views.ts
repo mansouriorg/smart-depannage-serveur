@@ -280,6 +280,12 @@ const INVOICE_COMMON = [
   'companyAddress',
   'companyTaxId',
   'companyWebsite',
+  'companyRegistre',
+  'companyRib',
+  'legalMentions',
+  'paymentTerms',
+  'stampDuty',
+  'creditedAmount',
   'interventionDescription',
   'interventionAddress',
   'serviceType',
@@ -299,6 +305,56 @@ const INVOICE_COMMON = [
   'updatedAt',
 ];
 
+/** A credit note is read by the customer and the artisan as it is printed: what it takes back and why. Who wrote it stays with the back office. */
+const CREDIT_NOTE_COLUMNS = [
+  'id',
+  'invoiceId',
+  'interventionId',
+  'creditNoteNumber',
+  'reason',
+  'currency',
+  'amountHT',
+  'taxRate',
+  'taxAmount',
+  'amountTTC',
+  'stampDuty',
+  'issuedAt',
+  'createdAt',
+];
+
+export function creditNoteView(creditNote: any) {
+  return creditNote ? pick(creditNote, CREDIT_NOTE_COLUMNS) : creditNote;
+}
+
+/**
+ * The artisan reads what a credit note took back, not why: the reason is written for the customer (it may speak of the artisan's
+ * work), and the timeline the artisan reads leaves it out too.
+ */
+const CREDIT_NOTE_COLUMNS_ARTISAN = CREDIT_NOTE_COLUMNS.filter((column) => column !== 'reason');
+
+export function creditNoteForArtisan(creditNote: any) {
+  return creditNote ? pick(creditNote, CREDIT_NOTE_COLUMNS_ARTISAN) : creditNote;
+}
+
+/**
+ * The invoice a job shows (P2-07): a job can have had several (one cancelled or credited, then the one that replaced it). It is the
+ * latest that is not cancelled; when all were cancelled, the latest of them (the customer is told it was cancelled).
+ */
+export function currentInvoice(invoices: any[] | null | undefined): any | null {
+  if (!Array.isArray(invoices) || invoices.length === 0) return null;
+
+  const newestFirst = [...invoices].sort((a, b) => Number(b.id) - Number(a.id));
+
+  return newestFirst.find((invoice) => invoice.status !== 'CANCELLED') ?? newestFirst[0];
+}
+
+/** The invoice of a job row, whether the row was read with the list of its invoices (`invoices`) or with the one invoice it already shows (`invoice`). */
+function invoiceOfJob(row: any): any {
+  return row.invoices !== undefined ? currentInvoice(row.invoices) : row.invoice;
+}
+
+const hasInvoice = (row: any): boolean => row.invoices !== undefined || row.invoice !== undefined;
+
 /**
  * An invoice is the customer's once it is out of draft. The payments and the job on it are shown
  * as they are everywhere else; the invoice's own record of where it was e-mailed and why it was
@@ -308,20 +364,27 @@ export function invoiceForClient(invoice: any) {
   if (!invoice || invoice.status === 'DRAFT') return null;
 
   return {
-    ...pick(invoice, [...INVOICE_COMMON, 'clientName', 'clientEmail', 'clientPhone', 'clientAddress']),
+    ...pick(invoice, [...INVOICE_COMMON, 'clientName', 'clientEmail', 'clientPhone', 'clientAddress', 'clientTaxId']),
     ...(Array.isArray(invoice.items) ? { items: each(invoice.items, itemView) } : {}),
+    ...(Array.isArray(invoice.creditNotes) ? { creditNotes: each(invoice.creditNotes, creditNoteView) } : {}),
     ...(Array.isArray(invoice.payments) ? { payments: each(invoice.payments, paymentForClient) } : {}),
     ...(invoice.intervention !== undefined ? { intervention: jobIn(invoice.intervention, 'client') } : {}),
   };
 }
 
-/** The artisan sees that there is an invoice and what it says, not the customer's details on it. */
+/**
+ * The artisan sees that there is an invoice and what it says, not the customer's details on it: so no file of the invoice (an uploaded
+ * PDF carries those details, and the PDF the server draws is not the artisan's either) and no reason on the credit notes.
+ */
+const INVOICE_COLUMNS_ARTISAN = INVOICE_COMMON.filter((column) => column !== 'pdfUrl');
+
 export function invoiceForArtisan(invoice: any) {
   if (!invoice || invoice.status === 'DRAFT') return null;
 
   return {
-    ...pick(invoice, INVOICE_COMMON),
+    ...pick(invoice, INVOICE_COLUMNS_ARTISAN),
     ...(Array.isArray(invoice.items) ? { items: each(invoice.items, itemView) } : {}),
+    ...(Array.isArray(invoice.creditNotes) ? { creditNotes: each(invoice.creditNotes, creditNoteForArtisan) } : {}),
     ...(Array.isArray(invoice.payments) ? { payments: each(invoice.payments, paymentForArtisan) } : {}),
     ...(invoice.intervention !== undefined ? { intervention: jobIn(invoice.intervention, 'artisan') } : {}),
   };
@@ -655,7 +718,7 @@ export function interventionForClient(row: any) {
     ...(row.events !== undefined ? { events: eventsForParties(row.events) } : {}),
     ...(row.quotes !== undefined ? { quotes: quotesForParties(row.quotes) } : {}),
     ...(row.payments !== undefined ? { payments: each(row.payments, paymentForClient) } : {}),
-    ...(row.invoice !== undefined ? { invoice: invoiceForClient(row.invoice) } : {}),
+    ...(hasInvoice(row) ? { invoice: invoiceForClient(invoiceOfJob(row)) } : {}),
     ...(row.review !== undefined ? { review: reviewForParties(row.review) } : {}),
     ...(row.complaints !== undefined ? { complaints: each(row.complaints, complaintForClient) } : {}),
     ...(row.messages !== undefined ? { messages: messagesFor('client', row.messages, row.clientId) } : {}),
@@ -675,7 +738,7 @@ export function interventionForTracking(row: any) {
     ...(row.events !== undefined ? { events: eventsForParties(row.events) } : {}),
     ...(row.quotes !== undefined ? { quotes: quotesForParties(row.quotes) } : {}),
     ...(row.payments !== undefined ? { payments: each(row.payments, paymentForClient) } : {}),
-    ...(row.invoice !== undefined ? { invoice: invoiceForClient(row.invoice) } : {}),
+    ...(hasInvoice(row) ? { invoice: invoiceForClient(invoiceOfJob(row)) } : {}),
     ...(row.review !== undefined ? { review: reviewForParties(row.review) } : {}),
   };
 }
@@ -698,7 +761,7 @@ export function interventionForBoard(row: any) {
     ...(row.events !== undefined ? { events: [] } : {}),
     ...(row.messages !== undefined ? { messages: [] } : {}),
     ...(row.payments !== undefined ? { payments: [] } : {}),
-    ...(row.invoice !== undefined ? { invoice: null } : {}),
+    ...(hasInvoice(row) ? { invoice: null } : {}),
   };
 }
 
@@ -723,6 +786,13 @@ export function interventionForArtisan(row: any) {
   if (!row) return row;
 
   const copy: Record<string, any> = { ...row };
+
+  // A job read with the list of its invoices shows the current one.
+  if (copy.invoices !== undefined) {
+    copy.invoice = currentInvoice(copy.invoices);
+    delete copy.invoices;
+  }
+
   const allowed = new Set(interventionColumnsFor('artisan'));
   const shaped = new Set(['client', 'artisan', 'subService', 'events', 'messages', 'quotes', 'payments', 'invoice', 'review']);
 

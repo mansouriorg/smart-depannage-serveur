@@ -131,9 +131,20 @@ export const mark = (household: Household, name: string) => `SECRET<${household}
 /** The start of a mark: matches the texts that carry a counter after their name (`SECRET<A:User.email-7>`). */
 export const markStart = (household: Household, name: string) => `SECRET<${household}:${name}`;
 
+/**
+ * What an answer says, as text: the JSON of a value, the message of an error, and for a file (a PDF) the characters it is made of (its
+ * texts are written in plain ASCII between parentheses, so a mark in a drawn text is found in it).
+ */
+export function textOfAnswer(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString('latin1');
+  if (value instanceof Error) return `${value.message} ${JSON.stringify((value as any).response ?? '')}`;
+
+  return JSON.stringify(value, (_key, entry) => (typeof entry === 'bigint' ? String(entry) : Buffer.isBuffer(entry) ? entry.toString('latin1') : entry)) ?? '';
+}
+
 /** The marks of a household found anywhere in a value (also in the text of an error). */
 export function marksOf(value: unknown, household: Household): string[] {
-  const text = value instanceof Error ? `${value.message} ${JSON.stringify((value as any).response ?? '')}` : JSON.stringify(value, (_key, entry) => (typeof entry === 'bigint' ? String(entry) : entry)) ?? '';
+  const text = textOfAnswer(value);
 
   return text.match(new RegExp(`SECRET<${household}:[^>]*>`, 'g')) ?? [];
 }
@@ -343,6 +354,20 @@ export class World {
 
     ids.invoice = invoice.id;
     ids.invoiceItem = this.fill('invoiceItem', { invoiceId: invoice.id, unitPrice: 100, total: 100 }).id;
+    // A credit note on the invoice, for the checks of who reads it (P2-07). The figures of the invoice itself are left as they are:
+    // the other checks pay it, and its credited amount stays 0.
+    ids.creditNote = this.fill('creditNote', {
+      invoiceId: invoice.id,
+      interventionId: job.id,
+      numberYear: 2026,
+      sequence: h === 'A' ? 1 : 2,
+      currency: 'TND',
+      amountHT: 10,
+      taxRate: 19,
+      taxAmount: 1.9,
+      amountTTC: 11.9,
+      stampDuty: 0,
+    }).id;
     ids.payment = this.fill('payment', {
       interventionId: job.id,
       quoteId: quote.id,

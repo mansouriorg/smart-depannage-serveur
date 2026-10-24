@@ -18,6 +18,7 @@ import { ArtisanZoneRow, artisanZoneRowsFor } from '../service-zones/zone-pick';
 import { ACTIVE_APPOINTMENT_STATUSES } from '../assignment/artisan-availability';
 import { forMarketplace, withoutStaffFields } from '../interventions/intervention-redaction';
 import { chatsOf, messageForParties } from '../../common/views/views';
+import { INVOICES_OF_JOB } from '../invoices/invoice-includes';
 import { withAliases } from '../intervention-workflow/intervention-status';
 import { ARTISAN_DONE_STATUSES } from './artisan-done';
 import { isOpenJob } from '../mission-actions/open-job';
@@ -981,7 +982,7 @@ export class ArtisansService {
           createdAt: 'desc' as const,
         },
       },
-      invoice: true,
+      invoices: INVOICES_OF_JOB,
       review: true,
     };
   }

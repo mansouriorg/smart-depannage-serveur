@@ -7,11 +7,15 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 
 import { InvoicesService } from './invoices.service';
-import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { CreateInvoiceDto, GenerateInvoiceDto } from './dto/create-invoice.dto';
+import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
+import { sendPdf } from './pdf/pdf-files';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -36,10 +40,6 @@ type SendInvoiceEmailBody = {
 
 type CancelInvoiceBody = {
   reason?: string;
-};
-
-type SetInvoicePdfBody = {
-  pdfUrl: string;
 };
 
 type ExportInvoicesQuery = {
@@ -109,7 +109,7 @@ export class InvoicesController {
   @Post('generate')
   generateInvoice(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: CreateInvoiceDto & { interventionId: number },
+    @Body() dto: GenerateInvoiceDto,
   ) {
     return this.service.generateInvoice(user, dto);
   }
@@ -218,33 +218,77 @@ export class InvoicesController {
   }
 
   // ==========================================================
-  // 8. ADMIN - SET PDF URL
+  // 8. THE PDF OF AN INVOICE, AND OF A CREDIT NOTE
+  // Drawn from the document as it was issued (P2-07). The customer and the
+  // back office: the PDF carries the customer's details, which the artisan
+  // does not see. Before GET /invoices/:invoiceId.
   // ==========================================================
 
   /**
-   * Attach or update invoice PDF URL.
-   *
-   * PATCH /invoices/:invoiceId/pdf
-   *
-   * Body:
-   * {
-   *   "pdfUrl": "/uploads/invoices/invoice-12.pdf"
-   * }
+   * GET /invoices/:invoiceId/pdf
    */
   @Roles(
+    Role.CLIENT,
+    Role.ARTISAN,
     Role.ADMIN,
     Role.SUPER_ADMIN,
     Role.SUPPORT,
     Role.DISPATCHER,
     Role.ACCOUNTANT,
   )
-  @Patch(':invoiceId/pdf')
-  setPdfUrl(
+  @Get(':invoiceId/pdf')
+  async invoicePdf(
     @CurrentUser() user: AuthenticatedUser,
     @Param('invoiceId', ParseIntPipe) invoiceId: number,
-    @Body() dto: SetInvoicePdfBody,
+    @Res() res: Response,
   ) {
-    return this.service.setPdfUrl(user, invoiceId, dto);
+    sendPdf(res, await this.service.pdfOfInvoice(user, invoiceId));
+  }
+
+  /**
+   * GET /invoices/credit-notes/:creditNoteId/pdf
+   */
+  @Roles(
+    Role.CLIENT,
+    Role.ARTISAN,
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+  )
+  @Get('credit-notes/:creditNoteId/pdf')
+  async creditNotePdf(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('creditNoteId', ParseIntPipe) creditNoteId: number,
+    @Res() res: Response,
+  ) {
+    sendPdf(res, await this.service.pdfOfCreditNote(user, creditNoteId));
+  }
+
+  // ==========================================================
+  // 8b. ADMIN - CREDIT NOTE (AVOIR)
+  // ==========================================================
+
+  /**
+   * Take back all or part of an invoice that was issued.
+   *
+   * POST /invoices/:invoiceId/credit-notes
+   *
+   * Body:
+   * {
+   *   "reason": "Intervention annulée avant la fin des travaux",
+   *   "amountTTC": 59.5      // left out: all that is left on the invoice
+   * }
+   */
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @Post(':invoiceId/credit-notes')
+  createCreditNote(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('invoiceId', ParseIntPipe) invoiceId: number,
+    @Body() dto: CreateCreditNoteDto,
+  ) {
+    return this.service.createCreditNote(user, invoiceId, dto);
   }
 
   // ==========================================================

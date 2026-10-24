@@ -482,12 +482,15 @@ export class TaxRateOptionDto {
 }
 
 export class UpdateCompanySettingsDto {
+  // The name and the phone are printed on every invoice: a length that fits a line of it.
   @IsOptional()
   @IsString()
+  @MaxLength(150)
   companyName?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(40)
   companyPhone?: string;
 
   @IsOptional()
@@ -537,6 +540,49 @@ export class UpdateCompanySettingsDto {
   @IsString()
   @MaxLength(40)
   matriculeFiscal?: string;
+
+  /** Address of the company, printed at the top of the invoices (P2-07). An empty text clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  companyAddress?: string;
+
+  /** Trade register number (registre de commerce) printed on the invoices. An empty text clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  registreCommerce?: string;
+
+  /** The legal lines printed at the foot of every page of an invoice and of a credit note, as the accountant wrote them. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  invoiceLegalMentions?: string;
+
+  /** The terms of payment printed on an invoice that is not paid yet. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  paymentTerms?: string;
+
+  /** The stamp duty (timbre fiscal) added to the total to pay on an invoice; 0 when there is none. */
+  @IsOptional()
+  @IsMoney()
+  stampDuty?: number;
+
+  /**
+   * The accountant has confirmed the mentions, the VAT rates and the stamp duty as they are in this request (and the settings).
+   * Changing any of what an invoice prints, without confirming again, takes the confirmation away.
+   */
+  @IsOptional()
+  @IsBoolean()
+  invoiceRulesConfirmed?: boolean;
+
+  /** Who confirmed: required with `invoiceRulesConfirmed: true`. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  invoiceRulesConfirmedBy?: string;
 
   @IsOptional()
   @IsObject()

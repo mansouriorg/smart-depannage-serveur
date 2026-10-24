@@ -44,6 +44,8 @@ import { totalsFromItems } from '../../common/money/document-totals';
 import { compareMoney, formatMoney, money, subtractMoney, sumMoney, sumMoneyOf } from '../../common/money/money';
 import { paymentFigures, REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS, settleComplaintRefund } from '../payments/financials-ops';
 import { lockJob } from '../assignment/artisan-lock';
+import { INVOICES_OF_JOB } from '../invoices/invoice-includes';
+import { STAMP_DUTY_MAX, printedSettingsChanged } from '../invoices/invoice-legal';
 import { startOfBusinessDay, startOfBusinessMonth } from '../../common/locale/business-time';
 import { DEFAULT_LOCALE, DEFAULT_TAX_RATES, TaxRateOption, applyLocale, currencyCode, getLocale, parseTaxRates, resolveLocale } from '../../common/locale/locale';
 import { effectiveTaxRates, localeOfRow } from '../../common/locale/locale.service';
@@ -224,7 +226,7 @@ export class AdminService {
         createdAt: 'desc' as const,
       },
     },
-    invoice: true,
+    invoices: INVOICES_OF_JOB,
     complaints: true,
     messages: {
       include: {
@@ -2160,6 +2162,68 @@ export class AdminService {
       throw new BadRequestException(error instanceof Error ? error.message : 'Paramètres invalides.');
     }
 
+    // What the invoices print (P2-07): an empty text clears a field; the stamp duty is an amount that cannot be a typing error.
+    const printedText = (value: unknown): string | null | undefined => (value === undefined ? undefined : value === null || String(value).trim() === '' ? null : String(value).trim());
+    const companyAddress = printedText(dto.companyAddress);
+    const registreCommerce = printedText(dto.registreCommerce);
+    const invoiceLegalMentions = printedText(dto.invoiceLegalMentions);
+    const paymentTerms = printedText(dto.paymentTerms);
+
+    // The stamp duty cleared with null means none: 0 (the column cannot be empty).
+    const stampDuty = dto.stampDuty === null ? 0 : dto.stampDuty;
+
+    if (stampDuty !== undefined && compareMoney(money(stampDuty), STAMP_DUTY_MAX) > 0) {
+      throw new BadRequestException(`Le timbre fiscal ne peut pas dépasser ${formatMoney(STAMP_DUTY_MAX, { currency: false })} : vérifiez le montant.`);
+    }
+
+    // The accountant's confirmation covers the values it was given for. A request that confirms says who; a request that changes
+    // what an invoice prints without confirming again takes the confirmation away (the new values were not seen by the accountant).
+    const confirming = dto.invoiceRulesConfirmed === true;
+    const confirmer = typeof dto.invoiceRulesConfirmedBy === 'string' ? dto.invoiceRulesConfirmedBy.trim() : '';
+
+    if (confirming && confirmer === '') {
+      throw new BadRequestException('Indiquez qui a confirmé les mentions, les taux de TVA et le timbre fiscal (invoiceRulesConfirmedBy).');
+    }
+
+    // There is nothing to confirm on empty settings: an invoice must at least name the seller, say where it is and carry its tax number.
+    if (confirming) {
+      const after = (incoming: unknown, current: unknown): string => String((incoming === undefined ? current : incoming) ?? '').trim();
+      const missing = [
+        after(dto.companyName, settings.companyName) === '' ? 'le nom de l’entreprise' : null,
+        after(companyAddress, settings.companyAddress) === '' ? 'l’adresse' : null,
+        after(matriculeFiscal, settings.matriculeFiscal) === '' ? 'le matricule fiscal' : null,
+      ].filter(Boolean);
+
+      if (missing.length > 0) {
+        throw new BadRequestException(`Les mentions ne peuvent pas être confirmées : renseignez d’abord ${missing.join(', ')}.`);
+      }
+    }
+
+    if (!confirming && dto.invoiceRulesConfirmedBy !== undefined) {
+      throw new BadRequestException('invoiceRulesConfirmedBy ne s’envoie qu’avec invoiceRulesConfirmed: true.');
+    }
+
+    const printedChanged = printedSettingsChanged(settings, {
+      companyName: dto.companyName,
+      companyPhone: dto.companyPhone,
+      companyEmail: dto.companyEmail,
+      companyAddress,
+      matriculeFiscal,
+      registreCommerce,
+      rib,
+      invoiceLegalMentions,
+      paymentTerms,
+      stampDuty,
+      taxRates,
+      defaultTaxRate: dto.defaultTaxRate,
+    });
+
+    const confirmation = confirming
+      ? { invoiceRulesConfirmedAt: new Date(), invoiceRulesConfirmedBy: confirmer }
+      : dto.invoiceRulesConfirmed === false || (printedChanged && settings.invoiceRulesConfirmedAt)
+        ? { invoiceRulesConfirmedAt: null, invoiceRulesConfirmedBy: null }
+        : {};
+
     const updated = await this.prisma.companySettings.update({
       where: {
         id: settings.id,
@@ -2176,6 +2240,12 @@ export class AdminService {
         defaultEmergencyFee: dto.defaultEmergencyFee,
         rib,
         matriculeFiscal,
+        companyAddress,
+        registreCommerce,
+        invoiceLegalMentions,
+        paymentTerms,
+        stampDuty,
+        ...confirmation,
         openingHours: dto.openingHours as any,
         paymentMethods: dto.paymentMethods,
         termsAndConditions: dto.termsAndConditions,

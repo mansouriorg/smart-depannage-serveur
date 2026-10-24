@@ -666,6 +666,16 @@ export class FilesService {
 
     await this.checkInterventionAccess(user, invoice.interventionId);
 
+    // A file of an invoice carries the customer's details: the customer and the back office have it, the artisan of the job does not
+    // (P2-07, as for the PDF the server draws), and a draft is not the customer's yet.
+    if (user.role === Role.ARTISAN) {
+      throw new ForbiddenException('Accès refusé à ce fichier.');
+    }
+
+    if (user.role === Role.CLIENT && invoice.status === 'DRAFT') {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
     return invoice;
   }
 

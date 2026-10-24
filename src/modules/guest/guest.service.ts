@@ -38,6 +38,7 @@ import { describeError } from '../notifications/delivery/delivery-error';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { StaffAlertsService } from '../interventions/staff-alerts.service';
 import {
+  currentInvoice,
   interventionForTracking,
   paymentForClient,
   quoteForParties,
@@ -56,6 +57,9 @@ import { lockJob } from '../assignment/artisan-lock';
 import { acceptQuote as acceptQuoteRule, askAndTell, rejectQuote as rejectQuoteRule, requestChangeAndTell } from '../quotes/quote-decisions';
 import { revisionOf } from '../quotes/quote-revisions';
 import { PAID_WORDS, amountLeft, claimOpenPayment, refreshOpenPayment } from '../payments/open-payment';
+import { amountToPay } from '../payments/financials-ops';
+import { INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
+import { creditNotePdfFile, invoicePdfFile, type PdfFile } from '../invoices/pdf/pdf-files';
 import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
 import { PAYMENT_WORDS, ensureJobTakesPayment, ensureMethodOffered, paymentOptionsOf } from '../payments/payment-options';
 import { money } from '../../common/money/money';
@@ -217,7 +221,7 @@ export class GuestService {
           },
         },
         // The lines of the invoice come with it: the page prints the invoice from them (P2-06).
-        invoice: { include: { items: { orderBy: { id: 'asc' } } } },
+        invoices: INVOICES_OF_JOB_WITH_LINES,
         review: true,
       },
     });
@@ -517,6 +521,41 @@ export class GuestService {
     return interventionForTracking(
       await this.findInterventionByPublicToken(interventionId, rawTrackingToken),
     );
+  }
+
+  // ==========================================================
+  // 4a. THE INVOICE AND ITS CREDIT NOTES AS PDF FILES (P2-07)
+  // The link is the proof of who is asking, as everywhere on this page: the customer's own invoice, drawn from the document as
+  // it was issued. A draft is the back office's work in progress; a link for another job finds nothing.
+  // ==========================================================
+
+  /** The invoice the job shows (the latest that is not cancelled), out of draft. */
+  private async invoiceOfLink(interventionId: number, rawTrackingToken: string) {
+    const intervention = await this.findInterventionByPublicToken(interventionId, String(rawTrackingToken ?? ''));
+    const invoice = currentInvoice(intervention.invoices);
+
+    if (!invoice || invoice.status === 'DRAFT') {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    return invoice;
+  }
+
+  async invoicePdf(interventionId: number, rawTrackingToken: string): Promise<PdfFile> {
+    return invoicePdfFile(await this.invoiceOfLink(interventionId, rawTrackingToken));
+  }
+
+  async creditNotePdf(interventionId: number, rawTrackingToken: string, creditNoteId: number): Promise<PdfFile> {
+    const intervention = await this.findInterventionByPublicToken(interventionId, String(rawTrackingToken ?? ''));
+
+    // Any invoice of the job: a credit note that closed an invoice belongs to one that was cancelled since.
+    for (const invoice of intervention.invoices as any[]) {
+      const note = (invoice.creditNotes ?? []).find((entry: any) => Number(entry.id) === creditNoteId);
+
+      if (note && invoice.status !== 'DRAFT') return creditNotePdfFile(note, invoice);
+    }
+
+    throw new NotFoundException('Avoir introuvable.');
   }
 
   // ==========================================================
@@ -909,7 +948,7 @@ export class GuestService {
 
       if (!document) throw new BadRequestException(PAYMENT_WORDS.noQuote);
 
-      const amount = amountLeft(position, money(document.amountTTC), document.currency);
+      const amount = amountLeft(position, amountToPay(document), document.currency);
 
       if (amount === null) throw new BadRequestException(PAID_WORDS);
 

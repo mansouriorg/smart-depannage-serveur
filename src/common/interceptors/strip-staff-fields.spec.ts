@@ -145,7 +145,7 @@ describe('stripStaffFields', () => {
     });
 
     it('the copies of the customer\'s details on an invoice do not go to the artisan', () => {
-      const invoice = { id: 1, clientName: 'S', clientEmail: 'c@x.tn', clientPhone: '+216', clientAddress: 'a', amountTTC: 5 };
+      const invoice = { id: 1, clientName: 'S', clientEmail: 'c@x.tn', clientPhone: '+216', clientAddress: 'a', clientTaxId: '7654321/B/A/000', amountTTC: 5 };
 
       expect(stripStaffFields({ invoice }, { userId: 20, role: 'ARTISAN' })).toEqual({ invoice: { id: 1, clientName: 'S', amountTTC: 5 } });
       expect(stripStaffFields({ invoice }, { userId: 10, role: 'CLIENT' })).toEqual({ invoice });

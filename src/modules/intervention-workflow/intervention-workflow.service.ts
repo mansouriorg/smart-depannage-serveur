@@ -91,7 +91,7 @@ export class InterventionWorkflowService {
             createdAt: 'desc',
           },
         },
-        invoice: true,
+        invoices: true,
         review: true,
       },
     });

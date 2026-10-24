@@ -11,7 +11,18 @@ const paid = (w: World) => w.set('payment', { status: 'PAID', confirmedAt: new D
 const hiddenOnInvoice = (h: Household, person: { role: string }) => [
   mark(h, 'Invoice.emailedTo'),
   mark(h, 'Invoice.cancelReason'),
-  ...(person.role === 'ARTISAN' ? [mark(h, 'Invoice.clientEmail'), mark(h, 'Invoice.clientPhone'), mark(h, 'Invoice.clientAddress')] : []),
+  // The artisan is not the customer: not their details on the invoice (nor their tax number), no file of the invoice, and a credit note without
+  // its reason (written for the customer).
+  ...(person.role === 'ARTISAN'
+    ? [
+        mark(h, 'Invoice.clientEmail'),
+        mark(h, 'Invoice.clientPhone'),
+        mark(h, 'Invoice.clientAddress'),
+        mark(h, 'Invoice.clientTaxId'),
+        mark(h, 'Invoice.pdfUrl'),
+        mark(h, 'CreditNote.reason'),
+      ]
+    : []),
 ];
 
 export const invoiceScenarios: Scenario[] = [
@@ -50,6 +61,37 @@ export const invoiceScenarios: Scenario[] = [
     reads: true,
     request: (h, w) => ({ params: { invoiceId: invoice(h, w) } }),
     hidden: (h, person) => (person.role === 'CLIENT' || person.role === 'ARTISAN' ? hiddenOnInvoice(h, person) : []),
+  },
+  {
+    route: 'GET /invoices/:/pdf',
+    note: 'the PDF carries the customer\'s details: the customer and the back office have it, the artisan of the job does not (P2-07)',
+    allowed: ['client', 'backOffice'],
+    reads: true,
+    request: (h, w) => ({ params: { invoiceId: invoice(h, w) } }),
+    hidden: (h) => [mark(h, 'Invoice.emailedTo'), mark(h, 'Invoice.cancelReason')],
+  },
+  {
+    route: 'GET /invoices/:/pdf',
+    note: 'a draft invoice has no PDF for the customer',
+    allowed: ['backOffice'],
+    reads: true,
+    prepare: (w) => w.set('invoice', { status: 'DRAFT' }),
+    request: (h, w) => ({ params: { invoiceId: invoice(h, w) } }),
+  },
+  {
+    route: 'GET /invoices/credit-notes/:/pdf',
+    note: 'the PDF of a credit note: the customer of the invoice and the back office',
+    allowed: ['client', 'backOffice'],
+    reads: true,
+    request: (h, w) => ({ params: { creditNoteId: w.ids[h].creditNote } }),
+  },
+  {
+    route: 'GET /invoices/credit-notes/:/pdf',
+    note: 'the credit note of a draft invoice is not the customer\'s either',
+    allowed: ['backOffice'],
+    reads: true,
+    prepare: (w) => w.set('invoice', { status: 'DRAFT' }),
+    request: (h, w) => ({ params: { creditNoteId: w.ids[h].creditNote } }),
   },
   {
     route: 'GET /invoices/:',

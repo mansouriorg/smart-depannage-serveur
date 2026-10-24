@@ -5,6 +5,7 @@
 import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, sumMoney } from '../../common/money/money';
 import { canonicalStatus } from '../intervention-workflow/intervention-status';
+import { amountToPay } from '../payments/financials-ops';
 import { describeAmount, paymentsInTheWayOfCash } from '../payments/open-payment';
 import { COLLECT_CASH_IN, COLLECT_CASH_WORDS, CashPositionView, foreignCurrencyWords, openPaymentWords } from './cash-ledger.types';
 import { activeCollections, jobIsInPaidPayout, paymentPosition } from './cash-ledger-ops';
@@ -43,7 +44,7 @@ export async function cashPositionOf(db: Db, job: { id: number; status: unknown 
     interventionId: job.id,
     currency,
     document: position.invoice ? 'INVOICE' : position.quote ? 'QUOTE' : null,
-    total: document ? money(document.amountTTC) : null,
+    total: document ? amountToPay(document) : null,
     received: position.received,
     remaining: position.remaining,
     collected,
