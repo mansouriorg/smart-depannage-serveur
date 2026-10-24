@@ -1062,6 +1062,21 @@ describe('a payout waits for the work and for the whole price (P2-03)', () => {
     expect(await heldReasons(d, intervention.id)).toBe(null);
   });
 
+  it('a draft invoice is not what the job asks for: the quote is, as for the payment position', async () => {
+    const d = desk();
+    const { intervention } = d.job(100, { share: 80 });
+
+    quoteFor(d, intervention.id, 100);
+    paid(d, intervention.id, 100);
+
+    const invoice = d.world.memory.plant('invoice', { interventionId: intervention.id, status: 'DRAFT', amountHT: 150, taxAmount: 0, amountTTC: 150, currency: 'TND' });
+
+    expect(await heldReasons(d, intervention.id)).toBe(null);
+
+    rowsOf(d.world, 'invoice').find((row) => row.id === invoice.id)!.status = 'ISSUED';
+    expect(await heldReasons(d, intervention.id)).toEqual(['NOT_PAID']);
+  });
+
   it('the latest accepted quote is what it asks for when there is no invoice', async () => {
     const d = desk();
     const { intervention } = d.job(100, { share: 80 });

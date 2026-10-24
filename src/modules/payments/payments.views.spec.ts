@@ -32,6 +32,8 @@ function makeWorld(payment: Record<string, unknown> = {}) {
       update: async ({ data }: any) => ({ ...nestedJob(), ...data }),
     },
     invoice: { findUnique: async () => ({ id: 1, interventionId: 1, amountTTC: 120 }) },
+    // The ways of paying the company offers, and its account for a transfer (P2-06).
+    companySettings: { findFirst: async () => ({ paymentMethods: ['ONLINE', 'CASH', 'BANK_TRANSFER'], rib: '08006012345678901234' }) },
     // A refund works the financials out and decides the complaints that waited for it (P2-03); there are none here.
     interventionFinancials: { findUnique: async () => null, upsert: async ({ create }: any) => create },
     complaint: { findMany: async () => [], updateMany: async () => ({ count: 0 }) },

@@ -56,11 +56,18 @@ export function paymentFigures(payments: Row[]): PaymentFigures {
   return { received, refunded, kept: subtractMoney(received, refunded) };
 }
 
-/** What the job asks for: its invoice when it has one that was not cancelled, else its latest accepted quote. */
+/**
+ * An invoice that asks something of the customer: one that was not cancelled, and is not a draft (a draft is not the customer's
+ * yet: the tracking page never shows it). One rule for the payment position, the financials and the payout holds, so that they
+ * all price a job with the same document.
+ */
+export const isLiveInvoice = (invoice: Row | null | undefined): invoice is Row => Boolean(invoice) && String(invoice!.status) !== 'CANCELLED' && String(invoice!.status) !== 'DRAFT';
+
+/** What the job asks for: its invoice when it has a live one (see `isLiveInvoice`), else its latest accepted quote. */
 export async function documentOfJob(db: Db, interventionId: number): Promise<Row | null> {
   const invoice: Row | null = await db.invoice.findUnique({ where: { interventionId } });
 
-  if (invoice && String(invoice.status) !== 'CANCELLED') return invoice;
+  if (isLiveInvoice(invoice)) return invoice;
 
   return db.quote.findFirst({ where: { interventionId, status: 'ACCEPTED' }, orderBy: { createdAt: 'desc' } });
 }

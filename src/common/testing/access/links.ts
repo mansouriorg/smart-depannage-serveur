@@ -53,6 +53,17 @@ export const linkScenarios: LinkScenario[] = [
   { route: 'POST /guest/interventions/:/quotes/:/request-modification', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
   { route: 'POST /guest/interventions/:/quotes/:/question', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
   {
+    route: 'GET /guest/interventions/:/payment-options',
+    note: 'how to pay a quote that was accepted: only the holder of the link of this job reads it (another job\'s link, a made-up link and no link are refused)',
+    prepare: (w) => {
+      w.set('intervention', { status: 'PAYMENT_PENDING' });
+      w.set('quote', { status: 'ACCEPTED' });
+    },
+    reads: true,
+    hidden: hiddenFromVisitor,
+    request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token) }),
+  },
+  {
     route: 'POST /guest/interventions/:/payments',
     prepare: (w) => {
       w.set('intervention', { status: 'PAYMENT_PENDING' });

@@ -86,15 +86,31 @@ export async function refreshOpenPayment(db: Db, open: Row, details: { reference
  * Call it inside the transaction, after taking the lock of the job.
  */
 export async function leftToPay(db: Db, interventionId: number, asked: number, currency: string | null | undefined): Promise<number> {
-  if (currency && String(currency) !== currencyCode()) return asked;
+  if (isForeign(currency)) return asked;
 
-  const { remaining } = await paymentPosition(db, interventionId);
+  const left = amountLeft(await paymentPosition(db, interventionId), asked, currency);
 
-  if (remaining === null) return asked;
+  if (left === null) throw new BadRequestException(PAID_WORDS);
 
-  if (compareMoney(remaining, 0) <= 0) throw new BadRequestException('Cette mission est déjà payée.');
+  return left;
+}
 
-  return compareMoney(remaining, asked) < 0 ? remaining : asked;
+/** What a customer is told when the job has nothing left to pay. */
+export const PAID_WORDS = 'Cette mission est déjà payée.';
+
+const isForeign = (currency: string | null | undefined): boolean => Boolean(currency) && String(currency) !== currencyCode();
+
+/**
+ * The rule of `leftToPay` on a position that was already read (so that a screen can tell what a request would ask without reading
+ * the payments twice): what is left, never more than `asked`; the whole of `asked` when the document is in another currency or
+ * there is nothing to set the payments against; null when nothing is left.
+ */
+export function amountLeft(position: { remaining: number | null }, asked: number, currency: string | null | undefined): number | null {
+  if (isForeign(currency) || position.remaining === null) return asked;
+
+  if (compareMoney(position.remaining, 0) <= 0) return null;
+
+  return compareMoney(position.remaining, asked) < 0 ? position.remaining : asked;
 }
 
 /** The amount of a payment in words, with no word about the way it was paid (an artisan does not read that). */
@@ -118,25 +134,49 @@ export function describeOpenPayment(payment: Row): string {
   return `${describeAmount(payment)} ${METHOD_WORDS[String(payment.method)] ?? String(payment.method)}`;
 }
 
+/** What a customer is told when another payment is already waiting on the job (the refusal of a new request, and the reason the payment options give beforehand). */
+export const otherPaymentOpenWords = (payment: Row): string =>
+  `Un paiement de ${describeOpenPayment(payment)} est déjà en attente pour cette mission. Faites-le annuler par l’administration ou attendez sa confirmation.`;
+
+/**
+ * Whether an open payment is the one a request asks for: the same method and the same amount, or, for a transfer asked for again
+ * when the amount is worked out (`derived`), the transfer the customer asked for earlier when the document has grown since (see
+ * `claimOpenPayment`). It is the customer's own (asked for through the link or by the customer, not entered by the back office),
+ * and it is not more than what is left now: the team could not confirm more than that. The payment options use the same rule, so
+ * that a way the page offers is one the server answers with the open payment instead of refusing it.
+ */
+export function isSameRequest(payment: Row, request: { method: string; amount: number; derived?: boolean; clientId?: number | null }): boolean {
+  if (String(payment.method) !== request.method) return false;
+  if (compareMoney(money(payment.amount), request.amount) === 0) return true;
+  if (request.derived !== true || request.method !== 'BANK_TRANSFER') return false;
+
+  const maker = payment.createdById;
+  const theirs = maker === null || maker === undefined || (request.clientId !== null && request.clientId !== undefined && Number(maker) === Number(request.clientId));
+
+  return theirs && compareMoney(money(payment.amount), request.amount) < 0;
+}
+
 /**
  * Decides what a new payment request does to the open payments of the job.
  *
  *  - The same request (same method, same amount) is already open: returns it. The caller answers with it and writes nothing.
+ *    A transfer whose amount was worked out and not typed (`derived`) is also the same request when the customer's own transfer is
+ *    smaller than what is asked now: the reference of a transfer is sent after it was made, and an invoice issued meanwhile must not
+ *    lock the customer out of sending it. (Cash that waits is not: it may be a declaration of the technician for another part of
+ *    the price. A transfer the back office entered, or one larger than what is left, is not either: see `isSameRequest`.)
  *  - Another open payment that nobody can pay (an online request with no provider) is cancelled.
  *  - Any other open payment (a transfer waiting for confirmation, cash waiting for confirmation, an online payment a provider
  *    took) refuses the request (409).
  *
  * Returns the open payment to reuse, or null when the caller may create the payment.
  */
-export async function claimOpenPayment(db: Db, request: { interventionId: number; method: string; amount: number }): Promise<Row | null> {
+export async function claimOpenPayment(db: Db, request: { interventionId: number; method: string; amount: number; derived?: boolean; clientId?: number | null }): Promise<Row | null> {
   const open = await openPaymentsOf(db, request.interventionId);
-  const same = open.find((payment) => String(payment.method) === request.method && compareMoney(money(payment.amount), request.amount) === 0);
+  const same = open.find((payment) => isSameRequest(payment, request));
   const others = open.filter((payment) => payment !== same);
   const blocking = others.filter((payment) => !isPlaceholder(payment));
 
-  if (blocking.length > 0) {
-    throw new ConflictException(`Un paiement de ${describeOpenPayment(blocking[0])} est déjà en attente pour cette mission. Faites-le annuler par l’administration ou attendez sa confirmation.`);
-  }
+  if (blocking.length > 0) throw new ConflictException(otherPaymentOpenWords(blocking[0]));
 
   if (same) return same;
 

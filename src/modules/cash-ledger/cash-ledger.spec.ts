@@ -162,6 +162,17 @@ describe('an artisan says they took cash, and owes the platform its commission (
     expect(rowsOf(world, 'payment')[0].quoteId).toBe(quote?.id);
   });
 
+  it('a draft invoice is not what is to be paid either: the accepted quote is', async () => {
+    const { world, artisan, job, quote } = desk();
+
+    world.memory.plant('invoice', { interventionId: job.id, status: 'DRAFT', amountHT: 500, taxAmount: 0, amountTTC: 500 });
+
+    expect((await refusal(() => tap(world.svc.cashLedger, artisan.id, ARTISAN, job.id, { amount: 120 })))?.status).toBe(400);
+    expect((await tap(world.svc.cashLedger, artisan.id, ARTISAN, job.id, { amount: 119 })).entry.cashAmount).toBe(119);
+    expect(rowsOf(world, 'payment')[0].invoiceId ?? null).toBe(null);
+    expect(rowsOf(world, 'payment')[0].quoteId).toBe(quote?.id);
+  });
+
   it('uses the cash payment the customer asked for, once, instead of making a second one', async () => {
     const { world, client, artisan, job } = desk();
 

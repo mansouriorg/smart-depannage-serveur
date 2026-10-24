@@ -10,7 +10,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { CancelPaymentDto, ConfirmPaymentDto, FailPaymentDto, RefundPaymentDto } from './dto/payment.dto';
 import { claimOpenPayment, leftToPay, refreshOpenPayment } from './open-payment';
-import { paymentFigures, settleComplaintRefund, syncFinancials } from './financials-ops';
+import { ensureJobTakesPayment, ensureMethodOffered } from './payment-options';
+import { isLiveInvoice, paymentFigures, settleComplaintRefund, syncFinancials } from './financials-ops';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -316,6 +317,13 @@ export class PaymentsService {
     }
   }
 
+  /** The invoice of the job when it asks something of the customer (not cancelled, not a draft). */
+  private async liveInvoiceOf(interventionId: number) {
+    const invoice = await this.prisma.invoice.findUnique({ where: { interventionId } });
+
+    return isLiveInvoice(invoice) ? invoice : undefined;
+  }
+
   private async validateLinkedInvoice(
     interventionId: number,
     invoiceId?: number,
@@ -358,12 +366,24 @@ export class PaymentsService {
       interventionId,
     );
 
+    // Only a way of paying the company offers: the settings are the company's, whichever way the customer comes in (P2-06).
+    await ensureMethodOffered(this.prisma, dto.method);
+    ensureJobTakesPayment(intervention.status);
+
     const acceptedQuote = intervention.quotes[0];
 
     const invoiceId = this.getOptionalNumber(dto, 'invoiceId');
-    const invoice = await this.validateLinkedInvoice(interventionId, invoiceId);
-
     const amountFromDto = this.getOptionalNumber(dto, 'amount');
+    const named = await this.validateLinkedInvoice(interventionId, invoiceId);
+
+    // A customer pays an invoice that is out: a draft is not theirs yet and a cancelled one asks nothing.
+    if (named && !isLiveInvoice(named)) {
+      throw new NotFoundException('Facture introuvable.');
+    }
+
+    // Nothing named and nothing typed: the invoice that is out is what is asked, as for a visitor of the tracking page (the two
+    // ways in ask the same amount, and a payment is linked to the invoice it pays).
+    const invoice = named ?? (amountFromDto === undefined ? await this.liveInvoiceOf(interventionId) : undefined);
     const asked = money(amountFromDto ?? invoice?.amountTTC ?? acceptedQuote?.amountTTC ?? 0);
     // The currency is the one of the document that is paid, else the one of the company: never one typed by the payer.
     const currency = invoice?.currency ?? acceptedQuote?.currency ?? currencyCode();
@@ -385,7 +405,7 @@ export class PaymentsService {
       const amount = amountFromDto !== undefined ? asked : await leftToPay(tx, interventionId, asked, currency);
 
       // One open payment per job: the same request again is answered with the open payment, another one is refused.
-      const open = await claimOpenPayment(tx, { interventionId, method: dto.method, amount });
+      const open = await claimOpenPayment(tx, { interventionId, method: dto.method, amount, derived: amountFromDto === undefined, clientId });
 
       if (open) {
         // The reference of the transfer, sent after it was made, is kept on the open payment.
@@ -408,7 +428,7 @@ export class PaymentsService {
         data: {
           interventionId,
           quoteId: acceptedQuote?.id,
-          invoiceId,
+          invoiceId: invoice?.id,
           method: dto.method,
           provider: providerFromDto || this.providerFromMethod(dto.method),
           status: this.initialStatusFromMethod(dto.method),

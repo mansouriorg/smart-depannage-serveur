@@ -43,6 +43,8 @@ function makeWorld(job: Record<string, unknown> = {}) {
       // No payment is open on this job (one open payment per job, P2-03).
       findMany: async () => [],
     },
+    // The ways of paying the company offers, and its account for a transfer (P2-06).
+    companySettings: { findFirst: async () => ({ paymentMethods: ['ONLINE', 'CASH', 'BANK_TRANSFER'], rib: '08006012345678901234' }) },
     // What is left to pay is worked out from the document and the payments (P2-03): no invoice, no cash declared.
     invoice: { findUnique: async () => null },
     cashLedgerEntry: { findMany: async () => [] },

@@ -163,6 +163,21 @@ export class GuestController {
   }
 
   // ==========================================================
+  // 6c. HOW TO PAY (P2-06)
+  // GET /guest/interventions/:id/payment-options?token=RAW_TOKEN
+  // The ways the company offers, what a request would ask for, the account of a transfer, the payment that waits.
+  // ==========================================================
+
+  @Header('Cache-Control', 'no-store')
+  @Get('interventions/:id/payment-options')
+  getPaymentOptions(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('token') token: string,
+  ) {
+    return this.guestService.getPaymentOptions(id, token);
+  }
+
+  // ==========================================================
   // 7. GUEST PAYMENT
   // POST /guest/interventions/:id/payments?token=RAW_TOKEN
   // ==========================================================

@@ -55,7 +55,9 @@ import { transitionStatus } from '../intervention-workflow/transition-status';
 import { lockJob } from '../assignment/artisan-lock';
 import { acceptQuote as acceptQuoteRule, askAndTell, rejectQuote as rejectQuoteRule, requestChangeAndTell } from '../quotes/quote-decisions';
 import { revisionOf } from '../quotes/quote-revisions';
-import { claimOpenPayment, leftToPay, refreshOpenPayment } from '../payments/open-payment';
+import { PAID_WORDS, amountLeft, claimOpenPayment, refreshOpenPayment } from '../payments/open-payment';
+import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
+import { PAYMENT_WORDS, ensureJobTakesPayment, ensureMethodOffered, paymentOptionsOf } from '../payments/payment-options';
 import { money } from '../../common/money/money';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
@@ -71,7 +73,6 @@ import {
   InterventionEventType,
   PaymentMethod,
   PaymentStatus,
-  QuoteStatus,
   ReviewModerationStatus,
   Role,
   Status,
@@ -215,7 +216,8 @@ export class GuestService {
             createdAt: 'desc',
           },
         },
-        invoice: true,
+        // The lines of the invoice come with it: the page prints the invoice from them (P2-06).
+        invoice: { include: { items: { orderBy: { id: 'asc' } } } },
         review: true,
       },
     });
@@ -865,6 +867,16 @@ export class GuestService {
   // No Stripe yet. ONLINE is only a placeholder request.
   // ==========================================================
 
+  /**
+   * How the link's holder may pay (P2-06): the ways the company offers, what a request would ask for, the account to pay a
+   * transfer into, the payment that waits. The job only has to belong to the link; nothing here is written.
+   */
+  async getPaymentOptions(interventionId: number, rawTrackingToken: string) {
+    const job = await this.findForLink(interventionId, rawTrackingToken);
+
+    return paymentOptionsOf(this.prisma, job);
+  }
+
   async createGuestPayment(
     interventionId: number,
     rawTrackingToken: string,
@@ -875,21 +887,9 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    const acceptedQuote = await this.prisma.quote.findFirst({
-      where: {
-        interventionId: intervention.id,
-        status: QuoteStatus.ACCEPTED,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-
-    if (!acceptedQuote) {
-      throw new BadRequestException(
-        'Aucun devis accepté trouvé pour cette intervention.',
-      );
-    }
+    // Only a way of paying the company offers (the page shows the same list: GET payment-options).
+    await ensureMethodOffered(this.prisma, dto.method);
+    ensureJobTakesPayment(intervention.status);
 
     // An online request (card or not) waits for a provider; any other waits for the back office. The same rule as for a customer
     // who is signed in: a card request that waited for the back office could never be replaced by another way of paying.
@@ -902,11 +902,20 @@ export class GuestService {
     await this.prisma.$transaction(async (tx) => {
       await lockJob(tx, intervention.id);
 
-      // A visitor cannot type an amount: what is left to pay (a deposit that was paid is not asked for twice).
-      const amount = await leftToPay(tx, intervention.id, money(acceptedQuote.amountTTC), acceptedQuote.currency);
+      // A visitor cannot type an amount: what is left to pay of what the invoice asks (the accepted quote while there is no invoice;
+      // the same rule as for a customer who is signed in and names nothing); a deposit that was paid is not asked for twice.
+      const position = await paymentPosition(tx, intervention.id);
+      const document = position.document;
 
-      // One open payment per job: the same request again (a second tap) is answered with the open payment, another one is refused.
-      const open = await claimOpenPayment(tx, { interventionId: intervention.id, method: dto.method, amount });
+      if (!document) throw new BadRequestException(PAYMENT_WORDS.noQuote);
+
+      const amount = amountLeft(position, money(document.amountTTC), document.currency);
+
+      if (amount === null) throw new BadRequestException(PAID_WORDS);
+
+      // One open payment per job: the same way again (a second tap, the reference sent after the transfer) is answered with the
+      // open payment, another one is refused.
+      const open = await claimOpenPayment(tx, { interventionId: intervention.id, method: dto.method, amount, derived: true, clientId: intervention.clientId });
 
       if (open) {
         // The reference of the transfer, sent after it was made, is kept on the open payment.
@@ -927,11 +936,12 @@ export class GuestService {
         payment = await tx.payment.create({
           data: {
             interventionId: intervention.id,
-            quoteId: acceptedQuote.id,
+            quoteId: position.quote?.id,
+            invoiceId: position.invoice?.id,
             method: dto.method,
             status,
             amount,
-            currency: acceptedQuote.currency,
+            currency: document.currency,
             reference: dto.reference,
             clientNote: dto.clientNote,
           },

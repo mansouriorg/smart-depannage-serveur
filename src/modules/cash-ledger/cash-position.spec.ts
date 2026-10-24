@@ -160,6 +160,20 @@ describe('what is left to take on a job, for its artisan (P2-05)', () => {
     expect([without.document, without.total, without.remaining]).toEqual(['QUOTE', 119, 119]);
   });
 
+  it('a draft invoice is ignored like a cancelled one: the customer does not see it, the quote stands', async () => {
+    const { world, artisan, job } = desk();
+
+    world.memory.plant('invoice', { interventionId: job.id, status: 'DRAFT', amountHT: 130, taxAmount: 0, amountTTC: 130 });
+
+    const answer = await positionOf(world, artisan.id, job.id);
+
+    expect([answer.document, answer.total, answer.remaining]).toEqual(['QUOTE', 119, 119]);
+
+    rowsOf(world, 'invoice')[0].status = 'ISSUED';
+
+    expect((await positionOf(world, artisan.id, job.id)).document).toBe('INVOICE');
+  });
+
   it('takes the latest accepted quote when the job has two', async () => {
     const { world, artisan, job } = desk();
 

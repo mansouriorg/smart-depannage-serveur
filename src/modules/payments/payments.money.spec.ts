@@ -35,6 +35,9 @@ function desk(options: { quote?: number | null; invoice?: number | null; status?
   });
   const amount = options.quote === undefined ? 120 : options.quote;
   const quote = amount === null ? null : world.memory.plant('quote', { interventionId: job.id, createdById: artisan.id, status: 'ACCEPTED', amountHT: amount, taxAmount: 0, amountTTC: amount, currency: 'TND' });
+  // The company offers the usual ways and has an account for a transfer (P2-06: a request names a way the company offers).
+  world.memory.plant('companySettings', { companyName: 'Smart Dépannage', paymentMethods: ['ONLINE', 'CASH', 'BANK_TRANSFER'], rib: '08006012345678901234' });
+
   const billed = options.invoice === undefined ? null : options.invoice;
   const invoice = billed === null ? null : world.memory.plant('invoice', { interventionId: job.id, status: 'ISSUED', amountHT: billed, taxAmount: 0, amountTTC: billed, currency: 'TND' });
 
@@ -753,6 +756,19 @@ describe('the job and its invoice are paid when the confirmed payments cover the
 
     expect(jobRow(d).status).toBe('PAID');
     expect(invoiceRow(d).status).toBe('CANCELLED');
+  });
+
+  it('a draft invoice is not what is to be paid either: the accepted quote is, and the financials are made from it', async () => {
+    // the draft asks less (80) than the quote (120): were it the document, the financials would price the job at 80
+    const d = desk({ invoice: 80, status: 'PAYMENT_PENDING' });
+
+    invoiceRow(d).status = 'DRAFT';
+
+    await pay(d, 120);
+
+    expect(jobRow(d).status).toBe('PAID');
+    expect(invoiceRow(d).status).toBe('DRAFT');
+    expect(num(financialsOf(d)[0].totalPrice)).toBe(120);
   });
 
   it('with nothing to compare (no invoice, no accepted quote) a confirmation pays the job', async () => {

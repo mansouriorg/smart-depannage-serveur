@@ -12,6 +12,7 @@ import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, moneyOrNull, percentOf, subtractMoney, sumMoney } from '../../common/money/money';
 import { DEFAULT_COMMISSION_RATE, LedgerEntryView, LedgerTotals, LedgerType } from './cash-ledger.types';
 import { lockCashLedger, lockPayouts } from '../assignment/artisan-lock';
+import { isLiveInvoice } from '../payments/financials-ops';
 
 /** A Prisma client or the client of a transaction. */
 type Db = any;
@@ -140,7 +141,8 @@ export function receivedOn(payments: Row[], declared: Set<number>): number {
 export async function paymentPosition(db: Db, interventionId: number) {
   const invoice: Row | null = await db.invoice.findUnique({ where: { interventionId } });
   const quote: Row | null = await db.quote.findFirst({ where: { interventionId, status: 'ACCEPTED' }, orderBy: { createdAt: 'desc' } });
-  const liveInvoice = invoice && invoice.status !== 'CANCELLED' ? invoice : null;
+  // A cancelled invoice asks nothing, and neither does a draft: it is not the customer's yet (the customer never sees it).
+  const liveInvoice = isLiveInvoice(invoice) ? invoice : null;
   const document = liveInvoice ?? quote;
   const payments: Row[] = await db.payment.findMany({ where: { interventionId }, orderBy: { id: 'asc' } });
   const declared = new Set((await activeCollections(db, { interventionId })).map((entry) => entry.paymentId));

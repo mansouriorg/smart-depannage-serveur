@@ -23,7 +23,7 @@
  */
 import { cashHeldByJob } from '../cash-ledger/cash-ledger-ops';
 import { canonicalStatus } from '../intervention-workflow/intervention-status';
-import { paymentFigures, refundedOn } from '../payments/financials-ops';
+import { isLiveInvoice, paymentFigures, refundedOn } from '../payments/financials-ops';
 import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, proportionOf, subtractMoney, sumMoneyOf } from '../../common/money/money';
 
@@ -91,12 +91,12 @@ export async function payoutDecisions(db: Db, artisanId: number, financials: Pay
 
   for (const payment of payments) paymentsByJob.set(payment.interventionId, [...(paymentsByJob.get(payment.interventionId) ?? []), payment]);
 
-  // What each job asks for: its invoice when it has one that was not cancelled, else its latest accepted quote.
+  // What each job asks for: its invoice when it has a live one (not cancelled, not a draft), else its latest accepted quote.
   const documentOf = new Map<number, Row>();
 
   for (const quote of quotes) if (!documentOf.has(quote.interventionId)) documentOf.set(quote.interventionId, quote);
 
-  for (const invoice of invoices) if (String(invoice.status) !== 'CANCELLED') documentOf.set(invoice.interventionId, invoice);
+  for (const invoice of invoices) if (isLiveInvoice(invoice)) documentOf.set(invoice.interventionId, invoice);
 
   const disputed = new Set<number>();
   const refundPending = new Set<number>();
