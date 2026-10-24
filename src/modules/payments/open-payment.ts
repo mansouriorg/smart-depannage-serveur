@@ -102,6 +102,18 @@ export function describeAmount(payment: Row): string {
   return formatMoney(money(payment.amount), { currency: payment.currency });
 }
 
+/**
+ * The open payments of a job that are not cash, and the one among them that stands in the way of declaring cash: an online
+ * request that nobody can pay is not in the way (the collection cancels it), a transfer waiting for its confirmation or an online
+ * payment a provider took is. One place for the collection (which refuses) and the position (which tells the app beforehand).
+ * (Cash that was declared before is a fact, not a request: it is never in the way.)
+ */
+export function paymentsInTheWayOfCash(payments: Row[]): { others: Row[]; blocking: Row | undefined } {
+  const others = payments.filter((other) => OPEN_PAYMENT_STATUSES.includes(String(other.status)) && other.method !== 'CASH');
+
+  return { others, blocking: others.find((other) => !isPlaceholder(other)) };
+}
+
 export function describeOpenPayment(payment: Row): string {
   return `${describeAmount(payment)} ${METHOD_WORDS[String(payment.method)] ?? String(payment.method)}`;
 }

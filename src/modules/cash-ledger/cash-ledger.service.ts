@@ -10,8 +10,9 @@ import { compareMoney, formatMoney, money, percentOf, subtractMoney } from '../.
 import { isValidAmount } from '../../common/money/money-rules';
 import { pick } from '../../common/views/pick';
 import { CollectCashDto, LedgerQueryDto, RecordAdjustmentDto, RecordRemittanceDto } from './dto/cash-ledger.dto';
-import { COLLECT_CASH_IN, LedgerEntryView, LedgerTotals } from './cash-ledger.types';
-import { describeAmount, isPlaceholder, supersede } from '../payments/open-payment';
+import { COLLECT_CASH_IN, COLLECT_CASH_WORDS, CashPositionView, LedgerEntryView, LedgerTotals, foreignCurrencyWords, openPaymentWords } from './cash-ledger.types';
+import { describeAmount, paymentsInTheWayOfCash, supersede } from '../payments/open-payment';
+import { cashPositionOf } from './cash-position';
 import { TypeSums, commissionRateFor, jobIsInPaidPayout, ledgerTotals, paymentPosition, totalsOfSums, viewOfEntry } from './cash-ledger-ops';
 
 const MAX_ROW_ID = 2_147_483_647;
@@ -142,7 +143,7 @@ export class CashLedgerService {
         const status = canonicalStatus(String(job.status));
 
         if (!status || !COLLECT_CASH_IN.includes(status)) {
-          throw new BadRequestException('Les espèces ne peuvent être encaissées qu’une fois sur place, pendant ou après le travail.');
+          throw new BadRequestException(COLLECT_CASH_WORDS.wrongStatus);
         }
 
         // Once a payout that was paid has taken the job, the share has been given: cash taken after that is for the back office to put
@@ -150,20 +151,20 @@ export class CashLedgerService {
         await lockPayouts(tx, userId);
 
         if (await jobIsInPaidPayout(tx, interventionId)) {
-          throw new ConflictException('Un payout déjà payé comprend cette mission: contactez l’administration pour enregistrer cet encaissement.');
+          throw new ConflictException(COLLECT_CASH_WORDS.inPaidPayout);
         }
 
         const { invoice, quote, document, payments, declared, remaining } = await paymentPosition(tx, interventionId);
 
-        if (!document || remaining === null) throw new BadRequestException('Aucun devis accepté ni facture: il n’y a pas de montant à encaisser.');
+        if (!document || remaining === null) throw new BadRequestException(COLLECT_CASH_WORDS.noDocument);
 
         const currency: string = document.currency ?? currencyCode();
 
         if (currency !== currencyCode()) {
-          throw new BadRequestException(`Cette mission est facturée en ${currency}, le registre est tenu en ${currencyCode()}.`);
+          throw new BadRequestException(foreignCurrencyWords(currency, currencyCode()));
         }
 
-        if (compareMoney(remaining, 0) <= 0) throw new BadRequestException('Cette mission est déjà payée.');
+        if (compareMoney(remaining, 0) <= 0) throw new BadRequestException(COLLECT_CASH_WORDS.alreadyPaid);
 
         if (compareMoney(amount, remaining) > 0) {
           throw new BadRequestException(`Le montant dépasse ce qu’il reste à payer sur cette mission (${formatMoney(remaining, { currency })}).`);
@@ -177,12 +178,9 @@ export class CashLedgerService {
         // One open payment per job: what the customer asked for in another way than cash is not paid twice. An online request
         // that nobody can pay is cancelled; a transfer waiting for its confirmation is for the back office to cancel first.
         // (Cash that was declared before is a fact, not a request: it is never in the way.)
-        const others = payments.filter((other) => ([PaymentStatus.PENDING, PaymentStatus.AWAITING_CONFIRMATION] as string[]).includes(other.status) && other.method !== PaymentMethod.CASH);
-        const blocking = others.find((other) => !isPlaceholder(other));
+        const { others, blocking } = paymentsInTheWayOfCash(payments);
 
-        if (blocking) {
-          throw new ConflictException(`Un paiement de ${describeAmount(blocking)} est déjà en attente pour cette mission: contactez l’administration.`);
-        }
+        if (blocking) throw new ConflictException(openPaymentWords(describeAmount(blocking)));
 
         for (const other of others) {
           if (!(await supersede(tx, other))) throw new ConflictException('Un paiement vient d’être modifié sur cette mission. Réessayez.');
@@ -266,6 +264,25 @@ export class CashLedgerService {
   // ==========================================================
   // Reading a ledger
   // ==========================================================
+
+  /**
+   * What is left to take on a mission of the signed-in artisan, and whether they may take it now (P2-05). The mission of
+   * somebody else is not found. It reads only: the collection decides.
+   */
+  async getCashPosition(userId: number, role: Role, interventionId: number): Promise<CashPositionView> {
+    this.assertArtisan(role);
+
+    if (!isRowId(interventionId)) throw new NotFoundException('Mission introuvable.');
+
+    await this.assertApprovedArtisan(userId);
+
+    const job = await this.prisma.intervention.findUnique({ where: { id: interventionId }, select: { id: true, artisanId: true, status: true } });
+
+    // The mission of somebody else is not found: no one learns that it exists.
+    if (!job || job.artisanId !== userId) throw new NotFoundException('Mission introuvable.');
+
+    return cashPositionOf(this.prisma, job, userId);
+  }
 
   /** The ledger of the signed-in artisan. */
   async getMyLedger(userId: number, role: Role, query: LedgerQueryDto = {}): Promise<LedgerPage> {

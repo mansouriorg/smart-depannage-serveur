@@ -38,6 +38,17 @@ export class CashLedgerController {
   }
 
   /**
+   * What is left to take on a mission of the artisan, and whether they may take it now (the cash screen of the app).
+   *
+   * GET /cash-ledger/interventions/:interventionId/position
+   */
+  @Roles(Role.ARTISAN)
+  @Get('interventions/:interventionId/position')
+  position(@CurrentUser('id') userId: number, @CurrentUser('role') role: Role, @Param('interventionId', ParseIntPipe) interventionId: number) {
+    return this.service.getCashPosition(userId, role, interventionId);
+  }
+
+  /**
    * The artisan's own balance and lines.
    *
    * GET /cash-ledger/mine

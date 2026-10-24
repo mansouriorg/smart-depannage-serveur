@@ -182,6 +182,20 @@ export class QuotesService {
     }
   }
 
+  /**
+   * The end of validity that is asked for must still be ahead: a quote that is born expired cannot be accepted by anyone, and the
+   * artisan is only told when the customer cannot answer (a phone whose clock is wrong sends a date in the past).
+   */
+  private ensureExpiryAhead(expiresAt: string | null | undefined) {
+    if (!expiresAt) return;
+
+    const when = new Date(expiresAt);
+
+    if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
+      throw new BadRequestException('La date de fin de validité du devis est déjà passée: vérifiez la date de votre téléphone.');
+    }
+  }
+
   private ensureQuoteEditable(quote: any) {
     const editableStatuses: QuoteStatus[] = [
       QuoteStatus.DRAFT,
@@ -219,6 +233,8 @@ export class QuotesService {
   ) {
     await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
+
+    this.ensureExpiryAhead(dto.expiresAt);
 
     const totals = this.calculateTotals(dto.items, dto.taxRate);
 
@@ -292,6 +308,8 @@ export class QuotesService {
     await this.assertCanManageQuotesOf(createdById, interventionId);
     await this.ensureInterventionExists(interventionId);
 
+    this.ensureExpiryAhead(dto.expiresAt);
+
     const totals = this.calculateTotals(dto.items, dto.taxRate);
 
     return this.prisma.$transaction(async (tx) => {
@@ -340,6 +358,8 @@ export class QuotesService {
     const found = await this.getQuoteOrFail(quoteId);
 
     await this.assertCanManageQuotesOf(updatedById, found.interventionId);
+
+    this.ensureExpiryAhead(dto.expiresAt);
 
     const { updated, revision, changed, seen } = await this.prisma.$transaction(async (tx) => {
       const quote = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);

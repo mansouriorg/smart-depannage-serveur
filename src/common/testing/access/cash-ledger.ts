@@ -21,6 +21,15 @@ export const cashLedgerScenarios: Scenario[] = [
     request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { amount: 50, note: mark(h, 'collect note'), requestKey: 'tap-access-0001' } }),
   },
   {
+    route: 'GET /cash-ledger/interventions/:/position',
+    // Not `reads`: the answer is figures and one sentence of the server's own (no text of the household is in it for the
+    // matrix to find), so "it carries the household's rows" cannot be asked of it. The figures are checked in cash-position.spec.
+    note: 'what is left to take on a job (P2-05): the artisan of the job reads it; the artisan of the other household is told the job does not exist',
+    allowed: ['artisan'],
+    prepare: underWay,
+    request: (h, w) => ({ params: { interventionId: job(h, w) } }),
+  },
+  {
     route: 'GET /cash-ledger/artisans/:',
     note: 'the ledger of an artisan: the administrators and the accountant, with the lines of that artisan',
     allowed: ['admins', 'accountant'],

@@ -683,13 +683,74 @@ describe('sending, cancelling and expiring a quote (P2-04)', () => {
 
   it('a draft whose date has passed cannot be sent', async () => {
     const d = desk();
-    const quote = await draft(d, { expiresAt: '2020-01-01T00:00:00.000Z' });
+    const quote = await draft(d);
+
+    // the date passes while the draft waits (nobody can make a quote that is born expired: see the test on the dates)
+    quoteRow(d, quote.id).expiresAt = new Date('2020-01-01T00:00:00.000Z');
+
     const answer = await refusal(() => d.world.svc.quotes.sendQuote(quote.id, d.artisan.id));
 
     expect(answer?.status).toBe(400);
     expect(answer?.message).toBe('Ce devis a expiré.');
     expect(quoteRow(d, quote.id).status).toBe('DRAFT');
     expect(events(d, 'QUOTE_SENT')).toEqual([]);
+  });
+
+  it('a date of validity that has already passed is refused: a quote cannot be born expired (a phone with a wrong clock)', async () => {
+    const past = '2020-01-01T00:00:00.000Z';
+    const words = 'La date de fin de validité du devis est déjà passée: vérifiez la date de votre téléphone.';
+
+    for (const how of ['send', 'draft', 'edit', 'edit a draft', 'send garbage', 'edit garbage'] as const) {
+      const d = desk();
+      const before = rowsOf(d.world, 'quote').length;
+      const made = how === 'edit' || how === 'edit garbage' ? await sent(d) : how === 'edit a draft' ? await draft(d) : null;
+      const count = rowsOf(d.world, 'quote').length;
+      const answer = await refusal(() =>
+        how === 'send'
+          ? sent(d, { expiresAt: past })
+          : how === 'draft'
+            ? draft(d, { expiresAt: past })
+            : how === 'send garbage'
+              ? sent(d, { expiresAt: 'not a date' })
+              : how === 'edit garbage'
+                ? edit(d, made!.id, { expiresAt: 'not a date' })
+                : edit(d, made!.id, { expiresAt: past }),
+      );
+
+      expect(`${how}: ${answer?.status} ${answer?.message}`).toBe(`${how}: 400 ${words}`);
+      expect(`${how}: ${rowsOf(d.world, 'quote').length}`).toBe(`${how}: ${how === 'send' || how === 'draft' || how === 'send garbage' ? before : count}`);
+
+      if (made) expect(quoteRow(d, made.id).expiresAt ?? null).toBe(null);
+    }
+  });
+
+  it('a date that passed a minute, an hour, a day or a month ago is as refused as one from years ago, and one a minute ahead is taken', async () => {
+    const words = 'La date de fin de validité du devis est déjà passée: vérifiez la date de votre téléphone.';
+
+    for (const ago of [1_000, 60_000, 3_600_000, 86_400_000, 30 * 86_400_000, 399 * 86_400_000]) {
+      const d = desk();
+      const answer = await refusal(() => sent(d, { expiresAt: new Date(Date.now() - ago).toISOString() }));
+
+      expect(`${ago}: ${answer?.status} ${answer?.message}`).toBe(`${ago}: 400 ${words}`);
+      expect(rowsOf(d.world, 'quote')).toHaveLength(0);
+    }
+
+    const d = desk();
+    const ahead = new Date(Date.now() + 60_000).toISOString();
+    const quote = await sent(d, { expiresAt: ahead });
+
+    expect(new Date(quoteRow(d, quote.id).expiresAt).toISOString()).toBe(ahead);
+  });
+
+  it('a date of validity in the future, and no date at all, are taken', async () => {
+    const d = desk();
+    const soon = new Date(Date.now() + 3 * 86_400_000).toISOString();
+    const withDate = await sent(d, { expiresAt: soon });
+    const without = await draft(d);
+
+    expect(new Date(quoteRow(d, withDate.id).expiresAt).toISOString()).toBe(soon);
+    expect(quoteRow(d, without.id).expiresAt ?? null).toBe(null);
+    expect(await refusal(() => edit(d, without.id, { expiresAt: soon }))).toBe(null);
   });
 
   it('only a draft or a quote to modify is sent', async () => {
@@ -1441,7 +1502,10 @@ describe('accepting a quote (P2-04)', () => {
 
   it('a quote that has expired cannot be accepted, but can still be refused or asked about', async () => {
     const d = desk();
-    const quote = await sent(d, { expiresAt: '2020-01-01T00:00:00.000Z' });
+    const quote = await sent(d);
+
+    quoteRow(d, quote.id).expiresAt = new Date('2020-01-01T00:00:00.000Z');
+
     const answer = await refusal(() => accept(d, quote.id));
 
     expect(answer?.status).toBe(400);
@@ -1534,7 +1598,9 @@ describe('the same answers by the tracking link (P2-04)', () => {
 
   it('a quote that has expired cannot be accepted by the link', async () => {
     const d = desk();
-    const quote = await sent(d, { expiresAt: '2020-01-01T00:00:00.000Z' });
+    const quote = await sent(d);
+
+    quoteRow(d, quote.id).expiresAt = new Date('2020-01-01T00:00:00.000Z');
 
     expect((await refusal(() => asVisitor.accept(d, quote.id)))?.message).toBe('Ce devis a expiré.');
     expect(quoteRow(d, quote.id).status).toBe('SENT');

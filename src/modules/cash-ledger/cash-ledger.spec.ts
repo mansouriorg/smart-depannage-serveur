@@ -1299,6 +1299,7 @@ describe('who the routes of the ledger are open to (P2-02)', () => {
 
     expect(opened).toEqual({
       'POST /cash-ledger/interventions/:/collect-cash': ['roles', true, ['ARTISAN']],
+      'GET /cash-ledger/interventions/:/position': ['roles', true, ['ARTISAN']],
       'GET /cash-ledger/mine': ['roles', true, ['ARTISAN']],
       'GET /cash-ledger/balances': ['roles', true, finance],
       'GET /cash-ledger/artisans/:': ['roles', true, finance],

@@ -28,6 +28,46 @@ export const DEFAULT_COMMISSION_RATE = 20;
  */
 export const COLLECT_CASH_IN: readonly CanonicalStatus[] = ['ARTISAN_ARRIVED', 'IN_PROGRESS', 'WAITING_CLIENT_VALIDATION', 'COMPLETED', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT'];
 
+/**
+ * The words of a refusal to take cash, one place for the two routes that say it: the collection (which refuses) and the position
+ * (which tells the app beforehand, so that the button is not offered when the server would say no).
+ */
+export const COLLECT_CASH_WORDS = {
+  wrongStatus: 'Les espèces ne peuvent être encaissées qu’une fois sur place, pendant ou après le travail.',
+  inPaidPayout: 'Un payout déjà payé comprend cette mission: contactez l’administration pour enregistrer cet encaissement.',
+  noDocument: 'Aucun devis accepté ni facture: il n’y a pas de montant à encaisser.',
+  alreadyPaid: 'Cette mission est déjà payée.',
+} as const;
+
+/** Another way of paying is open on the job and waits to be decided: `described` is what it is ("120,000 TND par virement"). */
+export const openPaymentWords = (described: string) => `Un paiement de ${described} est déjà en attente pour cette mission: contactez l’administration.`;
+
+/** A job billed in another currency than the ledger's. */
+export const foreignCurrencyWords = (documentCurrency: string, ledgerCurrency: string) => `Cette mission est facturée en ${documentCurrency}, le registre est tenu en ${ledgerCurrency}.`;
+
+/**
+ * What is left to take on a job, for the artisan who holds it (P2-05). A hint for the screen: the collection checks everything
+ * again under the lock when the artisan sends the amount.
+ */
+export interface CashPositionView {
+  interventionId: number;
+  currency: string;
+  /** What the job has to pay: its invoice, or without one its accepted quote; null when it has neither. */
+  document: 'INVOICE' | 'QUOTE' | null;
+  /** The total of that document with tax; null without a document. */
+  total: number | null;
+  /** What was received: payments that are paid (net of refunds) and the cash that artisans declared. */
+  received: number;
+  /** `total - received`; null without a document. */
+  remaining: number | null;
+  /** The cash this artisan declared on this job and that still stands. */
+  collected: number;
+  /** Whether the artisan may declare cash now. */
+  canCollect: boolean;
+  /** Why not (the same words as the refusal), or null when they may. */
+  reason: string | null;
+}
+
 /** What the figures of one artisan say. All amounts are in the currency of the company. */
 export interface LedgerTotals {
   currency: string;
