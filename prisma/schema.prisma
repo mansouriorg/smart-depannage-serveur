@@ -1068,14 +1068,19 @@ model Quote {
   pdfUrl     String?
   expiresAt  DateTime?
 
+  // The version of the content (title, description, lines, tax rate, amounts, PDF) the customer is shown (P2-04). It goes up each time a
+  // quote that was sent is edited; the versions it replaced are kept in QuoteRevision.
+  revision Int @default(1)
+
   sentAt      DateTime?
   acceptedAt  DateTime?
   rejectedAt  DateTime?
   expiredAt   DateTime?
   cancelledAt DateTime?
 
-  items    QuoteItem[]
-  payments Payment[]
+  items     QuoteItem[]
+  payments  Payment[]
+  revisions QuoteRevision[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1090,6 +1095,41 @@ model Quote {
   @@index([expiredAt])
   @@index([cancelledAt])
   @@index([createdAt])
+}
+
+// A version of a quote that an edit replaced (P2-04): what the customer could have seen and accepted before the edit.
+model QuoteRevision {
+  id      Int   @id @default(autoincrement())
+  quoteId Int
+  quote   Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  // The number of the version that was replaced (1 is the quote as it was first sent).
+  revision Int
+
+  // The status the quote had when it was replaced.
+  status QuoteStatus
+
+  title       String
+  description String?
+  currency    String @default("TND")
+
+  // The PDF that version had, if any: what the customer downloads is part of what they read.
+  pdfUrl String?
+
+  amountHT  Decimal @db.Decimal(14, 3)
+  taxRate   Decimal @db.Decimal(5, 2)
+  taxAmount Decimal @db.Decimal(14, 3)
+  amountTTC Decimal @db.Decimal(14, 3)
+
+  // The lines of that version: [{ label, description, quantity, unitPrice, total }].
+  items Json
+
+  // Who made the edit that replaced it.
+  savedById Int?
+  savedAt   DateTime @default(now())
+
+  @@unique([quoteId, revision])
+  @@index([quoteId])
 }
 
 model QuoteItem {

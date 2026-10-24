@@ -11,6 +11,7 @@ import {
 
 import { QuotesService } from './quotes.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
+import { UpdateQuoteDto } from './dto/quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -126,7 +127,7 @@ export class QuotesController {
     @CurrentUser('id') userId: number,
     @CurrentUser('role') role: Role,
     @Param('quoteId', ParseIntPipe) quoteId: number,
-    @Body() dto: Partial<CreateQuoteDto>,
+    @Body() dto: UpdateQuoteDto,
   ) {
     return this.forReader(role, await this.service.updateQuote(quoteId, userId, dto));
   }
@@ -309,6 +310,27 @@ export class QuotesController {
   @Get('system/expired')
   findExpiredQuotes() {
     return this.service.findExpiredQuotes();
+  }
+
+  /**
+   * The versions that edits replaced, and the revision the quote is at.
+   *
+   * GET /quotes/:quoteId/revisions
+   */
+  @Roles(
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+    Role.ARTISAN,
+  )
+  @Get(':quoteId/revisions')
+  findRevisions(
+    @CurrentUser() user: { id: number; role: Role },
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+  ) {
+    return this.service.findRevisions(quoteId, user);
   }
 
   /**

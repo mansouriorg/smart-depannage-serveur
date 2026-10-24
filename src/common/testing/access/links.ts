@@ -51,6 +51,7 @@ export const linkScenarios: LinkScenario[] = [
   { route: 'POST /guest/interventions/:/quotes/:/accept', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
   { route: 'POST /guest/interventions/:/quotes/:/reject', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
   { route: 'POST /guest/interventions/:/quotes/:/request-modification', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
+  { route: 'POST /guest/interventions/:/quotes/:/question', request: onQuote(quoteOf), crossed: [otherQuote('the quote of the other job')] },
   {
     route: 'POST /guest/interventions/:/payments',
     prepare: (w) => {

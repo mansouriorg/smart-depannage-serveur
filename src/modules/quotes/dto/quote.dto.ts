@@ -77,6 +77,10 @@ export class UpdateQuoteDto {
   taxRate?: number;
 
   @IsOptional()
+  @IsString()
+  pdfUrl?: string;
+
+  @IsOptional()
   @IsDateString()
   expiresAt?: string;
 

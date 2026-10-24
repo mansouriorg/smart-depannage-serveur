@@ -148,6 +148,21 @@ export class GuestController {
   }
 
   // ==========================================================
+  // 6b. ASK A QUESTION ABOUT A QUOTE (the quote stays as it is)
+  // POST /guest/interventions/:id/quotes/:quoteId/question?token=RAW_TOKEN
+  // ==========================================================
+
+  @Post('interventions/:id/quotes/:quoteId/question')
+  askQuoteQuestion(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('quoteId', ParseIntPipe) quoteId: number,
+    @Query('token') token: string,
+    @Body() dto: GuestQuoteActionDto,
+  ) {
+    return this.guestService.askQuoteQuestion(id, quoteId, token, dto);
+  }
+
+  // ==========================================================
   // 7. GUEST PAYMENT
   // POST /guest/interventions/:id/payments?token=RAW_TOKEN
   // ==========================================================

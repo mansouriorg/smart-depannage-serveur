@@ -330,10 +330,14 @@ export class World {
       amountHT: 100,
       taxAmount: 20,
       amountTTC: 120,
+      // edited once since it was sent: the version it replaced is the quoteRevision below
+      revision: 2,
     });
 
     ids.quote = quote.id;
     ids.quoteItem = this.fill('quoteItem', { quoteId: quote.id, unitPrice: 100, total: 100 }).id;
+    // The version of the quote that an edit replaced (P2-04).
+    ids.quoteRevision = this.fill('quoteRevision', { quoteId: quote.id, revision: 1, status: 'SENT', amountHT: 80, taxAmount: 16, amountTTC: 96, items: [{ label: 'Main d’œuvre', quantity: 1, unitPrice: 80, total: 80 }], savedById: artisan.id }).id;
 
     const invoice = this.fill('invoice', { interventionId: job.id, status: 'ISSUED', amountHT: 100, taxAmount: 20, amountTTC: 120 });
 

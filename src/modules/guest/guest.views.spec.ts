@@ -26,12 +26,18 @@ function makeWorld(job: Record<string, unknown> = {}) {
       findUnique: async () => ({ status: 'QUOTE_SENT', artisanId: null }),
       create: async ({ data }: any) => poisonedJob({ clientId: data.clientId, ...job }),
       update: async () => poisonedJob(job),
+      // The row of the job is held while a quote is answered (P2-04).
+      updateMany: async () => ({ count: 1 }),
     },
     quote: {
       findUnique: async () => sentQuote(),
       findFirst: async () => ({ ...sentQuote(), status: 'ACCEPTED' }),
       update: async ({ data }: any) => ({ ...sentQuote(), ...data }),
+      // The other open quotes are cancelled when one is accepted (P2-04).
+      updateMany: async () => ({ count: 0 }),
     },
+    // The question is kept as a message to the support (P2-04).
+    message: { create: async () => ({ id: 1 }) },
     payment: {
       create: async ({ data }: any) => ({ ...poisonedJob().payments[0], ...data }),
       // No payment is open on this job (one open payment per job, P2-03).
@@ -90,7 +96,7 @@ describe('what the routes of the tracking link answer (P1-08)', () => {
     expect(leakedTo(answer, 'tracking')).toEqual([]);
   });
 
-  it('accepting, refusing or asking for a change to a quote: the quote, with nobody\'s name on it', async () => {
+  it('accepting, refusing, asking for a change or asking a question about a quote: the quote, with nobody\'s name on it', async () => {
     const world = makeWorld();
     const dto = { note: 'ok' } as any;
 
@@ -98,6 +104,7 @@ describe('what the routes of the tracking link answer (P1-08)', () => {
       await world.acceptQuote(1, 1, 'raw', dto),
       await world.rejectQuote(1, 1, 'raw', dto),
       await world.requestQuoteModification(1, 1, 'raw', dto),
+      await world.askQuoteQuestion(1, 1, 'raw', dto),
     ]) {
       expect(leakedTo(answer, 'tracking')).toEqual([]);
       expect((answer as any).id).toBe(1);

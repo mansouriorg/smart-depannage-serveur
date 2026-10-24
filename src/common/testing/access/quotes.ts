@@ -73,6 +73,13 @@ export const quoteScenarios: Scenario[] = [
     request: (h, w) => ({ params: { quoteId: quote(h, w) } }),
   },
   {
+    route: 'GET /quotes/:/revisions',
+    note: 'the versions that edits replaced: the back office, and the artisan of the job (never the customer)',
+    allowed: ['artisan', 'backOffice'],
+    reads: true,
+    request: (h, w) => ({ params: { quoteId: quote(h, w) } }),
+  },
+  {
     route: 'GET /quotes/:',
     note: 'the back office, and the artisan of the job',
     allowed: ['artisan', 'backOffice'],

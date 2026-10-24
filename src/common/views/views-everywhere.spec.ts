@@ -106,7 +106,7 @@ describe('the routes of the customer and of the visitor with the link answer wit
   it('GuestService: the routes of the link', () => {
     const source = code('modules/guest/guest.service.ts');
 
-    for (const name of ['createGuestIntervention', 'track', 'getQuotes', 'acceptQuote', 'rejectQuote', 'requestQuoteModification', 'createGuestPayment', 'submitFeedback']) {
+    for (const name of ['createGuestIntervention', 'track', 'getQuotes', 'acceptQuote', 'rejectQuote', 'requestQuoteModification', 'askQuoteQuestion', 'createGuestPayment', 'submitFeedback']) {
       const method = methodOf(source, name);
       const returns = returnsOf(method).filter((statement) => !/^return (?:undefined|null|void)\b/.test(statement));
 

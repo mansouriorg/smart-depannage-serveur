@@ -37,9 +37,13 @@ function makeWorld() {
     intervention: {
       findUnique: async () => ({ ...nestedJob(), status: 'QUOTE_SENT' }),
       update: async ({ data }: any) => ({ ...nestedJob(), ...data }),
+      // The row of the job is held while a quote is answered (P2-04).
+      updateMany: async () => ({ count: 1 }),
     },
     user: { findUnique: async ({ where }: any) => ({ role: where.id === 20 ? 'ARTISAN' : 'SUPPORT' }) },
     message: { create: async () => ({ id: 1 }) },
+    // The job is locked while a quote is answered (P2-04).
+    $executeRaw: async () => 1,
     $transaction: async (work: any) => work(prisma),
   };
   const events: any = { create: async () => ({}) };

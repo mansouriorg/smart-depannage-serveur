@@ -128,6 +128,7 @@ const QUOTE_COLUMNS = [
   'clientNote',
   'pdfUrl',
   'expiresAt',
+  'revision',
   'sentAt',
   'acceptedAt',
   'rejectedAt',
@@ -156,6 +157,23 @@ function quoteBody(quote: any, side: Side | null) {
     ...pick(quote, QUOTE_COLUMNS),
     ...(Array.isArray(quote.items) ? { items: each(quote.items, itemView) } : {}),
     ...(side && quote.intervention !== undefined ? { intervention: jobIn(quote.intervention, side) } : {}),
+  };
+}
+
+const QUOTE_REVISION_COLUMNS = ['id', 'quoteId', 'revision', 'status', 'title', 'description', 'currency', 'pdfUrl', 'amountHT', 'taxRate', 'taxAmount', 'amountTTC', 'savedAt'];
+
+/**
+ * The versions that edits replaced, for the people who work on the quote: the artisan of the job and the back office. Who made
+ * each edit is for the back office only.
+ */
+export function quoteRevisionsView(quote: any, revisions: any[] | null | undefined, backOffice: boolean) {
+  return {
+    quoteId: quote.id,
+    revision: Number.isInteger(Number(quote.revision)) && Number(quote.revision) >= 1 ? Number(quote.revision) : 1,
+    revisions: each(revisions ?? [], (revision) => ({
+      ...pick(revision, backOffice ? [...QUOTE_REVISION_COLUMNS, 'savedById'] : QUOTE_REVISION_COLUMNS),
+      items: Array.isArray(revision.items) ? each(revision.items, (line: any) => pick(line, ['label', 'description', 'quantity', 'unitPrice', 'total'])) : [],
+    })),
   };
 }
 

@@ -53,6 +53,8 @@ import { KeyedLock } from '../../common/concurrency/limits';
 import { initialStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { lockJob } from '../assignment/artisan-lock';
+import { acceptQuote as acceptQuoteRule, askAndTell, rejectQuote as rejectQuoteRule, requestChangeAndTell } from '../quotes/quote-decisions';
+import { revisionOf } from '../quotes/quote-revisions';
 import { claimOpenPayment, leftToPay, refreshOpenPayment } from '../payments/open-payment';
 import { money } from '../../common/money/money';
 
@@ -732,40 +734,16 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    const quote = await this.prisma.quote.findUnique({
-      where: { id: quoteId },
-    });
-
-    if (!quote || quote.interventionId !== intervention.id) {
-      throw new NotFoundException('Devis introuvable.');
-    }
-
-    if (quote.status !== QuoteStatus.SENT) {
-      throw new BadRequestException(
-        'Ce devis ne peut plus être accepté.',
-      );
-    }
-
-    const updatedQuote = await this.prisma.quote.update({
-      where: { id: quoteId },
-      data: {
-        status: QuoteStatus.ACCEPTED,
-        clientNote: dto.note,
-      },
-      include: {
-        items: true,
-      },
-    });
-
-    // The customer accepted a quote: the job moves on if it is waiting for it.
-    // If it is somewhere else (already assigned, say) the status is left alone.
-    await transitionStatus(this.prisma, {
-      id: intervention.id,
-      to: Status.QUOTE_ACCEPTED,
-      actor: { kind: 'client', userId: intervention.clientId },
-      data: { quoteAcceptedAt: new Date() },
-      soft: true,
-    });
+    // The same rules as for a customer who is signed in (see quotes/quote-decisions): answered under the lock of the job, and a quote of another job is not found.
+    const updatedQuote = await this.prisma.$transaction((tx) =>
+      acceptQuoteRule(tx, quoteId, intervention.id, {
+        clientId: intervention.clientId,
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Ce devis ne peut plus être accepté.',
+        include: { items: true },
+      }),
+    );
 
     await this.events.create({
       interventionId: intervention.id,
@@ -773,6 +751,7 @@ export class GuestService {
       title: 'Devis accepté',
       message: dto.note || 'Le client invité a accepté le devis.',
       createdById: intervention.clientId,
+      metadata: { quoteId, revision: revisionOf(updatedQuote), amountTTC: money(updatedQuote.amountTTC) },
     });
 
     // Each dispatcher and admin gets their own notification (never throws).
@@ -792,21 +771,14 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    const quote = await this.prisma.quote.findUnique({
-      where: { id: quoteId },
-    });
-
-    if (!quote || quote.interventionId !== intervention.id) {
-      throw new NotFoundException('Devis introuvable.');
-    }
-
-    const updatedQuote = await this.prisma.quote.update({
-      where: { id: quoteId },
-      data: {
-        status: QuoteStatus.REJECTED,
-        clientNote: dto.note,
-      },
-    });
+    const updatedQuote = await this.prisma.$transaction((tx) =>
+      rejectQuoteRule(tx, quoteId, intervention.id, {
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Ce devis ne peut plus être refusé.',
+        include: { items: true },
+      }),
+    );
 
     await this.events.create({
       interventionId: intervention.id,
@@ -814,6 +786,7 @@ export class GuestService {
       title: 'Devis refusé',
       message: dto.note || 'Le client invité a refusé le devis.',
       createdById: intervention.clientId,
+      metadata: { quoteId },
     });
 
     return quoteForParties(updatedQuote);
@@ -830,21 +803,16 @@ export class GuestService {
       rawTrackingToken,
     );
 
-    const quote = await this.prisma.quote.findUnique({
-      where: { id: quoteId },
-    });
-
-    if (!quote || quote.interventionId !== intervention.id) {
-      throw new NotFoundException('Devis introuvable.');
-    }
-
-    const updatedQuote = await this.prisma.quote.update({
-      where: { id: quoteId },
-      data: {
-        status: QuoteStatus.MODIFICATION_REQUESTED,
-        clientNote: dto.note,
-      },
-    });
+    // The support is told as it is when the customer is signed in.
+    const updatedQuote = await this.prisma.$transaction((tx) =>
+      requestChangeAndTell(tx, quoteId, intervention.id, {
+        senderId: intervention.clientId,
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Vous pouvez demander une modification uniquement sur un devis envoyé.',
+        include: { items: true },
+      }),
+    );
 
     await this.events.create({
       interventionId: intervention.id,
@@ -853,6 +821,40 @@ export class GuestService {
       message:
         dto.note || 'Le client invité demande une modification du devis.',
       createdById: intervention.clientId,
+      metadata: { quoteId },
+    });
+
+    return quoteForParties(updatedQuote);
+  }
+
+  /** A question about a quote: the quote stays as it is, and the visitor can still accept it. */
+  async askQuoteQuestion(
+    interventionId: number,
+    quoteId: number,
+    rawTrackingToken: string,
+    dto: GuestQuoteActionDto,
+  ) {
+    const intervention = await this.findInterventionByPublicToken(
+      interventionId,
+      rawTrackingToken,
+    );
+
+    const updatedQuote = await this.prisma.$transaction((tx) =>
+      askAndTell(tx, quoteId, intervention.id, {
+        senderId: intervention.clientId,
+        note: dto.note,
+        refusal: 'Vous pouvez poser une question uniquement sur un devis envoyé.',
+        include: { items: true },
+      }),
+    );
+
+    await this.events.create({
+      interventionId: intervention.id,
+      type: InterventionEventType.QUOTE_MODIFICATION_REQUESTED,
+      title: 'Question sur le devis',
+      message: dto.note || 'Le client invité pose une question sur le devis.',
+      createdById: intervention.clientId,
+      metadata: { quoteId, question: true },
     });
 
     return quoteForParties(updatedQuote);

@@ -7,22 +7,25 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
+import { UpdateQuoteDto } from './dto/quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
+import { askAndTell, acceptQuote, readQuoteLocked, rejectQuote, requestChangeAndTell } from './quote-decisions';
+import { lockJob } from '../assignment/artisan-lock';
+import { linesOf, revisionOf, revisionsOf, sameContent, samePdf, saveRevision } from './quote-revisions';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { transitionStatus } from '../intervention-workflow/transition-status';
 import { NotificationsService } from '../notifications/notifications.service';
 
 import {
   InterventionEventType,
-  MessageAudience,
   Prisma,
   QuoteStatus,
   Role,
   Status,
 } from '../../../generated/prisma/client';
 import { isBackOffice, isTicketStaff } from '../../common/auth/role-policy';
-import { quoteForArtisan, quoteForClient } from '../../common/views/views';
-import { requestTaxRate, totalsFromItems } from '../../common/money/document-totals';
+import { quoteForArtisan, quoteForClient, quoteRevisionsView } from '../../common/views/views';
+import { DocumentItemInput, requestTaxRate, totalsFromItems } from '../../common/money/document-totals';
 import { formatMoney, money, vatTotals } from '../../common/money/money';
 import { currencyCode } from '../../common/locale/locale';
 
@@ -77,7 +80,7 @@ export class QuotesService {
   };
 
   /** The lines and the three amounts, exact to the millime (see common/money/document-totals). */
-  private calculateTotals(items: CreateQuoteDto['items'], taxRate?: unknown) {
+  private calculateTotals(items: DocumentItemInput[], taxRate?: unknown) {
     return totalsFromItems('quote', items, taxRate);
   }
 
@@ -89,13 +92,14 @@ export class QuotesService {
   private async assertCanManageQuotesOf(
     actorId: number,
     interventionId: number,
+    db: any = this.prisma,
   ): Promise<void> {
     const [actor, intervention] = await Promise.all([
-      this.prisma.user.findUnique({
+      db.user.findUnique({
         where: { id: actorId },
         select: { role: true },
       }),
-      this.prisma.intervention.findUnique({
+      db.intervention.findUnique({
         where: { id: interventionId },
         select: { artisanId: true },
       }),
@@ -172,14 +176,6 @@ export class QuotesService {
     }
   }
 
-  private ensureQuoteIsSent(quote: any) {
-    if (quote.status !== QuoteStatus.SENT) {
-      throw new BadRequestException(
-        'Cette action est possible uniquement sur un devis envoyé.',
-      );
-    }
-  }
-
   private ensureQuoteNotExpired(quote: any) {
     if (quote.expiresAt && quote.expiresAt < new Date()) {
       throw new BadRequestException('Ce devis a expiré.');
@@ -226,26 +222,32 @@ export class QuotesService {
 
     const totals = this.calculateTotals(dto.items, dto.taxRate);
 
-    const quote = await this.prisma.quote.create({
-      data: {
-        interventionId,
-        createdById,
-        title: dto.title,
-        description: dto.description,
-        currency: currencyCode(),
-        amountHT: totals.amountHT,
-        taxRate: totals.taxRate,
-        taxAmount: totals.taxAmount,
-        amountTTC: totals.amountTTC,
-        status: QuoteStatus.SENT,
-        pdfUrl: dto.pdfUrl,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-        sentAt: new Date(),
-        items: {
-          create: totals.items,
+    const quote = await this.prisma.$transaction(async (tx) => {
+      // The right to write is asked again under the lock: the job may have been given to another artisan while this one waited.
+      await lockJob(tx, interventionId);
+      await this.assertCanManageQuotesOf(createdById, interventionId, tx);
+
+      return tx.quote.create({
+        data: {
+          interventionId,
+          createdById,
+          title: dto.title,
+          description: dto.description,
+          currency: currencyCode(),
+          amountHT: totals.amountHT,
+          taxRate: totals.taxRate,
+          taxAmount: totals.taxAmount,
+          amountTTC: totals.amountTTC,
+          status: QuoteStatus.SENT,
+          pdfUrl: dto.pdfUrl,
+          expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+          sentAt: new Date(),
+          items: {
+            create: totals.items,
+          },
         },
-      },
-      include: this.quoteInclude,
+        include: this.quoteInclude,
+      });
     });
 
     await transitionStatus(this.prisma, {
@@ -292,25 +294,31 @@ export class QuotesService {
 
     const totals = this.calculateTotals(dto.items, dto.taxRate);
 
-    return this.prisma.quote.create({
-      data: {
-        interventionId,
-        createdById,
-        title: dto.title,
-        description: dto.description,
-        currency: currencyCode(),
-        amountHT: totals.amountHT,
-        taxRate: totals.taxRate,
-        taxAmount: totals.taxAmount,
-        amountTTC: totals.amountTTC,
-        status: QuoteStatus.DRAFT,
-        pdfUrl: dto.pdfUrl,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-        items: {
-          create: totals.items,
+    return this.prisma.$transaction(async (tx) => {
+      // The right to write is asked again under the lock: the job may have been given to another artisan while this one waited.
+      await lockJob(tx, interventionId);
+      await this.assertCanManageQuotesOf(createdById, interventionId, tx);
+
+      return tx.quote.create({
+        data: {
+          interventionId,
+          createdById,
+          title: dto.title,
+          description: dto.description,
+          currency: currencyCode(),
+          amountHT: totals.amountHT,
+          taxRate: totals.taxRate,
+          taxAmount: totals.taxAmount,
+          amountTTC: totals.amountTTC,
+          status: QuoteStatus.DRAFT,
+          pdfUrl: dto.pdfUrl,
+          expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+          items: {
+            create: totals.items,
+          },
         },
-      },
-      include: this.quoteInclude,
+        include: this.quoteInclude,
+      });
     });
   }
 
@@ -318,83 +326,114 @@ export class QuotesService {
   // Admin / Artisan: update quote
   // ==========================================================
 
+  /**
+   * Edits a quote. The three amounts are always worked out from the lines and the rate (a new rate alone works them out again
+   * from the lines already there), so they add up. An edit of the content of a quote that was sent keeps the version it
+   * replaces and raises the revision (see quote-revisions); it is made under the lock of the job, so that an acceptance that
+   * comes in at the same moment is seen by one or the other and never mixes the two.
+   */
   async updateQuote(
     quoteId: number,
     updatedById: number,
-    dto: Partial<CreateQuoteDto>,
+    dto: UpdateQuoteDto,
   ) {
-    const quote = await this.getQuoteOrFail(quoteId);
+    const found = await this.getQuoteOrFail(quoteId);
 
-    await this.assertCanManageQuotesOf(updatedById, quote.interventionId);
+    await this.assertCanManageQuotesOf(updatedById, found.interventionId);
 
-    this.ensureQuoteEditable(quote);
+    const { updated, revision, changed, seen } = await this.prisma.$transaction(async (tx) => {
+      const quote = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);
 
-    if (dto.items?.length) {
-      const totals = this.calculateTotals(dto.items, dto.taxRate ?? money(quote.taxRate));
+      // The right to write is asked again under the lock: the job may have been given to another artisan while this one waited.
+      await this.assertCanManageQuotesOf(updatedById, found.interventionId, tx);
 
-      return this.prisma.$transaction(async (tx) => {
-        await tx.quoteItem.deleteMany({
-          where: {
-            quoteId,
-          },
-        });
+      this.ensureQuoteEditable(quote);
 
-        const updated = await tx.quote.update({
-          where: {
-            id: quoteId,
-          },
-          data: {
-            title: dto.title,
-            description: dto.description,
-            amountHT: totals.amountHT,
-            taxRate: totals.taxRate,
-            taxAmount: totals.taxAmount,
-            amountTTC: totals.amountTTC,
-            pdfUrl: dto.pdfUrl,
-            expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : quote.expiresAt,
-            items: {
-              create: totals.items,
-            },
-          },
-          include: this.quoteInclude,
-        });
+      const rate = dto.taxRate === undefined || dto.taxRate === null ? money(quote.taxRate) : requestTaxRate(dto.taxRate, 'Le taux de TVA doit être supérieur ou égal à 0.');
+      const given = dto.items === undefined || dto.items === null ? null : dto.items;
+      const stored = linesOf(quote.items);
 
-        return updated;
+      // The lines given, else the lines already there; a quote with no line at all (older data) keeps its amount without tax.
+      const totals = given !== null
+        ? this.calculateTotals(given, rate)
+        : stored.length > 0
+          ? this.calculateTotals(stored, rate)
+          : { ...vatTotals(quote.amountHT, rate), amountHT: money(quote.amountHT), taxRate: rate, items: [] as ReturnType<typeof linesOf> };
+
+      const title = dto.title ?? quote.title;
+      const description = dto.description === undefined ? quote.description ?? null : dto.description;
+      const pdfUrl = dto.pdfUrl === undefined ? quote.pdfUrl ?? null : dto.pdfUrl;
+      const lines = linesOf(totals.items);
+
+      // The three amounts count as content: a quote whose amounts did not match its lines is put right, and the customer who read
+      // the old price is told. The lines are written again when the ones given or the ones stored are not what the amounts say.
+      const contentChanged = !sameContent(quote, { title, description, pdfUrl, taxRate: totals.taxRate, lines, amountHT: totals.amountHT, taxAmount: totals.taxAmount, amountTTC: totals.amountTTC });
+      const rewrite = given !== null || (stored.length > 0 && JSON.stringify(lines) !== JSON.stringify(stored));
+
+      // A draft was never seen by anyone: no version is kept. A quote that was sent keeps the version this edit replaces.
+      const keeps = contentChanged && quote.status !== QuoteStatus.DRAFT;
+
+      if (keeps) await saveRevision(tx, quote, { userId: updatedById });
+
+      const next = keeps ? revisionOf(quote) + 1 : revisionOf(quote);
+
+      if (rewrite) {
+        await tx.quoteItem.deleteMany({ where: { quoteId } });
+      }
+
+      const saved = await tx.quote.update({
+        where: { id: quoteId },
+        data: {
+          title: dto.title ?? undefined,
+          description: dto.description,
+          amountHT: totals.amountHT,
+          taxRate: totals.taxRate,
+          taxAmount: totals.taxAmount,
+          amountTTC: totals.amountTTC,
+          pdfUrl: dto.pdfUrl,
+          expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+          revision: next,
+          ...(rewrite ? { items: { create: totals.items } } : {}),
+        },
+        include: this.quoteInclude,
+      });
+
+      return { updated: saved, revision: next, changed: contentChanged, seen: quote.status !== QuoteStatus.DRAFT };
+    });
+
+    // A draft is nobody's yet: the timeline, which the customer reads, does not say that it was edited.
+    if (seen) {
+      await this.createEvent({
+        interventionId: found.interventionId,
+        type: InterventionEventType.STATUS_CHANGED,
+        title: 'Devis mis à jour',
+        message: 'Le devis a été mis à jour.',
+        createdById: updatedById,
+        metadata: {
+          quoteId,
+          revision,
+          contentChanged: changed,
+          amountTTC: money(updated.amountTTC),
+        },
       });
     }
 
-    // A new rate changes the tax and the total of the amount already there: the three amounts always add up.
-    const rate = dto.taxRate === undefined || dto.taxRate === null ? undefined : requestTaxRate(dto.taxRate, 'Le taux de TVA doit être supérieur ou égal à 0.');
-    const repriced = rate === undefined ? null : vatTotals(quote.amountHT, rate);
-
-    const updated = await this.prisma.quote.update({
-      where: {
-        id: quoteId,
-      },
-      data: {
-        title: dto.title,
-        description: dto.description,
-        taxRate: rate,
-        taxAmount: repriced?.taxAmount,
-        amountTTC: repriced?.amountTTC,
-        pdfUrl: dto.pdfUrl,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-      },
-      include: this.quoteInclude,
-    });
-
-    await this.createEvent({
-      interventionId: quote.interventionId,
-      type: InterventionEventType.STATUS_CHANGED,
-      title: 'Devis mis à jour',
-      message: 'Le devis a été mis à jour.',
-      createdById: updatedById,
-      metadata: {
-        quoteId,
-      },
-    });
-
     return updated;
+  }
+
+  // ==========================================================
+  // Artisan / back office: the versions a quote went through
+  // ==========================================================
+
+  /**
+   * The versions that edits replaced, the latest first, and the revision the quote is at. The assigned artisan and the back
+   * office read them (the same people who read the quote itself); the back office also sees who made each edit.
+   */
+  async findRevisions(quoteId: number, actor: { id: number; role: Role }) {
+    const quote = await this.findOne(quoteId, actor);
+    const revisions = await revisionsOf(this.prisma, quoteId);
+
+    return quoteRevisionsView(quote, revisions, isBackOffice(actor.role));
   }
 
   // ==========================================================
@@ -402,24 +441,29 @@ export class QuotesService {
   // ==========================================================
 
   async sendQuote(quoteId: number, sentById: number) {
-    const quote = await this.getQuoteOrFail(quoteId);
+    const found = await this.getQuoteOrFail(quoteId);
 
-    await this.assertCanManageQuotesOf(sentById, quote.interventionId);
+    await this.assertCanManageQuotesOf(sentById, found.interventionId);
 
-    const sendableStatuses: QuoteStatus[] = [
-      QuoteStatus.DRAFT,
-      QuoteStatus.MODIFICATION_REQUESTED,
-    ];
+    const { quote, updated } = await this.prisma.$transaction(async (tx) => {
+      // Read again under the lock of the job: an answer of the customer or a cancellation may have come in meanwhile.
+      const current = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);
 
-    if (!sendableStatuses.includes(quote.status)) {
-      throw new BadRequestException(
-        'Seuls les devis brouillons ou à modifier peuvent être envoyés.',
-      );
-    }
+      await this.assertCanManageQuotesOf(sentById, found.interventionId, tx);
 
-    this.ensureQuoteNotExpired(quote);
+      const sendableStatuses: QuoteStatus[] = [
+        QuoteStatus.DRAFT,
+        QuoteStatus.MODIFICATION_REQUESTED,
+      ];
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+      if (!sendableStatuses.includes(current.status)) {
+        throw new BadRequestException(
+          'Seuls les devis brouillons ou à modifier peuvent être envoyés.',
+        );
+      }
+
+      this.ensureQuoteNotExpired(current);
+
       const sentQuote = await tx.quote.update({
         where: {
           id: quoteId,
@@ -432,14 +476,14 @@ export class QuotesService {
       });
 
       await transitionStatus(tx, {
-        id: quote.interventionId,
+        id: current.interventionId,
         to: Status.QUOTE_SENT,
         actor: { kind: 'system' },
         data: { quoteSentAt: new Date() },
         soft: true,
       });
 
-      return sentQuote;
+      return { quote: current, updated: sentQuote };
     });
 
     await this.createEvent({
@@ -535,52 +579,16 @@ export class QuotesService {
     const quote = await this.getQuoteOrFail(quoteId);
 
     this.ensureClientOwnsQuote(clientId, quote);
-    this.ensureQuoteIsSent(quote);
-    this.ensureQuoteNotExpired(quote);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      await tx.quote.updateMany({
-        where: {
-          interventionId: quote.interventionId,
-          id: {
-            not: quoteId,
-          },
-          status: {
-            in: [
-              QuoteStatus.DRAFT,
-              QuoteStatus.SENT,
-              QuoteStatus.MODIFICATION_REQUESTED,
-            ],
-          },
-        },
-        data: {
-          status: QuoteStatus.CANCELLED,
-          cancelledAt: new Date(),
-        },
-      });
-
-      const acceptedQuote = await tx.quote.update({
-        where: {
-          id: quoteId,
-        },
-        data: {
-          status: QuoteStatus.ACCEPTED,
-          clientNote: dto.note,
-          acceptedAt: new Date(),
-        },
+    const updated = await this.prisma.$transaction((tx) =>
+      acceptQuote(tx, quoteId, quote.interventionId, {
+        clientId,
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Ce devis ne peut plus être accepté.',
         include: this.quoteInclude,
-      });
-
-      await transitionStatus(tx, {
-        id: quote.interventionId,
-        to: Status.QUOTE_ACCEPTED,
-        actor: { kind: 'client', userId: clientId },
-        data: { quoteAcceptedAt: new Date() },
-        soft: true,
-      });
-
-      return acceptedQuote;
-    });
+      }),
+    );
 
     await this.createEvent({
       interventionId: quote.interventionId,
@@ -588,11 +596,12 @@ export class QuotesService {
       title: 'Devis accepté',
       message:
         dto.note ||
-        `Le client a accepté le devis de ${formatMoney(quote.amountTTC, { currency: quote.currency })} TTC.`,
+        `Le client a accepté le devis de ${formatMoney(updated.amountTTC, { currency: updated.currency })} TTC.`,
       createdById: clientId,
       metadata: {
         quoteId,
-        amountTTC: money(quote.amountTTC),
+        revision: revisionOf(updated),
+        amountTTC: money(updated.amountTTC),
       },
     });
 
@@ -611,19 +620,15 @@ export class QuotesService {
     const quote = await this.getQuoteOrFail(quoteId);
 
     this.ensureClientOwnsQuote(clientId, quote);
-    this.ensureQuoteIsSent(quote);
 
-    const updated = await this.prisma.quote.update({
-      where: {
-        id: quoteId,
-      },
-      data: {
-        status: QuoteStatus.REJECTED,
-        clientNote: dto.note,
-        rejectedAt: new Date(),
-      },
-      include: this.quoteInclude,
-    });
+    const updated = await this.prisma.$transaction((tx) =>
+      rejectQuote(tx, quoteId, quote.interventionId, {
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Ce devis ne peut plus être refusé.',
+        include: this.quoteInclude,
+      }),
+    );
 
     await this.createEvent({
       interventionId: quote.interventionId,
@@ -640,7 +645,7 @@ export class QuotesService {
   }
 
   // ==========================================================
-  // Client: ask question / request modification
+  // Client: ask for the quote to be changed
   // Keeps your existing method name
   // ==========================================================
 
@@ -653,47 +658,24 @@ export class QuotesService {
 
     this.ensureClientOwnsQuote(clientId, quote);
 
-    const modificationRequestAllowedStatuses: QuoteStatus[] = [
-      QuoteStatus.SENT,
-      QuoteStatus.MODIFICATION_REQUESTED,
-    ];
-
-    if (!modificationRequestAllowedStatuses.includes(quote.status)) {
-      throw new BadRequestException(
-        'Vous pouvez demander une modification uniquement sur un devis envoyé.',
-      );
-    }
-
-    const updated = await this.prisma.quote.update({
-      where: {
-        id: quoteId,
-      },
-      data: {
-        status: QuoteStatus.MODIFICATION_REQUESTED,
-        clientNote: dto.note,
-      },
-      include: this.quoteInclude,
-    });
-
-    await this.prisma.message.create({
-      data: {
-        interventionId: quote.interventionId,
+    // The words of the customer reach the support as a message, in the same transaction as the request.
+    const updated = await this.prisma.$transaction((tx) =>
+      requestChangeAndTell(tx, quoteId, quote.interventionId, {
         senderId: clientId,
-        audience: MessageAudience.CLIENT_SUPPORT,
-        content: `Question / demande sur le devis #${quoteId}: ${
-          dto.note || 'Le client demande des précisions sur le devis.'
-        }`,
-        attachments: [],
-      },
-    });
+        note: dto.note,
+        revision: dto.revision,
+        refusal: 'Vous pouvez demander une modification uniquement sur un devis envoyé.',
+        include: this.quoteInclude,
+      }),
+    );
 
     await this.createEvent({
       interventionId: quote.interventionId,
       type: InterventionEventType.QUOTE_MODIFICATION_REQUESTED,
-      title: 'Question ou modification du devis demandée',
+      title: 'Modification du devis demandée',
       message:
         dto.note ||
-        'Le client demande une précision ou une modification du devis.',
+        'Le client demande une modification du devis.',
       createdById: clientId,
       metadata: {
         quoteId,
@@ -704,11 +686,37 @@ export class QuotesService {
   }
 
   // ==========================================================
-  // Alias: client asks question about quote
+  // Client: ask a question about the quote
+  // The quote stays as it is: the customer can still accept it
   // ==========================================================
 
   async askQuestion(clientId: number, quoteId: number, dto: ClientQuoteActionDto) {
-    return this.requestModification(clientId, quoteId, dto);
+    const quote = await this.getQuoteOrFail(quoteId);
+
+    this.ensureClientOwnsQuote(clientId, quote);
+
+    const updated = await this.prisma.$transaction((tx) =>
+      askAndTell(tx, quoteId, quote.interventionId, {
+        senderId: clientId,
+        note: dto.note,
+        refusal: 'Vous pouvez poser une question uniquement sur un devis envoyé.',
+        include: this.quoteInclude,
+      }),
+    );
+
+    await this.createEvent({
+      interventionId: quote.interventionId,
+      type: InterventionEventType.QUOTE_MODIFICATION_REQUESTED,
+      title: 'Question sur le devis',
+      message: dto.note || 'Le client pose une question sur le devis.',
+      createdById: clientId,
+      metadata: {
+        quoteId,
+        question: true,
+      },
+    });
+
+    return quoteForClient(updated);
   }
 
   // ==========================================================
@@ -720,29 +728,38 @@ export class QuotesService {
     cancelledById: number,
     dto?: ClientQuoteActionDto,
   ) {
-    const quote = await this.getQuoteOrFail(quoteId);
+    const found = await this.getQuoteOrFail(quoteId);
 
-    await this.assertCanManageQuotesOf(cancelledById, quote.interventionId);
+    await this.assertCanManageQuotesOf(cancelledById, found.interventionId);
 
-    const nonCancellableStatuses: QuoteStatus[] = [
-      QuoteStatus.ACCEPTED,
-      QuoteStatus.CANCELLED,
-    ];
+    const { quote, updated } = await this.prisma.$transaction(async (tx) => {
+      // Read again under the lock of the job: the customer may have accepted the quote a moment ago.
+      const current = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);
 
-    if (nonCancellableStatuses.includes(quote.status)) {
-      throw new BadRequestException('Ce devis ne peut plus être annulé.');
-    }
+      await this.assertCanManageQuotesOf(cancelledById, found.interventionId, tx);
 
-    const updated = await this.prisma.quote.update({
-      where: {
-        id: quoteId,
-      },
-      data: {
-        status: QuoteStatus.CANCELLED,
-        clientNote: dto?.note || quote.clientNote,
-        cancelledAt: new Date(),
-      },
-      include: this.quoteInclude,
+      const nonCancellableStatuses: QuoteStatus[] = [
+        QuoteStatus.ACCEPTED,
+        QuoteStatus.CANCELLED,
+      ];
+
+      if (nonCancellableStatuses.includes(current.status)) {
+        throw new BadRequestException('Ce devis ne peut plus être annulé.');
+      }
+
+      const cancelled = await tx.quote.update({
+        where: {
+          id: quoteId,
+        },
+        data: {
+          status: QuoteStatus.CANCELLED,
+          clientNote: dto?.note || current.clientNote,
+          cancelledAt: new Date(),
+        },
+        include: this.quoteInclude,
+      });
+
+      return { quote: current, updated: cancelled };
     });
 
     await this.createEvent({
@@ -764,30 +781,36 @@ export class QuotesService {
   // ==========================================================
 
   async expireQuote(quoteId: number, expiredById?: number) {
-    const quote = await this.getQuoteOrFail(quoteId);
+    const found = await this.getQuoteOrFail(quoteId);
 
-    const nonExpirableStatuses: QuoteStatus[] = [
-      QuoteStatus.ACCEPTED,
-      QuoteStatus.REJECTED,
-      QuoteStatus.EXPIRED,
-      QuoteStatus.CANCELLED,
-    ];
+    const { quote, updated } = await this.prisma.$transaction(async (tx) => {
+      const current = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);
 
-    if (nonExpirableStatuses.includes(quote.status)) {
-      throw new BadRequestException(
-        'Ce devis ne peut pas être marqué comme expiré.',
-      );
-    }
+      const nonExpirableStatuses: QuoteStatus[] = [
+        QuoteStatus.ACCEPTED,
+        QuoteStatus.REJECTED,
+        QuoteStatus.EXPIRED,
+        QuoteStatus.CANCELLED,
+      ];
 
-    const updated = await this.prisma.quote.update({
-      where: {
-        id: quoteId,
-      },
-      data: {
-        status: QuoteStatus.EXPIRED,
-        expiredAt: new Date(),
-      },
-      include: this.quoteInclude,
+      if (nonExpirableStatuses.includes(current.status)) {
+        throw new BadRequestException(
+          'Ce devis ne peut pas être marqué comme expiré.',
+        );
+      }
+
+      const expired = await tx.quote.update({
+        where: {
+          id: quoteId,
+        },
+        data: {
+          status: QuoteStatus.EXPIRED,
+          expiredAt: new Date(),
+        },
+        include: this.quoteInclude,
+      });
+
+      return { quote: current, updated: expired };
     });
 
     await this.createEvent({
@@ -808,21 +831,46 @@ export class QuotesService {
   // Admin / Artisan: attach or update PDF URL
   // ==========================================================
 
+  /**
+   * The PDF is what the customer downloads: it is changed under the lock of the job, and only while the quote can still be edited.
+   * Swapping it on a quote that was sent is an edit like the others: the version it replaces is kept (with its PDF) and the
+   * revision is raised, so that a customer who read the quote with the old document cannot accept the new one by mistake.
+   */
   async setPdfUrl(quoteId: number, pdfUrl: string, actorId?: number) {
-    const quote = await this.getQuoteOrFail(quoteId);
-
-    if (actorId !== undefined) {
-      await this.assertCanManageQuotesOf(actorId, quote.interventionId);
+    // The route does not validate its body: a request with no address is not "no PDF", it is a mistake.
+    if (typeof pdfUrl !== 'string') {
+      throw new BadRequestException('Indiquez l’adresse du PDF.');
     }
 
-    return this.prisma.quote.update({
-      where: {
-        id: quote.id,
-      },
-      data: {
-        pdfUrl,
-      },
-      include: this.quoteInclude,
+    const found = await this.getQuoteOrFail(quoteId);
+
+    if (actorId !== undefined) {
+      await this.assertCanManageQuotesOf(actorId, found.interventionId);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const current = await readQuoteLocked(tx, quoteId, found.interventionId, this.quoteInclude);
+
+      if (actorId !== undefined) {
+        await this.assertCanManageQuotesOf(actorId, found.interventionId, tx);
+      }
+
+      this.ensureQuoteEditable(current);
+
+      const keeps = !samePdf(current.pdfUrl, pdfUrl) && current.status !== QuoteStatus.DRAFT;
+
+      if (keeps) await saveRevision(tx, current, { userId: actorId ?? null });
+
+      return tx.quote.update({
+        where: {
+          id: found.id,
+        },
+        data: {
+          pdfUrl,
+          ...(keeps ? { revision: revisionOf(current) + 1 } : {}),
+        },
+        include: this.quoteInclude,
+      });
     });
   }
 
