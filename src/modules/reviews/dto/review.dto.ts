@@ -3,8 +3,10 @@ import {
   IsEnum,
   IsInt,
   IsOptional,
+  IsIn,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -66,8 +68,10 @@ export class ModerateReviewDto {
   @IsEnum(ReviewModerationStatus)
   status: ReviewModerationStatus;
 
+  /** Required to refuse or hide a review (the service says so); the longest is MODERATION_REASON_MAX. */
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   moderationReason?: string;
 }
 
@@ -95,6 +99,23 @@ export class ReviewQueryDto {
   @Transform(({ value }) => toBoolean(value))
   @IsBoolean()
   onlyVisible?: boolean;
+
+  /** The best rating that is shown: 2 asks for the 1- and 2-star reviews (P2-09). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  maxRating?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(['oldest', 'newest'])
+  sort?: string;
 
   @IsOptional()
   @Type(() => Number)

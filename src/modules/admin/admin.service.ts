@@ -31,6 +31,8 @@ import {
   peopleToLookUp,
 } from '../../common/views/case-file';
 import { describeError } from '../notifications/delivery/delivery-error';
+import { complaintCase, complaintList } from './complaint-center';
+import { closeComplaintIfRefundAnswered, endsComplaint } from '../complaints/complaint-closing';
 import {
   interventionListSelect,
   interventionQueueOrder,
@@ -1756,79 +1758,22 @@ export class AdminService {
   // 6. COMPLAINT CENTER
   // ==========================================================
 
-  async findAllComplaints(query: AdminComplaintQueryDto) {
+  async findAllComplaints(query: AdminComplaintQueryDto, actorId: number | null = null) {
     const { page, limit, skip, take } = this.getPagination(
       query.page,
       query.limit,
     );
 
-    const where: Prisma.ComplaintWhereInput = {};
+    // The list is read by the complaints screen (P2-09): the views, the search and the size of each view are worked out in
+    // complaint-center.ts, which the specs run without a database.
+    const { rows, total, counts } = await complaintList(this.prisma, query, actorId, { page, limit, skip, take });
 
-    if (query.status) {
-      where.status = query.status;
-    }
+    return { ...paginated(rows, page, limit, total), counts };
+  }
 
-    if (query.assignedToId) {
-      where.assignedToId = Number(query.assignedToId);
-    }
-
-    if (query.search) {
-      where.OR = [
-        {
-          title: {
-            contains: query.search,
-            mode: 'insensitive',
-          },
-        },
-        {
-          description: {
-            contains: query.search,
-            mode: 'insensitive',
-          },
-        },
-        {
-          user: {
-            name: {
-              contains: query.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-        {
-          user: {
-            phone: {
-              contains: query.search,
-              mode: 'insensitive',
-            },
-          },
-        },
-      ];
-    }
-
-    const [data, total] = await Promise.all([
-      this.prisma.complaint.findMany({
-        where,
-        include: {
-          user: {
-            select: this.safeUserSelect,
-          },
-          intervention: {
-            include: this.interventionInclude,
-          },
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
-        skip,
-        take,
-      }),
-
-      this.prisma.complaint.count({
-        where,
-      }),
-    ]);
-
-    return paginated(data, page, limit, total);
+  /** One complaint for the screen that handles it: the people, the job, the thread, the journal and the money of the job. */
+  async getComplaintCase(complaintId: number) {
+    return complaintCase(this.prisma, complaintId);
   }
 
   async getComplaintDetail(complaintId: number) {
@@ -1909,17 +1854,23 @@ export class AdminService {
   ) {
     await this.getComplaintDetail(complaintId);
 
-    const updated = await this.prisma.complaint.update({
-      where: { id: complaintId },
-      data: {
-        status: dto.status,
-        closedAt:
-          dto.status === ComplaintStatus.RESOLVED ||
-          dto.status === ComplaintStatus.REJECTED
-            ? new Date()
-            : undefined,
-      },
-    });
+    const data = {
+      status: dto.status,
+      closedAt:
+        dto.status === ComplaintStatus.RESOLVED ||
+        dto.status === ComplaintStatus.REJECTED
+          ? new Date()
+          : undefined,
+    };
+
+    // Rejecting, resolving and refunding end a complaint (P2-09): not while the refund the customer asked for waits for an answer.
+    if (endsComplaint(dto.status)) {
+      await closeComplaintIfRefundAnswered(this.prisma, complaintId, data);
+    } else {
+      await this.prisma.complaint.update({ where: { id: complaintId }, data });
+    }
+
+    const updated = await this.prisma.complaint.findUnique({ where: { id: complaintId } });
 
     if (dto.note) {
       await this.addInternalNote({
@@ -2076,13 +2027,12 @@ export class AdminService {
   ) {
     await this.getComplaintDetail(complaintId);
 
-    const updated = await this.prisma.complaint.update({
-      where: { id: complaintId },
-      data: {
-        status: ComplaintStatus.RESOLVED,
-        closedAt: new Date(),
-      },
+    await closeComplaintIfRefundAnswered(this.prisma, complaintId, {
+      status: ComplaintStatus.RESOLVED,
+      closedAt: new Date(),
     });
+
+    const updated = await this.prisma.complaint.findUnique({ where: { id: complaintId } });
 
     await this.addInternalNote({
       authorId: adminId,
@@ -2162,6 +2112,13 @@ export class AdminService {
       throw new BadRequestException(error instanceof Error ? error.message : 'Paramètres invalides.');
     }
 
+    // The name of the company is the one thing an invoice cannot do without: it cannot be emptied (the other fields can).
+    const companyName = dto.companyName === undefined ? undefined : String(dto.companyName ?? '').trim();
+
+    if (companyName === '') {
+      throw new BadRequestException('Le nom de l’entreprise ne peut pas être vide.');
+    }
+
     // What the invoices print (P2-07): an empty text clears a field; the stamp duty is an amount that cannot be a typing error.
     const printedText = (value: unknown): string | null | undefined => (value === undefined ? undefined : value === null || String(value).trim() === '' ? null : String(value).trim());
     const companyAddress = printedText(dto.companyAddress);
@@ -2189,13 +2146,13 @@ export class AdminService {
     if (confirming) {
       const after = (incoming: unknown, current: unknown): string => String((incoming === undefined ? current : incoming) ?? '').trim();
       const missing = [
-        after(dto.companyName, settings.companyName) === '' ? 'le nom de l’entreprise' : null,
+        after(companyName, settings.companyName) === '' ? 'le nom de l’entreprise' : null,
         after(companyAddress, settings.companyAddress) === '' ? 'l’adresse' : null,
         after(matriculeFiscal, settings.matriculeFiscal) === '' ? 'le matricule fiscal' : null,
       ].filter(Boolean);
 
       if (missing.length > 0) {
-        throw new BadRequestException(`Les mentions ne peuvent pas être confirmées : renseignez d’abord ${missing.join(', ')}.`);
+        throw new BadRequestException(`Les mentions ne peuvent pas être confirmées : renseignez d’abord ${missing.length > 1 ? `${missing.slice(0, -1).join(', ')} et ${missing[missing.length - 1]}` : missing[0]}.`);
       }
     }
 
@@ -2204,7 +2161,7 @@ export class AdminService {
     }
 
     const printedChanged = printedSettingsChanged(settings, {
-      companyName: dto.companyName,
+      companyName,
       companyPhone: dto.companyPhone,
       companyEmail: dto.companyEmail,
       companyAddress,
@@ -2229,7 +2186,7 @@ export class AdminService {
         id: settings.id,
       },
       data: {
-        companyName: dto.companyName,
+        companyName,
         companyPhone: dto.companyPhone,
         companyEmail: dto.companyEmail,
         smsSender: dto.smsSender,

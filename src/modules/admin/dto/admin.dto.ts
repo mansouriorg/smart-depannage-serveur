@@ -40,6 +40,7 @@ import {
 } from '../../../../generated/prisma/client';
 
 import { DISPATCH_SORTS, DISPATCH_VIEW_IDS } from '../../intervention-workflow/intervention-status';
+import { COMPLAINT_SORTS, COMPLAINT_VIEWS } from '../complaint-queue';
 
 // ==========================================================
 // COMMON
@@ -420,9 +421,24 @@ export class AdminComplaintQueryDto extends PaginationQueryDto {
   @IsString()
   assignedToId?: string;
 
+  /** The complaints the signed-in person handles. */
+  @IsOptional()
+  @IsIn(['true', 'false', '1', '0'])
+  mine?: string;
+
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   search?: string;
+
+  /** What to do with the list (P2-09): the complaints to work on, to decide, to pay, nobody's, over, or all. */
+  @IsOptional()
+  @IsIn([...COMPLAINT_VIEWS])
+  view?: string;
+
+  @IsOptional()
+  @IsIn([...COMPLAINT_SORTS])
+  sort?: string;
 }
 
 export class AssignComplaintDto {

@@ -87,15 +87,21 @@ export interface RefundDueRow {
   /** The invoice that stands now, if any (a credit note that closes an invoice leaves none). */
   invoice: { id: number; number: string } | null;
   creditNotes: Array<{ id: number; number: string; amount: number; issuedAt: Date | null }>;
+  /** The complaints whose refund was accepted for an amount that has not all gone back (P2-09), with what each still lacks. */
+  complaints: Array<{ id: number; title: string; accepted: number; remaining: number; decidedAt: Date | null }>;
   /** What the job holds: received less given back. */
   kept: number;
   /** What the customer owes now: the standing invoice's amount to pay, or 0 without one. */
   owed: number;
-  /** `kept - owed`: what to give back. */
+  /** What the credit notes leave to give back: `kept - owed` (0 for a job with no credit note). */
+  fromCreditNotes: number;
+  /** What the accepted refunds of complaints still lack: the largest of them (0 for a job with no accepted refund). */
+  fromComplaints: number;
+  /** What to give back: the larger of the two (money that goes back answers both). */
   due: number;
   /** The payments the money can go back on, oldest first. */
   payments: Array<{ id: number; method: string; status: string; amount: number; refundable: number; confirmedAt: Date | null }>;
-  /** The date of the first credit note: the one who has waited longest comes first. */
+  /** The date of the first credit note or of the first acceptance of a refund: the one who has waited longest comes first. */
   since: Date | null;
 }
 

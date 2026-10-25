@@ -40,6 +40,8 @@ const CONTROLLERS = [
   'invoices/invoices.controller.ts',
   'cash-ledger/cash-ledger.controller.ts',
   'business/business.controller.ts',
+  'complaints/complaints.controller.ts',
+  'reviews/reviews.controller.ts',
 ];
 
 function routesOfTheApi(): Map<string, ScannedRoute> {
@@ -141,6 +143,46 @@ const SERVED: Record<string, { roles: readonly string[]; because: string; eviden
     evidence: /this\.service\.cancelPayout\(/,
     service: { file: 'business/business.service.ts', evidence: /async cancelPayout\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
   },
+  // The complaints and the reviews (P2-09): the routes carry no @Roles, and the service refuses a customer or an artisan.
+  'PATCH /complaints/admin/:/assign': {
+    roles: STAFF_ROLES,
+    because: 'giving a complaint to an agent: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.assignComplaint\(/,
+    service: { file: 'complaints/complaints.service.ts', evidence: /async assignComplaint\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'PATCH /complaints/admin/:/status': {
+    roles: STAFF_ROLES,
+    because: 'moving a complaint\'s status: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.updateStatus\(/,
+    service: { file: 'complaints/complaints.service.ts', evidence: /async updateStatus\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'PATCH /complaints/admin/:/resolve': {
+    roles: STAFF_ROLES,
+    because: 'resolving a complaint: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.resolveComplaint\(/,
+    service: { file: 'complaints/complaints.service.ts', evidence: /async resolveComplaint\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'POST /complaints/:/messages': {
+    roles: STAFF_ROLES,
+    because: 'a message on a complaint: its customer, its artisan and every staff role (the service lets staff in, and only staff write an internal one)',
+    evidence: /this\.service\.addMessage\(/,
+    service: {
+      file: 'complaints/complaints.service.ts',
+      evidence: /const isStaff = this\.isStaff\(role\);\s*if \(!isClient && !isArtisan && !isAuthor && !isStaff\) \{\s*throw new ForbiddenException/,
+    },
+  },
+  'GET /reviews/admin': {
+    roles: STAFF_ROLES,
+    because: 'the moderation queue: every staff role may read it (the service checks the role is a staff role)',
+    evidence: /this\.service\.adminFindAll\(/,
+    service: { file: 'reviews/reviews.service.ts', evidence: /async adminFindAll\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'PATCH /reviews/admin/:/moderate': {
+    roles: STAFF_ROLES,
+    because: 'deciding a review: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.moderateReview\(/,
+    service: { file: 'reviews/reviews.service.ts', evidence: /async moderateReview\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
   'GET /users/me': {
     roles: STAFF_ROLES,
     because: 'the signed-in person\'s own account, read from the token',
@@ -227,13 +269,13 @@ describe('the pages of the dashboard', () => {
     }
   });
 
-  it('the other roles: admins see everything, support checks applicants, the accountant has the finance console and her profile', () => {
+  it('the other roles: admins see everything, support checks applicants and runs the complaints, the accountant has the finance console, the complaints, the company and her profile', () => {
     const everything = DASHBOARD_PAGES.map((page) => page.id);
 
     expect(dashboardPagesFor('ADMIN').map((page) => page.id)).toEqual(everything);
     expect(dashboardPagesFor('SUPER_ADMIN').map((page) => page.id)).toEqual(everything);
-    expect(dashboardPagesFor('SUPPORT').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'settings']);
-    expect(dashboardPagesFor('ACCOUNTANT').map((page) => page.id)).toEqual(['finance', 'settings']);
+    expect(dashboardPagesFor('SUPPORT').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'complaints', 'settings']);
+    expect(dashboardPagesFor('ACCOUNTANT').map((page) => page.id)).toEqual(['finance', 'complaints', 'company', 'settings']);
     expect(dashboardHomeFor('ACCOUNTANT')).toBe('/dashboard/finance');
   });
 
@@ -390,10 +432,22 @@ describe('the table against the routes of the API', () => {
         // A route that decides in code says who it serves in SERVED.
         const roles = servedRoles(call);
 
-        expect(sorted(staffOnly(roles))).toEqual(sorted(action.roles));
+        expect(sorted(staffOnly(roles))).toEqual(sorted([...action.roles, ...(action.alsoServed ?? [])]));
       }
     });
   }
+
+  it('a role that is served the calls of a button without being shown it is said so once, and is not also shown it (P2-09)', () => {
+    const said = STAFF_ACTIONS.filter((action) => action.alsoServed !== undefined);
+
+    expect(said.map((action) => action.id)).toEqual(['handleComplaint', 'moderateReview']);
+
+    for (const action of said) {
+      expect(action.alsoServed?.length).toBeGreaterThan(0);
+      expect(new Set(action.alsoServed).size).toBe(action.alsoServed?.length);
+      expect(action.roles.filter((role) => action.alsoServed?.includes(role))).toEqual([]);
+    }
+  });
 
   it('the roles of an action are within the pages that hold it (the page that shows the button is open to them)', () => {
     const placed: Record<string, string> = {
@@ -405,6 +459,10 @@ describe('the table against the routes of the API', () => {
       decideApplication: 'applications',
       inviteTechnician: 'technicians',
       manageTechnician: 'technicians',
+      handleComplaint: 'complaints',
+      decideComplaintRefund: 'complaints',
+      moderateReview: 'feedbacks',
+      editCompany: 'company',
     };
 
     expect(Object.keys(placed).sort()).toEqual(STAFF_ACTIONS.map((action) => action.id).sort());
@@ -472,12 +530,20 @@ describe('the table against the routes of the API', () => {
     ]);
   });
 
-  it('ACCOUNTANT is served by no call of the pages but the finance console, her own profile and the frame (P2-08)', () => {
-    for (const page of DASHBOARD_PAGES.filter((candidate) => candidate.id !== 'settings' && candidate.id !== 'finance')) {
-      for (const call of page.calls) {
+  it('ACCOUNTANT is served by no call of the pages but the finance console, the complaints, the company, her own profile and the frame (P2-08, P2-09)', () => {
+    const hers = ['settings', 'finance', 'complaints', 'company'];
+
+    // The moderation queue's read is the one exception: the service lets every staff role read reviews (SERVED says so), the
+    // page is shown to three of them.
+    const readsEveryStaffRole = 'GET /reviews/admin';
+
+    for (const page of DASHBOARD_PAGES.filter((candidate) => !hers.includes(candidate.id))) {
+      for (const call of page.calls.filter((candidate) => `${candidate.method} ${candidate.path}` !== readsEveryStaffRole)) {
         expect(servedRoles(call)).not.toContain('ACCOUNTANT');
       }
     }
+
+    expect(servedRoles({ method: 'GET', path: '/reviews/admin' })).toEqual(STAFF_ROLES);
   });
 });
 
@@ -533,7 +599,7 @@ describe('the finance console in the table (P2-08)', () => {
   });
 
   it('comes before the profile in the menu, after the pages of the work on jobs', () => {
-    expect(dashboardPagesFor('ADMIN').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'finance', 'settings']);
+    expect(dashboardPagesFor('ADMIN').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'finance', 'complaints', 'company', 'settings']);
   });
 
   it('reads with the five finance routes, each for the page\'s roles alone (a role that cannot open the page reads none of it)', () => {
@@ -582,5 +648,99 @@ describe('the finance console in the table (P2-08)', () => {
     const service = MODULE_SOURCE('business/business.service.ts');
 
     expect(/private isStaff\(role: Role\): boolean \{\s*const staffRoles: Role\[\] = \[\s*Role\.ADMIN,\s*Role\.SUPER_ADMIN,\s*Role\.SUPPORT,\s*Role\.DISPATCHER,\s*Role\.ACCOUNTANT,\s*\];/.test(service)).toBe(true);
+  });
+});
+
+describe('the complaints, the reviews and the company in the table (P2-09)', () => {
+  const page = (id: string) => DASHBOARD_PAGES.find((candidate) => candidate.id === id);
+  const action = (id: string) => STAFF_ACTIONS.find((candidate) => candidate.id === id);
+
+  it('Réclamations is open to the team that runs complaints and to the accountant, and not to dispatch', () => {
+    expect([...(page('complaints')?.roles ?? [])].sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(page('complaints')?.path).toBe('/dashboard/complaints');
+
+    for (const role of ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'ACCOUNTANT']) {
+      expect(canOpenDashboardPath(role, '/dashboard/complaints')).toBe(true);
+      expect(canOpenDashboardPath(role, '/dashboard/complaints/12')).toBe(true);
+    }
+
+    for (const role of ['DISPATCHER', 'CLIENT', 'ARTISAN', null, undefined, '']) {
+      expect(canOpenDashboardPath(role, '/dashboard/complaints')).toBe(false);
+      expect(canOpenDashboardPath(role, '/dashboard/complaints/12')).toBe(false);
+    }
+
+    expect(dashboardPageFor('/dashboard/complaintsx')).toBeUndefined();
+  });
+
+  it('Entreprise is the administrators\' to change and the accountant\'s to read; support and dispatch have no use for it', () => {
+    expect([...(page('company')?.roles ?? [])].sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+    expect(canOpenDashboardPath('SUPPORT', '/dashboard/company')).toBe(false);
+    expect(canOpenDashboardPath('DISPATCHER', '/dashboard/company')).toBe(false);
+    expect(canOpenDashboardPath('ACCOUNTANT', '/dashboard/company')).toBe(true);
+
+    expect(staffCan('ADMIN', 'editCompany')).toBe(true);
+    expect(staffCan('SUPER_ADMIN', 'editCompany')).toBe(true);
+    expect(staffCan('ACCOUNTANT', 'editCompany')).toBe(false);
+    expect(staffCan('SUPPORT', 'editCompany')).toBe(false);
+    expect(sorted(API.get(routeKey('PATCH', '/admin/settings/company'))?.roles ?? [])).toEqual(['ADMIN', 'SUPER_ADMIN']);
+  });
+
+  it('the reads of the complaints and of the company are served to the roles of their page and to no other', () => {
+    expect(sorted(API.get(routeKey('GET', '/admin/complaints'))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(sorted(API.get(routeKey('GET', '/admin/complaints/:complaintId'))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(sorted(API.get(routeKey('GET', '/admin/settings/company'))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+
+    // What the page table says is what the route answers: a dispatcher's hand-made request is refused, not served.
+    expect(sorted(page('complaints')?.roles ?? [])).toEqual(sorted(API.get(routeKey('GET', '/admin/complaints'))?.roles ?? []));
+    expect(sorted(page('company')?.roles ?? [])).toEqual(sorted(API.get(routeKey('GET', '/admin/settings/company'))?.roles ?? []));
+  });
+
+  it('"Avis & Retours" keeps its roles and reads the moderation queue, no longer the star ratings of the jobs', () => {
+    expect([...(page('feedbacks')?.roles ?? [])].sort()).toEqual(['ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(page('feedbacks')?.calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /reviews/admin']);
+  });
+
+  it('the buttons: support runs a complaint and moderates, the accountant decides refunds, nobody else does either', () => {
+    expect(staffCan('SUPPORT', 'handleComplaint')).toBe(true);
+    expect(staffCan('ADMIN', 'handleComplaint')).toBe(true);
+    expect(staffCan('ACCOUNTANT', 'handleComplaint')).toBe(false);
+    expect(staffCan('DISPATCHER', 'handleComplaint')).toBe(false);
+
+    expect(staffCan('ACCOUNTANT', 'decideComplaintRefund')).toBe(true);
+    expect(staffCan('ADMIN', 'decideComplaintRefund')).toBe(true);
+    expect(staffCan('SUPPORT', 'decideComplaintRefund')).toBe(false);
+    expect(staffCan('DISPATCHER', 'decideComplaintRefund')).toBe(false);
+
+    expect(staffCan('SUPPORT', 'moderateReview')).toBe(true);
+    expect(staffCan('SUPER_ADMIN', 'moderateReview')).toBe(true);
+    expect(staffCan('ACCOUNTANT', 'moderateReview')).toBe(false);
+    expect(staffCan('DISPATCHER', 'moderateReview')).toBe(false);
+  });
+
+  it('says plainly that the dispatcher and the accountant could still call the routes of a complaint and of a review by hand', () => {
+    expect(action('handleComplaint')?.alsoServed).toEqual(['DISPATCHER', 'ACCOUNTANT']);
+    expect(action('moderateReview')?.alsoServed).toEqual(['DISPATCHER', 'ACCOUNTANT']);
+    expect(action('decideComplaintRefund')?.alsoServed).toBeUndefined();
+    expect(action('editCompany')?.alsoServed).toBeUndefined();
+  });
+
+  it('a refund on a complaint is decided on the route that is the finance roles\' alone, and no older route is offered', () => {
+    expect(sorted(API.get(routeKey('PATCH', '/admin/complaints/:complaintId/refund'))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+
+    const calls = STAFF_ACTIONS.flatMap((candidate) => candidate.calls).map((call) => `${call.method} ${call.path}`);
+
+    for (const older of ['PATCH /complaints/admin/:complaintId/refund', 'PATCH /complaints/admin/:complaintId/decision']) {
+      expect(calls).not.toContain(older);
+    }
+  });
+
+  it('the screens read the complaint list and case from the back-office routes, not from the older customer-facing ones', () => {
+    const calls = (page('complaints')?.calls ?? []).map((call) => `${call.method} ${call.path}`);
+
+    expect(calls).toContain('GET /admin/complaints');
+    expect(calls).toContain('GET /admin/complaints/:complaintId');
+    expect(calls).toContain('GET /users');
+    expect(calls).not.toContain('GET /complaints/admin');
+    expect(calls).not.toContain('GET /complaints/:complaintId');
   });
 });

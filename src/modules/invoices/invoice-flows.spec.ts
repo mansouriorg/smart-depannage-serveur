@@ -1071,6 +1071,7 @@ describe('the confirmation of the mentions, after the review (P2-07)', () => {
 
   it('is refused when the same request empties the name, the address or the tax number, and nothing of that request is written', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
+      // (P2-09: a name is never emptied, with or without a confirmation; the refusal comes before the confirmation is looked at)
       [{ companyName: '  ' }, 'le nom de l’entreprise'],
       [{ companyAddress: ' ' }, 'l’adresse'],
       [{ matriculeFiscal: '' }, 'le matricule fiscal'],
@@ -1081,7 +1082,7 @@ describe('the confirmation of the mentions, after the review (P2-07)', () => {
       const d = desk();
       const refused = await refusal(() => update(d, { ...confirm, ...change, paymentTerms: 'À 45 jours' }));
 
-      expect(`${JSON.stringify(change)} -> ${refused?.status} ${refused?.message?.includes(missing)}`).toBe(`${JSON.stringify(change)} -> 400 true`);
+      expect(`${JSON.stringify(change)} -> ${refused?.status} ${refused?.message?.toLowerCase().includes(missing)}`).toBe(`${JSON.stringify(change)} -> 400 true`);
       expect(settingsOf(d).paymentTerms).toBe('Paiement à réception de la facture.');
       expect(settingsOf(d).invoiceRulesConfirmedAt ?? null).toBeNull();
     }

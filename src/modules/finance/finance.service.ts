@@ -408,22 +408,39 @@ export class FinanceService {
   }
 
   /**
-   * The jobs where the customer has paid more than is now owed after a credit note. For each job that has a credit note: what the
-   * job holds (received less given back) less what the standing invoice asks (nothing when a credit note closed it). A job that
-   * continues on its quote after a closing credit note shows what it holds: the accountant decides, the server does not guess.
+   * The money to give back to customers, job by job. Two reasons make a job appear (both can):
+   *  - a credit note: the job holds (received less given back) more than the standing invoice asks (nothing when a credit note
+   *    closed it). A job that continues on its quote after a closing credit note shows what it holds: the accountant decides,
+   *    the server does not guess;
+   *  - a complaint whose refund was accepted for an amount (P2-09): the amount less what has already gone back on the job (the
+   *    payment refund that reaches it settles the complaint). An acceptance with no amount says nothing about how much: it is
+   *    in the complaints screen, not here.
+   * When both apply the job owes the larger: money that goes back answers both.
    */
   private async computeRefundsDue(): Promise<RefundDueRow[]> {
-    const notes: Row[] = await this.db.creditNote.findMany({
-      select: { id: true, creditNoteNumber: true, interventionId: true, amountTTC: true, stampDuty: true, issuedAt: true },
-      orderBy: { id: 'asc' },
-      take: SUMMARY_LIMIT + 1,
-    });
+    const [notes, complaints]: Row[][] = await Promise.all([
+      this.db.creditNote.findMany({
+        select: { id: true, creditNoteNumber: true, interventionId: true, amountTTC: true, stampDuty: true, issuedAt: true },
+        orderBy: { id: 'asc' },
+        take: SUMMARY_LIMIT + 1,
+      }),
+      this.db.complaint.findMany({
+        where: { refundDecision: 'APPROVED' },
+        select: { id: true, interventionId: true, title: true, refundAmount: true, refundDecidedAt: true },
+        orderBy: { id: 'asc' },
+        take: SUMMARY_LIMIT + 1,
+      }),
+    ]);
 
     tooMany(notes, 'avoirs', false);
+    tooMany(complaints, 'réclamations', false);
 
-    if (notes.length === 0) return [];
+    // An acceptance that states no amount cannot be priced here.
+    const promises = complaints.filter((complaint) => compareMoney(money(complaint.refundAmount), 0) > 0);
 
-    const jobIds = [...new Set(notes.map((note) => note.interventionId as number))];
+    if (notes.length === 0 && promises.length === 0) return [];
+
+    const jobIds = [...new Set([...notes.map((note) => note.interventionId as number), ...promises.map((complaint) => complaint.interventionId as number)])];
 
     const [payments, invoices, jobs]: Row[][] = await Promise.all([
       this.db.payment.findMany({
@@ -439,43 +456,65 @@ export class FinanceService {
     const live = new Map<number, Row>();
     const clients = new Map<number, Row | null>(jobs.map((job) => [job.id as number, (job.client ?? null) as Row | null]));
     const notesOf = new Map<number, Row[]>();
+    const promisesOf = new Map<number, Row[]>();
     const company = currencyCode();
 
     for (const payment of payments) paymentsOf.set(payment.interventionId, [...(paymentsOf.get(payment.interventionId) ?? []), payment]);
     for (const invoice of invoices) live.set(invoice.interventionId, invoice);
     for (const note of notes) notesOf.set(note.interventionId, [...(notesOf.get(note.interventionId) ?? []), note]);
+    for (const complaint of promises) promisesOf.set(complaint.interventionId, [...(promisesOf.get(complaint.interventionId) ?? []), complaint]);
 
     const rows: RefundDueRow[] = [];
 
     for (const jobId of jobIds) {
       const jobPayments = paymentsOf.get(jobId) ?? [];
       const standing = live.get(jobId) ?? null;
+      const jobNotes = notesOf.get(jobId) ?? [];
+      const jobPromises = promisesOf.get(jobId) ?? [];
+
+      const figures = paymentFigures(jobPayments);
+      const owed = standing ? amountToPay(standing) : 0;
 
       // A standing invoice in another currency cannot be set against the sums of the company: the accountant reads that one.
-      if (standing?.currency && String(standing.currency) !== company) continue;
+      const comparable = !(standing?.currency && String(standing.currency) !== company);
+      const fromCreditNotes = jobNotes.length > 0 && comparable ? Math.max(subtractMoney(figures.kept, owed), 0) : 0;
 
-      const kept = paymentFigures(jobPayments).kept;
-      const owed = standing ? amountToPay(standing) : 0;
-      const due = Math.max(subtractMoney(kept, owed), 0);
+      // Every complaint is answered by a refund that reaches its amount: the job owes what the largest of them still lacks, and never
+      // more than the job still holds (a refund accepted before any payment came in cannot be given back from nothing).
+      const held = Math.max(figures.kept, 0);
+      const pending = jobPromises
+        .map((complaint) => {
+          const lacking = Math.max(subtractMoney(complaint.refundAmount, figures.refunded), 0);
+
+          return { id: complaint.id as number, title: String(complaint.title ?? ''), accepted: money(complaint.refundAmount), remaining: compareMoney(lacking, held) > 0 ? held : lacking, decidedAt: (complaint.refundDecidedAt ?? null) as Date | null };
+        })
+        .filter((complaint) => compareMoney(complaint.remaining, 0) > 0);
+      const fromComplaints = pending.reduce((most, complaint) => (compareMoney(complaint.remaining, most) > 0 ? complaint.remaining : most), 0);
+
+      const due = compareMoney(fromCreditNotes, fromComplaints) >= 0 ? fromCreditNotes : fromComplaints;
 
       if (compareMoney(due, 0) <= 0) continue;
 
       const client = clients.get(jobId) ?? null;
-      const jobNotes = notesOf.get(jobId) ?? [];
+      // The line is as old as the oldest thing that makes the job owe: a credit note the invoice already covers owes nothing.
+      const dates = [...(compareMoney(fromCreditNotes, 0) > 0 ? [jobNotes[0]?.issuedAt] : []), ...(compareMoney(fromComplaints, 0) > 0 ? pending.map((complaint) => complaint.decidedAt) : [])].filter((date): date is Date => date instanceof Date);
 
       rows.push({
         interventionId: jobId,
         client: client ? { id: client.id, name: client.name ?? null, phone: client.phone ?? null } : null,
         invoice: standing ? { id: standing.id, number: String(standing.invoiceNumber) } : null,
         creditNotes: jobNotes.map((note) => ({ id: note.id, number: String(note.creditNoteNumber), amount: sumMoney(note.amountTTC, note.stampDuty), issuedAt: note.issuedAt ?? null })),
-        kept,
+        complaints: pending.map((complaint) => ({ id: complaint.id, title: complaint.title, accepted: complaint.accepted, remaining: complaint.remaining, decidedAt: complaint.decidedAt })),
+        kept: figures.kept,
         owed,
+        fromCreditNotes,
+        fromComplaints,
         due,
         payments: jobPayments
           .filter((payment) => RECEIVED_PAYMENT_STATUSES.includes(String(payment.status)) && (!payment.currency || String(payment.currency) === company))
           .map((payment) => ({ id: payment.id, method: String(payment.method), status: String(payment.status), amount: money(payment.amount), refundable: Math.max(subtractMoney(payment.amount, refundedOn(payment)), 0), confirmedAt: payment.confirmedAt ?? null }))
           .filter((payment) => compareMoney(payment.refundable, 0) > 0),
-        since: jobNotes[0]?.issuedAt ?? null,
+        since: dates.length ? new Date(Math.min(...dates.map((date) => date.getTime()))) : null,
       });
     }
 

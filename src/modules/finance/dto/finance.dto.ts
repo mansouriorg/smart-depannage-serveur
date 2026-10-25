@@ -58,6 +58,14 @@ export class FinancePaymentsQueryDto extends FinancePageQueryDto {
   @IsEnum(PaymentMethod)
   method?: PaymentMethod;
 
+  /** Only the payments of this job (the complaint screen links to them): the number of the job, not a text to search for. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(2_147_483_647)
+  interventionId?: number;
+
   /** newest or oldest: by the date the view is about (the one waiting longest first is `oldest`). */
   @IsOptional()
   @IsIn(PAYMENT_SORTS)
@@ -88,6 +96,14 @@ export class FinancePaymentsExportQueryDto extends FinancePeriodQueryDto {
   @IsOptional()
   @IsEnum(PaymentMethod)
   method?: PaymentMethod;
+
+  /** Only the payments of this job (the complaint screen links to them): the number of the job, not a text to search for. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(2_147_483_647)
+  interventionId?: number;
 
   @IsOptional()
   @IsString()

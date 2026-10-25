@@ -385,6 +385,53 @@ describe('the payments of a week (P2-08)', () => {
     expect(found).toContain(pay.G.id);
   });
 
+  it('shows only the payments of one job when it is asked for by its number, where the search shows every payment with that number', async () => {
+    const { world } = book();
+    const planted: any[] = world.memory.rows('payment');
+    const jobs = [...new Set(planted.map((row) => row.interventionId))];
+    const idsOfJob = (job: number) => planted.filter((row) => row.interventionId === job).map((row) => row.id).sort((a, b) => a - b);
+    let wider = 0;
+
+    expect(jobs.length).toBeGreaterThan(2);
+
+    for (const job of jobs) {
+      const filtered = idsOf(await world.svc.finance.listPayments('ACCOUNTANT', { interventionId: job, view: 'all' }, NOW)).sort((a: number, b: number) => a - b);
+      const searched = idsOf(await world.svc.finance.listPayments('ACCOUNTANT', { search: String(job) }, NOW));
+
+      expect(filtered).toEqual(idsOfJob(job));
+      // The search also finds the payment that has the number of the job, whichever job it belongs to.
+      if (searched.length > filtered.length) wider += 1;
+    }
+
+    expect(wider).toBeGreaterThan(0);
+  });
+
+  it('combines the job with the tab, the way of payment and the file, and reads a number sent as text', async () => {
+    const { world, pay } = book();
+    const job = pay.G.interventionId;
+    const all = (query: Record<string, unknown>) => world.svc.finance.listPayments('ACCOUNTANT', query, NOW);
+
+    expect(idsOf(await all({ interventionId: String(job) })).sort()).toEqual(idsOf(await all({ interventionId: job })).sort());
+    expect(idsOf(await all({ interventionId: job, status: 'FAILED' }))).toEqual((world.memory.rows('payment') as any[]).filter((row) => row.interventionId === job && row.status === 'FAILED').map((row) => row.id));
+    expect((await all({ interventionId: job, view: 'awaiting', status: 'PAID' })).total).toBe(0);
+
+    const file = await world.svc.finance.exportPayments('ACCOUNTANT', { interventionId: job } as any, NOW);
+
+    expect(file.buffer.toString('utf8').trim().split('\n').length - 1).toBe((world.memory.rows('payment') as any[]).filter((row) => row.interventionId === job).length);
+  });
+
+  it('shows no payment for a job number that is no job, not every payment', async () => {
+    const { world } = book();
+
+    for (const interventionId of [0, -1, 'abc', 2.5, 99_999_999_999]) {
+      expect((await world.svc.finance.listPayments('ACCOUNTANT', { interventionId } as any, NOW)).total).toBe(0);
+    }
+
+    // Not given at all, or left empty: no filter.
+    expect((await world.svc.finance.listPayments('ACCOUNTANT', { interventionId: undefined }, NOW)).total).toBe(12);
+    expect((await world.svc.finance.listPayments('ACCOUNTANT', { interventionId: '' } as any, NOW)).total).toBe(12);
+  });
+
   it('does not match everything on a search of only spaces, or a search that is a percent sign', async () => {
     const { world } = book();
 
@@ -1708,5 +1755,244 @@ describe('what the second reviews of the console found (P2-08)', () => {
       expect(failure?.message).toMatch(/^Trop de factures pour un résumé/);
       expect(failure?.message).toContain('prévenez l’équipe technique');
     });
+  });
+});
+
+describe('the refunds that a complaint accepted (P2-09)', () => {
+  beforeEach(() => resetLocale());
+
+  /** A job that holds 120 received on one payment, with a complaint of the given decision. */
+  function accepted(promised: number | null, decision = 'APPROVED') {
+    const { world, client, jobs } = owing();
+    const m = world.memory;
+    const job = m.plant('intervention', { clientId: client.id, status: 'PAID', serviceType: 'PLOMBIER' });
+    const payment = plantPayment(world, { interventionId: job.id, method: 'BANK_TRANSFER', status: 'PAID', amount: 120, confirmedAt: at('2026-10-11T08:00:00Z'), requestedAt: at('2026-10-11T08:00:00Z') });
+    const complaint = (data: Record<string, any> = {}) =>
+      m.plant('complaint', { interventionId: job.id, userId: client.id, title: 'Fuite', description: 'Toujours là', status: 'REFUNDED', refundRequested: true, refundDecision: decision, refundApproved: true, refundAmount: promised, refundDecidedAt: at('2026-10-22T08:00:00Z'), ...data });
+
+    return { world, m, client, job, payment, jobs, complaint: complaint(), another: complaint };
+  }
+
+  const rowOf = async (world: World, job: any) => (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === job.id);
+
+  it('lists a refund that was accepted for an amount and has not gone back, as what the complaint still lacks', async () => {
+    const { world, job, complaint, payment } = accepted(50);
+    const row = await rowOf(world, job);
+
+    expect(row).toMatchObject({ kept: 120, fromCreditNotes: 0, fromComplaints: 50, due: 50, creditNotes: [] });
+    expect(row.complaints).toEqual([{ id: complaint.id, title: 'Fuite', accepted: 50, remaining: 50, decidedAt: at('2026-10-22T08:00:00Z') }]);
+    expect(row.payments.map((entry: any) => [entry.id, entry.refundable])).toEqual([[payment.id, 120]]);
+  });
+
+  it('lists it when there is no credit note at all: the complaint alone is a reason to give money back', async () => {
+    const { world, job } = accepted(50);
+
+    world.clear('creditNote');
+
+    const page = await world.svc.finance.refundsDue('ACCOUNTANT');
+
+    expect(page.items.map((item: any) => [item.interventionId, item.fromCreditNotes, item.fromComplaints, item.due])).toEqual([[job.id, 0, 50, 50]]);
+  });
+
+  it('subtracts what already went back on the job: the refund that reaches the amount settles the complaint', async () => {
+    const { world, job, payment } = accepted(50);
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 30 } });
+    expect(await rowOf(world, job)).toMatchObject({ fromComplaints: 20, due: 20, kept: 90 });
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 50 } });
+    expect(await rowOf(world, job)).toBeUndefined();
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 80 } });
+    expect(await rowOf(world, job)).toBeUndefined();
+  });
+
+  it('lists, among the complaints of a job, only those that still lack money, and dates the line from them', async () => {
+    const { world, job, payment, complaint, another } = accepted(50);
+    const small = another({ title: 'Petit geste', refundAmount: 20, refundDecidedAt: at('2026-10-10T08:00:00Z') });
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 30 } });
+
+    const row = await rowOf(world, job);
+
+    expect(row.complaints.map((entry: any) => [entry.id, entry.remaining])).toEqual([[complaint.id, 20]]);
+    expect(row.complaints.some((entry: any) => entry.id === small.id)).toBe(false);
+    expect(row.since).toEqual(at('2026-10-22T08:00:00Z'));
+  });
+
+  it('dates a job from the earliest decision among the complaints that still lack money', async () => {
+    const { world, job, complaint, another } = accepted(50);
+    const older = another({ title: 'Plus ancienne', refundAmount: 30, refundDecidedAt: at('2026-10-12T08:00:00Z') });
+
+    const row = await rowOf(world, job);
+
+    expect(row.complaints.map((entry: any) => entry.id).sort()).toEqual([complaint.id, older.id].sort());
+    expect(row.since).toEqual(at('2026-10-12T08:00:00Z'));
+  });
+
+  it('does not price an acceptance that states no amount: the complaints screen holds it, not the money to give back', async () => {
+    for (const promised of [null, 0]) {
+      const { world, job } = accepted(promised as any);
+
+      expect(await rowOf(world, job)).toBeUndefined();
+    }
+  });
+
+  it('leaves an acceptance with no amount out of the line of a job that owes for a credit note', async () => {
+    const { world, jobs, client } = owing();
+
+    for (const promised of [null, 0]) {
+      world.memory.plant('complaint', { interventionId: jobs.A.id, userId: client.id, title: 'Sans montant', description: 'x', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: promised, refundDecidedAt: at('2026-10-23T08:00:00Z') });
+    }
+
+    const row = (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === jobs.A.id);
+
+    expect(row).toMatchObject({ fromCreditNotes: 100, fromComplaints: 0, due: 100 });
+    expect(row.complaints).toEqual([]);
+  });
+
+  it('lists only the refunds that were accepted: not a request, a refusal, nor a refund that was made', async () => {
+    for (const decision of ['PENDING', 'REJECTED', 'NOT_REQUESTED', 'PARTIAL_REFUND', 'REFUNDED']) {
+      const { world, job } = accepted(50, decision);
+
+      expect(await rowOf(world, job)).toBeUndefined();
+    }
+  });
+
+  it('owes the larger of what the credit notes leave and what the complaint lacks: money that goes back answers both', async () => {
+    const { world, jobs, client } = owing();
+    const m = world.memory;
+    const complaint = (jobName: string, promised: number) => m.plant('complaint', { interventionId: jobs[jobName].id, userId: client.id, title: `Sur ${jobName}`, description: 'x', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: promised, refundDecidedAt: at('2026-10-23T08:00:00Z') });
+
+    // A: the credit note leaves 100 to give back; the complaint asks 150 -> 150, and 60 -> still 100.
+    complaint('A', 150);
+
+    const first = (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === jobs.A.id);
+
+    expect(first).toMatchObject({ fromCreditNotes: 100, fromComplaints: 150, due: 150 });
+
+    world.set('complaint', { refundAmount: 60 }, () => true);
+
+    const second = (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === jobs.A.id);
+
+    expect(second).toMatchObject({ fromCreditNotes: 100, fromComplaints: 60, due: 100 });
+    expect(second.creditNotes).toHaveLength(1);
+    expect(second.complaints).toHaveLength(1);
+  });
+
+  it('owes, for several complaints on one job, what the largest of them still lacks, and tells each', async () => {
+    const { world, job, payment, another } = accepted(50);
+    const second = another({ title: 'Peinture', refundAmount: 80 });
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 30 } });
+
+    const row = await rowOf(world, job);
+
+    expect(row.due).toBe(50);
+    expect(row.fromComplaints).toBe(50);
+    expect(row.complaints.map((entry: any) => [entry.remaining, entry.accepted])).toEqual([[20, 50], [50, 80]]);
+    expect(row.complaints[1].id).toBe(second.id);
+  });
+
+  it('is counted in the totals of the week like any refund that is due, once per job', async () => {
+    const before = await owing().world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+    const { world } = accepted(50);
+    const summary = await world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+
+    expect(summary.refundsDue).toEqual({ count: before.refundsDue.count + 1, amount: before.refundsDue.amount + 50 });
+  });
+
+  it('waits since the day the refund was accepted, when no credit note came first', async () => {
+    const { world, job, complaint } = accepted(50);
+    const old = (await world.svc.finance.refundsDue('ACCOUNTANT')).items;
+
+    expect(old.find((item: any) => item.interventionId === job.id).since).toEqual(at('2026-10-22T08:00:00Z'));
+
+    world.set('complaint', { refundDecidedAt: null }, complaint.id);
+    expect((await rowOf(world, job)).since).toBeNull();
+  });
+
+  it('never lists more than the job still holds: a refund accepted for more than was paid is capped, and gone once all went back', async () => {
+    const { world, job, payment } = accepted(500);
+
+    expect(await rowOf(world, job)).toMatchObject({ kept: 120, fromComplaints: 120, due: 120 });
+    expect((await rowOf(world, job)).complaints.map((entry: any) => [entry.accepted, entry.remaining])).toEqual([[500, 120]]);
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'PARTIALLY_REFUNDED', amountRefunded: 70 } });
+    expect(await rowOf(world, job)).toMatchObject({ kept: 50, fromComplaints: 50, due: 50 });
+
+    await world.prisma.payment.update({ where: { id: payment.id }, data: { status: 'REFUNDED', amountRefunded: 120 } });
+    expect(await rowOf(world, job)).toBeUndefined();
+  });
+
+  it('counts the capped amount, not the accepted one, in the totals of the week', async () => {
+    const before = await owing().world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+    const { world } = accepted(500);
+    const summary = await world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+
+    expect(summary.refundsDue).toEqual({ count: before.refundsDue.count + 1, amount: before.refundsDue.amount + 120 });
+  });
+
+  it('dates the line from the complaint, not from a credit note that the invoice already covers', async () => {
+    const { world, job, m } = accepted(50);
+    const invoice = m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0300', currency: 'TND', amountHT: 0, taxAmount: 0, amountTTC: 130, stampDuty: 0, creditedAmount: 10, status: 'ISSUED', issuedAt: at('2026-10-10T08:00:00Z') });
+
+    m.plant('creditNote', { invoiceId: invoice.id, interventionId: job.id, creditNoteNumber: 'AV-2026-0300', numberYear: 2026, sequence: 300, reason: 'Geste', currency: 'TND', amountHT: 0, taxRate: 19, taxAmount: 0, amountTTC: 10, stampDuty: 0, issuedAt: at('2026-10-15T08:00:00Z') });
+
+    const row = await rowOf(world, job);
+
+    // The customer paid 120 and owes 130 - 10: the credit note leaves nothing to give back, so only the complaint is waited for.
+    expect(row).toMatchObject({ fromCreditNotes: 0, fromComplaints: 50, due: 50 });
+    expect(row.creditNotes).toHaveLength(1);
+    expect(row.since).toEqual(at('2026-10-22T08:00:00Z'));
+  });
+
+  it('dates the line from the oldest of the credit note and the complaints that each make the job owe something', async () => {
+    const { world, jobs, client } = owing();
+
+    // A: the credit note (15 Oct) leaves 100 to give back and a complaint accepted on 1 Oct lacks 60: both make the job owe, the older dates it.
+    world.memory.plant('complaint', { interventionId: jobs.A.id, userId: client.id, title: 'Petit geste', description: 'x', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 60, refundDecidedAt: at('2026-10-01T08:00:00Z') });
+
+    const row = (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === jobs.A.id);
+
+    expect(row).toMatchObject({ fromCreditNotes: 100, fromComplaints: 60, due: 100 });
+    expect(row.since).toEqual(at('2026-10-01T08:00:00Z'));
+  });
+
+  it('sets the credit note part aside when the invoice is in another currency, and still tells what the complaint lacks', async () => {
+    const { world, jobs, client } = owing();
+
+    world.memory.plant('complaint', { interventionId: jobs.G.id, userId: client.id, title: 'Euro', description: 'x', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 30, refundDecidedAt: at('2026-10-23T08:00:00Z') });
+
+    const row = (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === jobs.G.id);
+
+    expect(row).toMatchObject({ fromCreditNotes: 0, fromComplaints: 30, due: 30 });
+    expect(row.creditNotes).toHaveLength(1);
+  });
+
+  it('reads only the complaints of its own query: no complaint, no credit note, no row', async () => {
+    const world = emptyWorld();
+
+    expect(await world.svc.finance.refundsDue('ADMIN')).toEqual({ items: [], total: 0, amount: 0 });
+  });
+
+  it('refuses to look for refunds among too many complaints, with the right article, and says it is a matter for the technical team', async () => {
+    const { world, complaint } = accepted(50);
+
+    plantCopies(world, 'complaint', complaint, SUMMARY_LIMIT, () => undefined);
+
+    const failure = await refusal(() => world.svc.finance.refundsDue('ACCOUNTANT'));
+
+    expect(failure?.status).toBe(400);
+    expect(failure?.message).toMatch(/^Trop de réclamations pour un résumé/);
+    expect(failure?.message).toContain('prévenez l’équipe technique');
+  });
+
+  it('reads the complaints with the same rule for the summary and for the list', async () => {
+    const { world } = accepted(50);
+    const summary = await world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+    const list = await world.svc.finance.refundsDue('ACCOUNTANT');
+
+    expect(summary.refundsDue).toEqual({ count: list.total, amount: list.amount });
   });
 });

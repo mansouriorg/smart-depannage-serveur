@@ -10,6 +10,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { complaintForClient, complaintMessageForParties } from '../../common/views/views';
 import { NotificationsService } from '../notifications/notifications.service';
 import { REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS } from '../payments/financials-ops';
+import { REFUND_NOT_ANSWERED, closeComplaintIfRefundAnswered, endsComplaint } from './complaint-closing';
 
 import {
   ComplaintDecision,
@@ -30,6 +31,8 @@ import {
   ResolveComplaintDto,
   UpdateComplaintStatusDto,
 } from './dto/complaint.dto';
+
+export { REFUND_NOT_ANSWERED };
 
 @Injectable()
 export class ComplaintsService {
@@ -770,19 +773,25 @@ export class ComplaintsService {
 
     await this.getComplaintOrFail(complaintId);
 
-    const updated = await this.prisma.complaint.update({
-      where: {
-        id: complaintId,
-      },
-      data: {
-        status: dto.status,
-        ...(dto.note
-          ? {
-              adminNotes: dto.note.trim(),
-            }
-          : {}),
-        ...this.statusDateFields(dto.status),
-      },
+    const data = {
+      status: dto.status,
+      ...(dto.note
+        ? {
+            adminNotes: dto.note.trim(),
+          }
+        : {}),
+      ...this.statusDateFields(dto.status),
+    };
+
+    // Rejecting, resolving and refunding end the complaint (P2-09): not while the refund the customer asked for waits.
+    if (endsComplaint(dto.status)) {
+      await closeComplaintIfRefundAnswered(this.prisma, complaintId, data);
+    } else {
+      await this.prisma.complaint.update({ where: { id: complaintId }, data });
+    }
+
+    const updated = await this.prisma.complaint.findUnique({
+      where: { id: complaintId },
       include: this.complaintInclude(),
     });
 
@@ -910,16 +919,15 @@ export class ComplaintsService {
 
     await this.getComplaintOrFail(complaintId);
 
-    const updated = await this.prisma.complaint.update({
-      where: {
-        id: complaintId,
-      },
-      data: {
-        status: ComplaintStatus.RESOLVED,
-        resolutionNotes: dto.resolutionNotes.trim(),
-        resolvedAt: new Date(),
-        closedAt: new Date(),
-      },
+    await closeComplaintIfRefundAnswered(this.prisma, complaintId, {
+      status: ComplaintStatus.RESOLVED,
+      resolutionNotes: dto.resolutionNotes.trim(),
+      resolvedAt: new Date(),
+      closedAt: new Date(),
+    });
+
+    const updated = await this.prisma.complaint.findUnique({
+      where: { id: complaintId },
       include: this.complaintInclude(),
     });
 

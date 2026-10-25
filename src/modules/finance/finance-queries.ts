@@ -7,6 +7,7 @@ import { localMoment } from '../../common/availability/weekly-schedule';
 import { currencyCode } from '../../common/locale/locale';
 import { money, moneyOrNull, subtractMoney } from '../../common/money/money';
 import { getBusinessTimeZone } from '../../config/env';
+import { NOTHING, idOf, likeLiteral } from '../../common/search/staff-search';
 import { phoneSearch } from '../admin/intervention-queue';
 import { RECEIVED_PAYMENT_STATUSES, amountToPay, refundedOn } from '../payments/financials-ops';
 import { FinancePeriod } from './finance-period';
@@ -63,13 +64,8 @@ export function paymentDateField(view: PaymentView): 'requestedAt' | 'confirmedA
   return 'requestedAt';
 }
 
-/**
- * A text for a `contains`: Prisma writes it into a LIKE as it is, where "%" matches everything and "_" any one character, so a
- * backslash (the escape of PostgreSQL's LIKE) makes each of the three literal. "50%" finds 50%, not every row.
- */
-export function likeLiteral(text: string): string {
-  return text.replace(/[\\%_]/g, '\\$&');
-}
+// The escape of "%", "_" and the backslash in a LIKE is shared with the other searches of the back office.
+export { likeLiteral };
 
 const insensitive = (text: string) => ({ contains: likeLiteral(text), mode: 'insensitive' as const });
 
@@ -129,6 +125,8 @@ export interface PaymentsFilter {
   view?: unknown;
   status?: unknown;
   method?: unknown;
+  /** Only the payments of this job. A number that is no job (0, text, past the last number the database holds) shows no payment. */
+  interventionId?: unknown;
   search?: unknown;
 }
 
@@ -150,6 +148,7 @@ export function paymentsWhere(filter: PaymentsFilter, period: FinancePeriod): Ro
   if (statuses) and.push({ status: { in: [...statuses] } });
   if (filter.status) and.push({ status: filter.status });
   if (filter.method) and.push({ method: filter.method });
+  if (filter.interventionId !== undefined && filter.interventionId !== null && filter.interventionId !== '') and.push(idOf(filter.interventionId) === null ? NOTHING : { interventionId: idOf(filter.interventionId) });
   if (paymentPeriodApplies(view, period)) and.push({ [paymentDateField(view)]: { gte: period.start, lt: period.end } });
 
   const text = searchText(filter.search);

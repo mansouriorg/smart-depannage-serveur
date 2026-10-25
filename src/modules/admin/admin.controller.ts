@@ -300,16 +300,23 @@ export class AdminController {
   // 5. COMPLAINT CENTER
   // ==========================================================
 
+  // The reads of the complaints are for the roles that have the page (P2-09): not for the dispatcher, who has no use for the contacts,
+  // the notes and the money of a complaint.
   @Get('complaints')
-  findAllComplaints(@Query() query: AdminComplaintQueryDto) {
-    return this.adminService.findAllComplaints(query);
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.ACCOUNTANT)
+  findAllComplaints(
+    @CurrentUser('id') adminId: number,
+    @Query() query: AdminComplaintQueryDto,
+  ) {
+    return this.adminService.findAllComplaints(query, adminId);
   }
 
   @Get('complaints/:complaintId')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.ACCOUNTANT)
   getComplaintDetail(
     @Param('complaintId', ParseIntPipe) complaintId: number,
   ) {
-    return this.adminService.getComplaintDetail(complaintId);
+    return this.adminService.getComplaintCase(complaintId);
   }
 
   @Patch('complaints/:complaintId/assign')
@@ -396,7 +403,9 @@ export class AdminController {
   // 6. SETTINGS
   // ==========================================================
 
+  // The company is read by the roles that have its page (P2-09): the RIB and the tax numbers are not for support or dispatch.
   @Get('settings/company')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
   getCompanySettings() {
     return this.adminService.getCompanySettings();
   }

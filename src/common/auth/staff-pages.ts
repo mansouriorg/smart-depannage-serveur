@@ -52,7 +52,7 @@ export interface ApiCall {
   only?: true;
 }
 
-export type PageId = 'overview' | 'interventions' | 'applications' | 'technicians' | 'feedbacks' | 'finance' | 'settings';
+export type PageId = 'overview' | 'interventions' | 'applications' | 'technicians' | 'feedbacks' | 'finance' | 'complaints' | 'company' | 'settings';
 
 export interface DashboardPage {
   id: PageId;
@@ -69,6 +69,10 @@ const VERIFIERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT'];
 const MANAGERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN'];
 /** Who handles money in the back office (P2-08): the administrators and the accountant. */
 const FINANCE_STAFF: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT'];
+/** Who reads the complaints (P2-09): the team that runs them, and the accountant, who decides the refunds they ask for. */
+const COMPLAINT_STAFF: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'ACCOUNTANT'];
+/** Who reads the company's identity and fiscal rules (P2-09): the administrators, and the accountant, who prints the invoices with them. */
+const COMPANY_READERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT'];
 /** Who gives jobs to technicians and moves their status (the matching and the admin routes for it). */
 const DISPATCHERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'DISPATCHER'];
 
@@ -112,12 +116,13 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     calls: [{ method: 'GET', path: '/users/artisans' }],
   },
   {
-    // The ratings of finished jobs: support follows the quality of the work; dispatching does not need it.
+    // The moderation queue of the reviews customers wrote (P2-09): support follows the quality of the work; dispatching does not
+    // need it. (Until P2-09 the page listed the star ratings of jobs, from GET /interventions; no review could be decided.)
     id: 'feedbacks',
     path: '/dashboard/feedbacks',
     label: 'Avis & Retours',
     roles: VERIFIERS,
-    calls: [{ method: 'GET', path: '/interventions' }],
+    calls: [{ method: 'GET', path: '/reviews/admin' }],
   },
   {
     // The finance console (P2-08): payments that wait for the team, refunds, invoices and credit notes, payouts, the cash that
@@ -152,6 +157,29 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     ],
   },
   {
+    // The complaints of customers (P2-09): the list with its views, and the case of one complaint. The writes are the buttons
+    // (`handleComplaint`, `decideComplaintRefund`), because not every role of the page may do each of them.
+    id: 'complaints',
+    path: '/dashboard/complaints',
+    label: 'Réclamations',
+    roles: COMPLAINT_STAFF,
+    calls: [
+      { method: 'GET', path: '/admin/complaints' },
+      { method: 'GET', path: '/admin/complaints/:complaintId' },
+      // The agents a case can be given to.
+      { method: 'GET', path: '/users' },
+    ],
+  },
+  {
+    // The identity of the company and its fiscal rules, as the invoices print them (P2-09). The administrators change them
+    // (`editCompany`); the accountant reads them.
+    id: 'company',
+    path: '/dashboard/company',
+    label: 'Entreprise',
+    roles: COMPANY_READERS,
+    calls: [{ method: 'GET', path: '/admin/settings/company' }],
+  },
+  {
     // The signed-in person's own profile: every staff role has one.
     id: 'settings',
     path: '/dashboard/settings',
@@ -178,13 +206,23 @@ export type ActionId =
   | 'verifyDocument'
   | 'decideApplication'
   | 'inviteTechnician'
-  | 'manageTechnician';
+  | 'manageTechnician'
+  | 'handleComplaint'
+  | 'decideComplaintRefund'
+  | 'moderateReview'
+  | 'editCompany';
 
 export interface StaffAction {
   id: ActionId;
   label: string;
-  /** Exactly the roles the routes accept: a button is shown to a role if and only if its calls succeed. */
+  /** The roles the button is shown to. They are all served by every call: a button is never shown to a role whose call is refused. */
   roles: readonly StaffRole[];
+  /**
+   * Roles whose calls succeed although the button is not shown to them, because the service lets every staff role in and the
+   * dashboard keeps the work with the roles that do it (P2-09). The spec checks `roles` and `alsoServed` together are exactly
+   * the roles of the calls, so that a route that is tightened or widened is noticed here.
+   */
+  alsoServed?: readonly StaffRole[];
   calls: readonly ApiCall[];
 }
 
@@ -248,6 +286,41 @@ export const STAFF_ACTIONS: readonly StaffAction[] = [
       { method: 'DELETE', path: '/users/:id' },
       { method: 'POST', path: '/users/:id/password-setup-link' },
     ],
+  },
+  {
+    // Support runs a complaint: takes it, writes to the customer, moves its status, closes it. The routes let every staff role in
+    // (the service only refuses a customer or an artisan), so the dispatcher and the accountant could call them by hand.
+    id: 'handleComplaint',
+    label: 'Prendre en charge une réclamation, répondre, changer son statut ou la clore',
+    roles: VERIFIERS,
+    alsoServed: ['DISPATCHER', 'ACCOUNTANT'],
+    calls: [
+      { method: 'PATCH', path: '/complaints/admin/:complaintId/assign' },
+      { method: 'PATCH', path: '/complaints/admin/:complaintId/status' },
+      { method: 'PATCH', path: '/complaints/admin/:complaintId/resolve' },
+      { method: 'POST', path: '/complaints/:complaintId/messages' },
+      { method: 'POST', path: '/admin/complaints/:complaintId/internal-notes' },
+    ],
+  },
+  {
+    // Money going back to a customer is decided by the administrators and the accountant: exactly the roles of the route.
+    id: 'decideComplaintRefund',
+    label: 'Accepter ou refuser le remboursement demandé dans une réclamation',
+    roles: FINANCE_STAFF,
+    calls: [{ method: 'PATCH', path: '/admin/complaints/:complaintId/refund' }],
+  },
+  {
+    id: 'moderateReview',
+    label: 'Approuver, refuser ou masquer un avis',
+    roles: VERIFIERS,
+    alsoServed: ['DISPATCHER', 'ACCOUNTANT'],
+    calls: [{ method: 'PATCH', path: '/reviews/admin/:reviewId/moderate' }],
+  },
+  {
+    id: 'editCompany',
+    label: "Modifier l'identité, les règles de facturation et les moyens de paiement de l'entreprise",
+    roles: MANAGERS,
+    calls: [{ method: 'PATCH', path: '/admin/settings/company' }],
   },
 ];
 

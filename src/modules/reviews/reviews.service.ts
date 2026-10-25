@@ -21,6 +21,8 @@ import {
   ModerateReviewDto,
   ReviewQueryDto,
 } from './dto/review.dto';
+import { withoutNul } from '../../common/search/staff-search';
+import { REVIEW_STATUSES, moderationReasonProblem, reviewBaseWhere, reviewPaging, reviewQueueOrder, reviewQueueWhere } from './review-queue';
 
 @Injectable()
 export class ReviewsService {
@@ -519,34 +521,25 @@ export class ReviewsService {
   ) {
     this.assertStaff(role);
 
-    const where: Prisma.ReviewWhereInput = {
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.artisanId ? { artisanId: query.artisanId } : {}),
-      ...(query.clientId ? { clientId: query.clientId } : {}),
-      ...(query.interventionId ? { interventionId: query.interventionId } : {}),
-      ...(query.onlyVisible !== undefined
-        ? {
-            isVisible: query.onlyVisible,
-          }
-        : {}),
-    };
+    const where = reviewQueueWhere(query) as Prisma.ReviewWhereInput;
+    const base = reviewBaseWhere(query) as Prisma.ReviewWhereInput[];
 
-    const take = Math.min(query.take || 50, 100);
-    const skip = query.skip || 0;
+    const { skip, take } = reviewPaging(query);
 
-    const [items, total] = await Promise.all([
+    const [items, total, all, ...sizes] = await Promise.all([
       this.prisma.review.findMany({
         where,
         include: this.reviewInclude(),
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: reviewQueueOrder(query.sort),
         skip,
         take,
       }),
       this.prisma.review.count({
         where,
       }),
+      // How many each tab holds under the same search and the same filters (the status of the tab is the one thing left out).
+      this.prisma.review.count({ where: { AND: base } }),
+      ...REVIEW_STATUSES.map((status) => this.prisma.review.count({ where: { AND: [...base, { status }] } })),
     ]);
 
     return {
@@ -554,6 +547,7 @@ export class ReviewsService {
       skip,
       take,
       items,
+      counts: { all, ...Object.fromEntries(REVIEW_STATUSES.map((status, index) => [status, sizes[index]])) },
     };
   }
 
@@ -636,6 +630,11 @@ export class ReviewsService {
   ) {
     this.assertStaff(role);
 
+    // A review is turned away for a reason a person can read back later: the moderator says which.
+    const problem = moderationReasonProblem(dto.status, dto.moderationReason);
+
+    if (problem) throw new BadRequestException(problem);
+
     const existing = await this.getReviewOrFail(reviewId);
 
     const isVisible = dto.status === ReviewModerationStatus.APPROVED;
@@ -649,7 +648,8 @@ export class ReviewsService {
         isVisible,
         moderatedById: userId,
         moderatedAt: new Date(),
-        moderationReason: dto.moderationReason?.trim() || null,
+        // A NUL byte is refused by PostgreSQL (an error 500): it is dropped, as in the search boxes.
+        moderationReason: withoutNul(dto.moderationReason ?? '').trim() || null,
       },
       include: this.reviewInclude(),
     });

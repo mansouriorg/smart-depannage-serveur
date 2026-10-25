@@ -97,12 +97,12 @@ export const staffScenarios: Scenario[] = [
   { route: 'GET /admin/clients', allowed: ['backOffice'], reads: true, request: () => ({ query: {} }), hidden: secrets },
   {
     route: 'GET /admin/complaints/:',
-    allowed: ['backOffice'],
+    allowed: ['verifiers', 'accountant'],
     reads: true,
     request: (h, w) => ({ params: { complaintId: w.ids[h].complaint } }),
     hidden: secrets,
   },
-  { route: 'GET /admin/complaints', allowed: ['backOffice'], reads: true, request: () => ({ query: {} }), hidden: secrets },
+  { route: 'GET /admin/complaints', allowed: ['verifiers', 'accountant'], reads: true, request: () => ({ query: {} }), hidden: secrets },
   { route: 'GET /admin/dashboard/kpis', allowed: ['backOffice'], request: () => ({ query: {} }) },
   {
     route: 'GET /admin/artisans/:/missions',
