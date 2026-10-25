@@ -35,6 +35,11 @@ const CONTROLLERS = [
   'interventions/interventions.controller.ts',
   'proofs/proofs.controller.ts',
   'matching/matching.controller.ts',
+  'finance/finance.controller.ts',
+  'payments/payments.controller.ts',
+  'invoices/invoices.controller.ts',
+  'cash-ledger/cash-ledger.controller.ts',
+  'business/business.controller.ts',
 ];
 
 function routesOfTheApi(): Map<string, ScannedRoute> {
@@ -105,6 +110,36 @@ const SERVED: Record<string, { roles: readonly string[]; because: string; eviden
     roles: STAFF_ROLES,
     because: 'the signed-in person\'s own profile, written from the token',
     evidence: /@CurrentUser\('id'\) userId: number[\s\S]*updateProfile\(\s*userId/,
+  },
+  'GET /business/payouts/preview': {
+    roles: STAFF_ROLES,
+    because: 'what a payout would pay: every staff role may read it (the service checks the role is a staff role)',
+    evidence: /this\.service\.previewArtisanPayout\(/,
+    service: { file: 'business/business.service.ts', evidence: /async previewArtisanPayout\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'GET /business/payouts': {
+    roles: STAFF_ROLES,
+    because: 'the list of payouts: every staff role may read it (the service checks the role is a staff role)',
+    evidence: /this\.service\.listPayouts\(/,
+    service: { file: 'business/business.service.ts', evidence: /async listPayouts\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'POST /business/payouts': {
+    roles: STAFF_ROLES,
+    because: 'making a payout: every staff role may (the service checks the role is a staff role; the page leaves the choice of who to the people who see it)',
+    evidence: /this\.service\.createArtisanPayout\(/,
+    service: { file: 'business/business.service.ts', evidence: /async createArtisanPayout\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'PATCH /business/payouts/:/paid': {
+    roles: STAFF_ROLES,
+    because: 'marking a payout paid: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.markPayoutPaid\(/,
+    service: { file: 'business/business.service.ts', evidence: /async markPayoutPaid\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
+  },
+  'PATCH /business/payouts/:/cancel': {
+    roles: STAFF_ROLES,
+    because: 'cancelling a payout: every staff role may (the service checks the role is a staff role)',
+    evidence: /this\.service\.cancelPayout\(/,
+    service: { file: 'business/business.service.ts', evidence: /async cancelPayout\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
   },
   'GET /users/me': {
     roles: STAFF_ROLES,
@@ -192,14 +227,14 @@ describe('the pages of the dashboard', () => {
     }
   });
 
-  it('the other roles: admins see everything, support checks applicants, the accountant has her profile only', () => {
+  it('the other roles: admins see everything, support checks applicants, the accountant has the finance console and her profile', () => {
     const everything = DASHBOARD_PAGES.map((page) => page.id);
 
     expect(dashboardPagesFor('ADMIN').map((page) => page.id)).toEqual(everything);
     expect(dashboardPagesFor('SUPER_ADMIN').map((page) => page.id)).toEqual(everything);
     expect(dashboardPagesFor('SUPPORT').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'settings']);
-    expect(dashboardPagesFor('ACCOUNTANT').map((page) => page.id)).toEqual(['settings']);
-    expect(dashboardHomeFor('ACCOUNTANT')).toBe('/dashboard/settings');
+    expect(dashboardPagesFor('ACCOUNTANT').map((page) => page.id)).toEqual(['finance', 'settings']);
+    expect(dashboardHomeFor('ACCOUNTANT')).toBe('/dashboard/finance');
   });
 
   it('a customer, an artisan or an unknown role has no page and lands on the sign-in page', () => {
@@ -437,8 +472,8 @@ describe('the table against the routes of the API', () => {
     ]);
   });
 
-  it('ACCOUNTANT is served by no call of the pages but her own profile and the frame', () => {
-    for (const page of DASHBOARD_PAGES.filter((candidate) => candidate.id !== 'settings')) {
+  it('ACCOUNTANT is served by no call of the pages but the finance console, her own profile and the frame (P2-08)', () => {
+    for (const page of DASHBOARD_PAGES.filter((candidate) => candidate.id !== 'settings' && candidate.id !== 'finance')) {
       for (const call of page.calls) {
         expect(servedRoles(call)).not.toContain('ACCOUNTANT');
       }
@@ -471,5 +506,81 @@ describe('every controller of the server: @Roles is only worth something with Ro
     }
 
     expect(unenforced).toEqual([]);
+  });
+});
+
+describe('the finance console in the table (P2-08)', () => {
+  const finance = DASHBOARD_PAGES.find((page) => page.id === 'finance');
+
+  it('is a page of the administrators and the accountant, and of nobody else', () => {
+    expect([...(finance?.roles ?? [])].sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+    expect(finance?.path).toBe('/dashboard/finance');
+
+    for (const role of ['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT']) expect(canOpenDashboardPath(role, '/dashboard/finance')).toBe(true);
+    for (const role of ['SUPPORT', 'DISPATCHER', 'CLIENT', 'ARTISAN', null, undefined, '']) expect(canOpenDashboardPath(role, '/dashboard/finance')).toBe(false);
+  });
+
+  it('holds the pages under it: payments, invoices, refunds, payouts, cash', () => {
+    for (const sub of ['payments', 'invoices', 'refunds', 'payouts', 'cash']) {
+      expect(dashboardPageFor(`/dashboard/finance/${sub}`)?.id).toBe('finance');
+      expect(canOpenDashboardPath('ACCOUNTANT', `/dashboard/finance/${sub}`)).toBe(true);
+      expect(canOpenDashboardPath('SUPPORT', `/dashboard/finance/${sub}`)).toBe(false);
+      expect(canOpenDashboardPath('DISPATCHER', `/dashboard/finance/${sub}`)).toBe(false);
+    }
+
+    expect(dashboardPageFor('/dashboard/financeur')).toBeUndefined();
+    expect(dashboardPageFor('/dashboard/finance/../tickets')).toBeUndefined();
+  });
+
+  it('comes before the profile in the menu, after the pages of the work on jobs', () => {
+    expect(dashboardPagesFor('ADMIN').map((page) => page.id)).toEqual(['overview', 'interventions', 'applications', 'technicians', 'feedbacks', 'finance', 'settings']);
+  });
+
+  it('reads with the five finance routes, each for the page\'s roles alone (a role that cannot open the page reads none of it)', () => {
+    const reads = (finance?.calls ?? []).filter((call) => call.path.startsWith('/finance/'));
+
+    expect(reads.map((call) => `${call.method} ${call.path}`).sort()).toEqual(['GET /finance/invoices', 'GET /finance/payments', 'GET /finance/payments/export', 'GET /finance/refunds-due', 'GET /finance/summary']);
+    expect(reads.every((call) => call.only === true)).toBe(true);
+  });
+
+  it('reads the cash of the artisans from the ledger routes, which are for the same three roles', () => {
+    for (const path of ['/cash-ledger/balances', '/cash-ledger/artisans/:artisanId']) {
+      const call = finance?.calls.find((candidate) => candidate.path === path);
+
+      expect(call?.only).toBe(true);
+      expect(sorted(API.get(routeKey('GET', path))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+    }
+  });
+
+  it('calls the writes the buttons need, each served to all three roles', () => {
+    const writes = (finance?.calls ?? []).filter((call) => call.method !== 'GET').map((call) => `${call.method} ${call.path}`);
+
+    expect(writes.sort()).toEqual([
+      'PATCH /business/payouts/:payoutId/cancel',
+      'PATCH /business/payouts/:payoutId/paid',
+      'PATCH /payments/:paymentId/cancel',
+      'PATCH /payments/:paymentId/confirm',
+      'PATCH /payments/:paymentId/fail',
+      'PATCH /payments/:paymentId/refund',
+      'POST /business/payouts',
+      'POST /cash-ledger/artisans/:artisanId/remittances',
+      'POST /invoices/:invoiceId/credit-notes',
+    ]);
+  });
+
+  it('refunds and credit notes are the finance roles\' alone: support and dispatch cannot give money back', () => {
+    for (const [method, path] of [
+      ['PATCH', '/payments/:paymentId/refund'],
+      ['POST', '/invoices/:invoiceId/credit-notes'],
+      ['POST', '/cash-ledger/artisans/:artisanId/remittances'],
+    ] as const) {
+      expect(sorted(API.get(routeKey(method, path))?.roles ?? [])).toEqual(['ACCOUNTANT', 'ADMIN', 'SUPER_ADMIN']);
+    }
+  });
+
+  it('the payout routes serve every staff role (the service accepts any of the five): a fact the table states, not a choice it makes', () => {
+    const service = MODULE_SOURCE('business/business.service.ts');
+
+    expect(/private isStaff\(role: Role\): boolean \{\s*const staffRoles: Role\[\] = \[\s*Role\.ADMIN,\s*Role\.SUPER_ADMIN,\s*Role\.SUPPORT,\s*Role\.DISPATCHER,\s*Role\.ACCOUNTANT,\s*\];/.test(service)).toBe(true);
   });
 });

@@ -706,7 +706,8 @@ export class MemoryPrisma {
     if ('gt' in cond && !(a !== null && (a as number) > (comparable(cond.gt) as number))) return false;
     if ('gte' in cond && !(a !== null && (a as number) >= (comparable(cond.gte) as number))) return false;
 
-    if ('contains' in cond && !(typeof here === 'string' && String(text(here)).includes(String(text(cond.contains))))) return false;
+    // As PostgreSQL's LIKE reads it: a backslash makes the next character literal (the caller escapes "%" and "_" this way).
+    if ('contains' in cond && !(typeof here === 'string' && String(text(here)).includes(String(text(cond.contains)).replace(/\\(.)/gs, '$1')))) return false;
     if ('startsWith' in cond && !(typeof here === 'string' && String(text(here)).startsWith(String(text(cond.startsWith))))) return false;
     if ('endsWith' in cond && !(typeof here === 'string' && String(text(here)).endsWith(String(text(cond.endsWith))))) return false;
 

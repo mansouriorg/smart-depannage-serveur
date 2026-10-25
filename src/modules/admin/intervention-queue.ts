@@ -85,7 +85,7 @@ function jobNumber(text: string): number | null {
  * request form is stored as the person typed it, so "22123456" would not find "22 123 456" without
  * this. Null for text that is not a phone number (fewer than four digits, or letters).
  */
-function phoneSearch(text: string): { variants: string[]; digits: string } | null {
+export function phoneSearch(text: string): { variants: string[]; digits: string } | null {
   if (!/^[+\d\s().-]+$/.test(text)) return null;
 
   const digits = text.replace(/\D/g, '');

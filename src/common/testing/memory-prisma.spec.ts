@@ -183,6 +183,16 @@ describe('MemoryPrisma: where', () => {
     expect(await ids({ undefinedFilter: undefined })).toEqual([first.id, second.id, third.id]);
   });
 
+  it('contains reads a backslash as PostgreSQL\'s LIKE does: the next character is literal', async () => {
+    const { db } = await populated();
+    const sale = await db.post.create({ data: { title: 'Remise 50% et a_b', score: 2, authorId: 1 } });
+    const ids = async (where: any) => (await db.post.findMany({ where, orderBy: { id: 'asc' } })).map((row: any) => row.id);
+
+    expect(await ids({ title: { contains: '50\\%' } })).toEqual([sale.id]);
+    expect(await ids({ title: { contains: 'a\\_b' } })).toEqual([sale.id]);
+    expect(await ids({ title: { contains: 'x\\\\y' } })).toEqual([]);
+  });
+
   it('AND, OR and NOT', async () => {
     const { db, first, second, third } = await populated();
     const ids = async (where: any) => (await db.post.findMany({ where, orderBy: { id: 'asc' } })).map((row: any) => row.id);

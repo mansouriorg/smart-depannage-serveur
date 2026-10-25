@@ -52,7 +52,7 @@ export interface ApiCall {
   only?: true;
 }
 
-export type PageId = 'overview' | 'interventions' | 'applications' | 'technicians' | 'feedbacks' | 'settings';
+export type PageId = 'overview' | 'interventions' | 'applications' | 'technicians' | 'feedbacks' | 'finance' | 'settings';
 
 export interface DashboardPage {
   id: PageId;
@@ -67,6 +67,8 @@ export interface DashboardPage {
 const TICKET_STAFF: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER'];
 const VERIFIERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT'];
 const MANAGERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN'];
+/** Who handles money in the back office (P2-08): the administrators and the accountant. */
+const FINANCE_STAFF: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT'];
 /** Who gives jobs to technicians and moves their status (the matching and the admin routes for it). */
 const DISPATCHERS: readonly StaffRole[] = ['ADMIN', 'SUPER_ADMIN', 'DISPATCHER'];
 
@@ -116,6 +118,38 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     label: 'Avis & Retours',
     roles: VERIFIERS,
     calls: [{ method: 'GET', path: '/interventions' }],
+  },
+  {
+    // The finance console (P2-08): payments that wait for the team, refunds, invoices and credit notes, payouts, the cash that
+    // artisans hold. The reads are the finance routes; the writes are the routes of the payments, invoices, payouts and cash
+    // ledger, which the buttons of the page call: every role of the page is served by every one of them (checked in the spec).
+    id: 'finance',
+    path: '/dashboard/finance',
+    label: 'Finance',
+    roles: FINANCE_STAFF,
+    calls: [
+      { method: 'GET', path: '/finance/summary', only: true },
+      { method: 'GET', path: '/finance/payments', only: true },
+      { method: 'GET', path: '/finance/payments/export', only: true },
+      { method: 'GET', path: '/finance/invoices', only: true },
+      { method: 'GET', path: '/finance/refunds-due', only: true },
+      { method: 'GET', path: '/cash-ledger/balances', only: true },
+      { method: 'GET', path: '/cash-ledger/artisans/:artisanId', only: true },
+      { method: 'GET', path: '/business/payouts' },
+      { method: 'GET', path: '/business/payouts/preview' },
+      { method: 'GET', path: '/invoices/:invoiceId/pdf' },
+      { method: 'GET', path: '/invoices/credit-notes/:creditNoteId/pdf' },
+      { method: 'GET', path: '/payments/:paymentId/receipt' },
+      { method: 'PATCH', path: '/payments/:paymentId/confirm' },
+      { method: 'PATCH', path: '/payments/:paymentId/fail' },
+      { method: 'PATCH', path: '/payments/:paymentId/cancel' },
+      { method: 'PATCH', path: '/payments/:paymentId/refund' },
+      { method: 'POST', path: '/invoices/:invoiceId/credit-notes' },
+      { method: 'POST', path: '/cash-ledger/artisans/:artisanId/remittances' },
+      { method: 'POST', path: '/business/payouts' },
+      { method: 'PATCH', path: '/business/payouts/:payoutId/paid' },
+      { method: 'PATCH', path: '/business/payouts/:payoutId/cancel' },
+    ],
   },
   {
     // The signed-in person's own profile: every staff role has one.

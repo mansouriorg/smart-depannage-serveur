@@ -55,6 +55,8 @@ async function bootstrap() {
     origin: getAllowedOrigins(),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
+    // A page on another address can read the name of a file the API sends (the finance CSV): without this the browser hides it.
+    exposedHeaders: ['Content-Disposition'],
   });
 
   // 4. Start the Server

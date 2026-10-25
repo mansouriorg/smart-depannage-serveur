@@ -13,9 +13,10 @@ import { artisanScenarios, artisanSelfScenarios } from './artisans';
 import { accountScenarios, accountSelfScenarios } from './accounts';
 import { staffScenarios } from './staff';
 import { cashLedgerScenarios, cashLedgerSelfScenarios } from './cash-ledger';
+import { financeScenarios } from './finance';
 import { linkScenarios } from './links';
 
-export const SCENARIOS: Scenario[] = [...messageScenarios, ...quoteScenarios, ...invoiceScenarios, ...paymentScenarios, ...notificationScenarios, ...fileScenarios, ...complaintScenarios, ...clientScenarios, ...reviewScenarios, ...schedulingScenarios, ...jobScenarios, ...artisanScenarios, ...accountScenarios, ...staffScenarios, ...cashLedgerScenarios];
+export const SCENARIOS: Scenario[] = [...messageScenarios, ...quoteScenarios, ...invoiceScenarios, ...paymentScenarios, ...notificationScenarios, ...fileScenarios, ...complaintScenarios, ...clientScenarios, ...reviewScenarios, ...schedulingScenarios, ...jobScenarios, ...artisanScenarios, ...accountScenarios, ...staffScenarios, ...cashLedgerScenarios, ...financeScenarios];
 
 export const SELF_SCENARIOS: SelfScenario[] = [...messageSelfScenarios, ...invoiceSelfScenarios, ...notificationSelfScenarios, ...complaintSelfScenarios, ...clientSelfScenarios, ...reviewSelfScenarios, ...schedulingSelfScenarios, ...jobSelfScenarios, ...fileSelfScenarios, ...artisanSelfScenarios, ...accountSelfScenarios, ...cashLedgerSelfScenarios];
 

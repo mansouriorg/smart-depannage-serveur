@@ -87,7 +87,7 @@ export async function commissionRateFor(db: Db, interventionId: number): Promise
 }
 
 /** The collections that stand: those that nobody has taken back. */
-export async function activeCollections(db: Db, where: { paymentId?: number; interventionId?: number; artisanId?: number }): Promise<Row[]> {
+export async function activeCollections(db: Db, where: { paymentId?: number | { in: number[] }; interventionId?: number; artisanId?: number }): Promise<Row[]> {
   const collections: Row[] = await db.cashLedgerEntry.findMany({ where: { ...where, type: 'COLLECTION' }, orderBy: { id: 'asc' } });
 
   if (collections.length === 0) return [];
