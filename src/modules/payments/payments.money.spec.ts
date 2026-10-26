@@ -476,6 +476,21 @@ describe('a refund changes the payment, the financials and the complaint, and te
     expect(rowsOf(d.world, 'notification').filter((row) => row.recipientId === d.artisan.id)).toEqual([]);
   });
 
+  it('a card payment is told as recorded, to reach the card (the server does not send the money back itself)', async () => {
+    const { d, id } = await refundable();
+    const real = new PaymentsService(d.world.prisma, d.world.svc.events, d.world.svc.notifications);
+
+    await d.world.prisma.payment.update({ where: { id }, data: { providerPaymentId: 'ref-card-1', provider: 'KONNECT' } });
+    await real.refund(id, d.admin.id, { amount: 20 });
+
+    const notices = rowsOf(d.world, 'notification').filter((row) => row.recipientId === d.client.id && row.entityType === 'PAYMENT');
+
+    expect(notices.map((row) => row.title)).toEqual(['Remboursement enregistré']);
+    expect(notices[0].message).toBe('Un remboursement de 20,000 TND a été enregistré sur votre paiement par carte. Il sera versé sur votre carte par notre prestataire de paiement.');
+    expect(notices[0].data).toEqual({ paymentId: id, interventionId: d.job.id, amount: 20, refund: true });
+    expect(rowsOf(d.world, 'notification').filter((row) => row.title === 'Remboursement effectué')).toEqual([]);
+  });
+
   it('each refund is told and written with its own amount, not the running total', async () => {
     const { d, id } = await refundable();
     const real = new PaymentsService(d.world.prisma, d.world.svc.events, d.world.svc.notifications);

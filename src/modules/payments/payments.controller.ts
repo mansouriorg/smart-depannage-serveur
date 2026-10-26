@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseIntPipe,
   Patch,
@@ -18,6 +19,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 
 import {
   PaymentMethod,
@@ -46,11 +48,14 @@ export class PaymentsController {
     @CurrentUser('id') userId: number,
     @Param('interventionId', ParseIntPipe) interventionId: number,
     @Body() dto: CreateManualPaymentDto,
+    // The same key is the same request (a retry gives the payment back instead of making a second one).
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.service.createClientPaymentRequest(
       userId,
       interventionId,
       dto,
+      idempotencyKey,
     );
   }
 
@@ -238,8 +243,41 @@ export class PaymentsController {
     @CurrentUser('id') adminId: number,
     @Param('paymentId', ParseIntPipe) paymentId: number,
     @Body() dto: RefundPaymentDto,
+    // The same key is the same refund: a second click or a retry gives the money back once.
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.service.refund(paymentId, adminId, dto);
+    return this.service.refund(paymentId, adminId, dto, idempotencyKey);
+  }
+
+  // ==========================================================
+  // 8b. CARD PAYMENT - CHECK WITH THE PROVIDER (P2-10)
+  // ==========================================================
+
+  /**
+   * Asks the payment provider what became of a card payment and acts on the answer (the customer who comes back from the payment
+   * page, or the team when a webhook seems lost). Answers with the payment as it is then.
+   *
+   * POST /payments/:paymentId/check
+   *
+   * Each call asks the provider: so the calls are limited per address (not per person), wide enough for a page that checks every
+   * half minute in more than one tab, and a payment asked about a few seconds ago is not asked about again for the customer.
+   */
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'payment-check', limit: 360, windowMs: 60 * 60_000 })
+  @Roles(
+    Role.CLIENT,
+    Role.ADMIN,
+    Role.SUPER_ADMIN,
+    Role.SUPPORT,
+    Role.DISPATCHER,
+    Role.ACCOUNTANT,
+  )
+  @Post(':paymentId/check')
+  check(
+    @CurrentUser() user: { id: number; role: Role },
+    @Param('paymentId', ParseIntPipe) paymentId: number,
+  ) {
+    return this.service.checkOnline(paymentId, user);
   }
 
   // ==========================================================

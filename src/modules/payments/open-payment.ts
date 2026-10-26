@@ -44,9 +44,25 @@ export async function openPaymentsOf(db: Db, interventionId: number): Promise<Ro
   return payments;
 }
 
-/** An online request that nobody can pay: no provider took it. */
-export function isPlaceholder(payment: Row): boolean {
-  return String(payment.status) === 'PENDING' && ONLINE_METHODS.includes(String(payment.method)) && !payment.providerPaymentId;
+/**
+ * Whether the customer made the payment: asked through the link of the request (no maker), or from the account (the customer's own
+ * number), as opposed to a payment the back office entered.
+ */
+export function madeByCustomer(payment: Row, clientId: number | null | undefined): boolean {
+  const maker = payment.createdById;
+
+  return maker === null || maker === undefined || (clientId !== null && clientId !== undefined && Number(maker) === Number(clientId));
+}
+
+/**
+ * An online request that nobody can pay: no provider took it. For a request of the customer (`owner`), only the customer's own: an
+ * online payment that the back office entered by hand (money to be counted by the team) is not an empty request, it is theirs to
+ * confirm or to cancel, and is neither taken over nor cancelled by a customer who asks to pay by card.
+ */
+export function isPlaceholder(payment: Row, owner?: { clientId: number | null | undefined }): boolean {
+  const empty = String(payment.status) === 'PENDING' && ONLINE_METHODS.includes(String(payment.method)) && !payment.providerPaymentId;
+
+  return empty && (owner === undefined || madeByCustomer(payment, owner.clientId));
 }
 
 export const SUPERSEDED_REASON = 'Remplacé par une autre demande de paiement.';
@@ -54,7 +70,8 @@ export const SUPERSEDED_REASON = 'Remplacé par une autre demande de paiement.';
 /** Cancels an online request nobody can pay (nothing was received on it, so nothing else changes). Returns false if it was decided meanwhile. */
 export async function supersede(db: Db, payment: Row): Promise<boolean> {
   const changed = await db.payment.updateMany({
-    where: { id: payment.id, status: 'PENDING' },
+    // Still without a provider: a request the provider took while this one was read has its page now, and is not cancelled under it.
+    where: { id: payment.id, status: 'PENDING', providerPaymentId: null },
     data: { status: 'CANCELLED', cancelledAt: new Date(), cancelReason: SUPERSEDED_REASON },
   });
 
@@ -145,13 +162,17 @@ export const otherPaymentOpenWords = (payment: Row): string =>
  * and it is not more than what is left now: the team could not confirm more than that. The payment options use the same rule, so
  * that a way the page offers is one the server answers with the open payment instead of refusing it.
  */
-export function isSameRequest(payment: Row, request: { method: string; amount: number; derived?: boolean; clientId?: number | null }): boolean {
+export function isSameRequest(payment: Row, request: { method: string; amount: number; derived?: boolean; clientId?: number | null; customer?: boolean }): boolean {
   if (String(payment.method) !== request.method) return false;
+
+  const theirs = madeByCustomer(payment, request.clientId);
+
+  // A card request of the customer is never answered with an online payment the back office entered: that one is the team's to count,
+  // and the provider would be asked for a payment on a row that was never meant for it.
+  if (request.customer === true && ONLINE_METHODS.includes(request.method) && !theirs) return false;
+
   if (compareMoney(money(payment.amount), request.amount) === 0) return true;
   if (request.derived !== true || request.method !== 'BANK_TRANSFER') return false;
-
-  const maker = payment.createdById;
-  const theirs = maker === null || maker === undefined || (request.clientId !== null && request.clientId !== undefined && Number(maker) === Number(request.clientId));
 
   return theirs && compareMoney(money(payment.amount), request.amount) < 0;
 }
@@ -168,13 +189,21 @@ export function isSameRequest(payment: Row, request: { method: string; amount: n
  *  - Any other open payment (a transfer waiting for confirmation, cash waiting for confirmation, an online payment a provider
  *    took) refuses the request (409).
  *
+ *  - On a request of the customer (`customer`), an online payment that the back office entered is neither answered nor cancelled: it
+ *    refuses the request (409) like any other open payment.
+ *
  * Returns the open payment to reuse, or null when the caller may create the payment.
  */
-export async function claimOpenPayment(db: Db, request: { interventionId: number; method: string; amount: number; derived?: boolean; clientId?: number | null }): Promise<Row | null> {
+export async function claimOpenPayment(
+  db: Db,
+  request: { interventionId: number; method: string; amount: number; derived?: boolean; clientId?: number | null; customer?: boolean },
+): Promise<Row | null> {
   const open = await openPaymentsOf(db, request.interventionId);
   const same = open.find((payment) => isSameRequest(payment, request));
   const others = open.filter((payment) => payment !== same);
-  const blocking = others.filter((payment) => !isPlaceholder(payment));
+  // The customer's request cancels only the empty card requests that are the customer's own (see `isPlaceholder`).
+  const owner = request.customer === true ? { clientId: request.clientId } : undefined;
+  const blocking = others.filter((payment) => !isPlaceholder(payment, owner));
 
   if (blocking.length > 0) throw new ConflictException(otherPaymentOpenWords(blocking[0]));
 

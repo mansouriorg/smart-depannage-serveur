@@ -220,6 +220,8 @@ export function argumentsFor(handler: Handler, request: FakeRequest, response: F
         return request.file;
       case 'UploadedFiles':
         return request.files;
+      case 'Headers':
+        return key ? (req.headers as any)[key.toLowerCase()] : req.headers;
       case 'Ip':
         return request.ip ?? '127.0.0.1';
       case 'Res':

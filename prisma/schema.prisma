@@ -1174,6 +1174,19 @@ model Payment {
   reference         String?
   providerPaymentId String?
 
+  // Card payments (P2-10). `payUrl` is the page of the provider where the customer pays, `expiresAt` when an unpaid card payment
+  // lapses. `idempotencyKey` is the key the caller sent with the request (scoped to the caller): the same key is the same payment.
+  // `gatewayClaimedAt` marks the moment someone asked the provider for this payment (one asker at a time), `providerCheckedAt` the
+  // last time the provider was asked what became of it, `moneySeenAt` the moment the provider first said money had come on a payment
+  // that could not be counted by itself (it was put in front of the team): when the team closes such a payment, a later sighting of
+  // the same money does not open it again.
+  payUrl            String?
+  expiresAt         DateTime?
+  idempotencyKey    String? @unique
+  gatewayClaimedAt  DateTime?
+  providerCheckedAt DateTime?
+  moneySeenAt       DateTime?
+
   receiptNumber      String? @unique
   receiptUrl         String?
   receiptGeneratedAt DateTime?
@@ -1196,6 +1209,7 @@ model Payment {
   cancelledAt DateTime?
 
   cashLedgerEntries CashLedgerEntry[]
+  refunds           PaymentRefund[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1218,6 +1232,43 @@ model Payment {
   @@index([refundedAt])
   @@index([cancelledAt])
   @@index([createdAt])
+  /// A provider's number names one payment (a notification is looked up by it); payments with none (cash, transfers, empty requests) do not meet.
+  @@unique([provider, providerPaymentId])
+}
+
+/// Each refund of a payment, one row per refund (P2-10). `idempotencyKey` is the key the back office sent with the request: the same key
+/// is the same refund, so a second click or a retry gives the money back once.
+model PaymentRefund {
+  id        Int     @id @default(autoincrement())
+  paymentId Int
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  amount Decimal @db.Decimal(14, 3)
+  reason String?
+
+  idempotencyKey String? @unique
+
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([createdAt])
+}
+
+/// What the payment provider told us and what became of it (P2-10): one row per call to the webhook, kept for the support. Nothing
+/// reads it to decide anything.
+model PaymentWebhookLog {
+  id                Int             @id @default(autoincrement())
+  provider          PaymentProvider
+  providerPaymentId String
+  paymentId         Int?
+  /// CONFIRMED, ALREADY, PENDING, FAILED, EXPIRED, REVIEW, UNKNOWN or UNREACHABLE.
+  outcome           String
+  receivedAt        DateTime        @default(now())
+
+  @@index([providerPaymentId])
+  @@index([paymentId])
+  @@index([receivedAt])
 }
 
 // ==========================================================

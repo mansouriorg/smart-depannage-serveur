@@ -723,32 +723,35 @@ export class MemoryPrisma {
       Object.entries<any>(item).map(([name, direction]) => ({ name, direction })),
     );
 
-    const valueOf = (row: Row, name: string, direction: any): [unknown, 'asc' | 'desc'] => {
+    const valueOf = (row: Row, name: string, direction: any): [unknown, 'asc' | 'desc', 'first' | 'last' | undefined] => {
       const field = this.field(model, name);
 
       if (field.kind === 'relation') {
         const [innerName, innerDirection] = Object.entries<any>(direction)[0];
         const target = this.related(model, row, field)[0];
 
-        return [target ? target[innerName] : null, innerDirection === 'desc' ? 'desc' : 'asc'];
+        return [target ? target[innerName] : null, innerDirection === 'desc' ? 'desc' : 'asc', undefined];
       }
 
       const sort = typeof direction === 'string' ? direction : direction?.sort;
+      const nulls = typeof direction === 'object' && direction !== null ? direction.nulls : undefined;
 
-      return [row[name], sort === 'desc' ? 'desc' : 'asc'];
+      return [row[name], sort === 'desc' ? 'desc' : 'asc', nulls === 'first' || nulls === 'last' ? nulls : undefined];
     };
 
     return [...rows].sort((a, b) => {
       for (const { name, direction } of keys) {
-        const [x, how] = valueOf(a, name, direction);
+        const [x, how, nulls] = valueOf(a, name, direction);
         const [y] = valueOf(b, name, direction);
         const cx = comparable(x as never);
         const cy = comparable(y as never);
 
         if (cx === cy) continue;
-        // Postgres puts null last when ascending and first when descending.
-        if (cx === null) return how === 'asc' ? 1 : -1;
-        if (cy === null) return how === 'asc' ? -1 : 1;
+        // Postgres puts null last when ascending and first when descending, unless the order says `nulls: 'first' | 'last'`.
+        const nullsFirst = nulls ? nulls === 'first' : how === 'desc';
+
+        if (cx === null) return nullsFirst ? -1 : 1;
+        if (cy === null) return nullsFirst ? 1 : -1;
 
         return (cx > cy ? 1 : -1) * (how === 'desc' ? -1 : 1);
       }

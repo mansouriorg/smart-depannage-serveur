@@ -8,6 +8,8 @@ export type FetchLike = (
     headers?: Record<string, string>;
     body?: string;
     signal?: any;
+    /** 'error': a redirect is an error, it is not followed (the headers of the request, a key among them, would go with it). */
+    redirect?: 'error' | 'follow' | 'manual';
   },
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 

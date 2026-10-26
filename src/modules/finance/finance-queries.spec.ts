@@ -177,6 +177,24 @@ describe('the rows of the payments list (P2-08)', () => {
     expect(paymentListRow(payment({ status: 'AWAITING_CONFIRMATION' }), { artisanId: 5, cashAmount: '120.000' }).declared).toEqual({ artisanId: 5, amount: 120 });
   });
 
+  it('tells the number the card provider gave and when the time to pay ends (P2-10), and nothing for cash or a request the provider never took', () => {
+    const ends = new Date('2026-10-25T13:35:00.000Z');
+    const card = paymentListRow(
+      payment({ method: 'ONLINE_CARD', provider: 'KONNECT', status: 'PENDING', providerPaymentId: 'ref-77', expiresAt: ends, payUrl: 'https://pay.example.test/pay?payment_ref=ref-77', idempotencyKey: 'c9:key-77' }),
+      null,
+    );
+
+    expect(card.providerReference).toBe('ref-77');
+    expect(card.expiresAt).toEqual(ends);
+    expect(paymentListRow(payment({ method: 'ONLINE_CARD', status: 'PENDING' }), null)).toMatchObject({ providerReference: null, expiresAt: null });
+    expect(paymentListRow(payment({ method: 'CASH' }), null)).toMatchObject({ providerReference: null, expiresAt: null });
+    // The pay page and the key of the request are not for the list.
+    expect(card).not.toHaveProperty('payUrl');
+    expect(card).not.toHaveProperty('idempotencyKey');
+    expect(JSON.stringify(card)).not.toContain('pay.example');
+    expect(JSON.stringify(card)).not.toContain('c9:key-77');
+  });
+
   it('copes with a payment whose job has no artisan, no invoice or no customer', () => {
     const row = paymentListRow(payment({ invoice: null, intervention: { id: 3, status: 'CREATED', serviceType: null, client: null, artisan: null } }), null);
 

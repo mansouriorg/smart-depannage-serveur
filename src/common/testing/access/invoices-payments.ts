@@ -122,6 +122,36 @@ export const paymentScenarios: Scenario[] = [
     request: (h, w) => ({ params: { interventionId: job(h, w) } }),
   },
   {
+    route: 'POST /payments/:/check',
+    note: 'asks the provider where a card payment stands: the customer who started it and the back office (a stranger and the artisan of the job are turned away); the customer gets the page of the provider only while the payment waits (its address carries the provider\'s number, as the provider writes it), and never the admin note or the key',
+    allowed: ['client', 'backOffice'],
+    prepare: (w) => {
+      w.connectPaymentProvider();
+
+      // Each household has its own payment at the provider (a provider's number names one payment).
+      for (const [household, n] of [['A', 1], ['B', 2]] as const) {
+        w.set(
+          'payment',
+          {
+            method: 'ONLINE',
+            provider: 'KONNECT',
+            providerPaymentId: `ref-check-${n}`,
+            payUrl: `https://pay.example.test/pay?payment_ref=ref-check-${n}`,
+            adminNote: `note-check-${n}`,
+            idempotencyKey: `key-check-${n}`,
+            status: 'PENDING',
+            expiresAt: new Date(Date.now() + 20 * 60_000),
+          },
+          w.ids[household].payment,
+        );
+        // The provider knows the payment, and says it still waits: the look goes all the way to the provider and changes nothing.
+        w.paymentGateway.kept.set(`ref-check-${n}`, { state: 'PENDING', amount: null, currency: null, orderId: null });
+      }
+    },
+    request: (h, w) => ({ params: { paymentId: w.ids[h].payment } }),
+    hidden: (_household, person) => (person.role === 'CLIENT' ? ['note-check-1', 'key-check-1', 'note-check-2', 'key-check-2'] : []),
+  },
+  {
     route: 'GET /payments/:/receipt',
     note: 'the receipt of a paid payment: the customer who paid, the artisan of the job, the back office',
     allowed: ['client', 'artisan', 'backOffice'],

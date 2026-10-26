@@ -8,8 +8,8 @@
  *    one (a row from before the list existed), offers the three it starts with. "Online" stands for the card too.
  *  - A transfer needs an account to pay into (the RIB of the settings). Without one it is not offered: the customer would be told
  *    to pay nowhere.
- *  - Online payment has no provider yet (P2-10), so it is listed as not available. The request is still recorded when it is sent
- *    (P2-03): that is a decision of its own, not of this file.
+ *  - Online payment is listed as not available while no provider is connected (P2-10). The request is still recorded when it is sent
+ *    (P2-03) and waits: that is a decision of its own, not of this file.
  *  - The amount is the one a request would ask for (`amountLeft`: what the invoice, or the accepted quote while there is no invoice,
  *    asks, less what was paid and kept). A job that is paid, cancelled, or has neither an invoice nor an accepted quote, offers nothing,
  *    and says why.
@@ -27,6 +27,7 @@ import { paymentForClient } from '../../common/views/views';
 import { canonicalStatus } from '../intervention-workflow/intervention-status';
 import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
 import { amountToPay } from './financials-ops';
+import { gatewayConnected, readGatewayConfig } from './gateway/gateway-config';
 import { OPEN_PAYMENT_STATUSES, PAID_WORDS, amountLeft, isPlaceholder, isSameRequest, otherPaymentOpenWords } from './open-payment';
 
 type Db = any;
@@ -39,17 +40,32 @@ export type PaymentChoice = (typeof PAYMENT_CHOICES)[number];
 /** What a company that never chose offers. */
 export const DEFAULT_PAYMENT_METHODS: readonly string[] = ['ONLINE', 'CASH', 'BANK_TRANSFER'];
 
-/** True when a payment provider is connected. P2-10 (online payment) turns it on; until then a card payment cannot be made. */
-export const ONLINE_PROVIDER_CONNECTED = false;
+/**
+ * True when a payment provider is connected (PAYMENT_PROVIDER in the environment, P2-10); without one a card payment cannot be made.
+ * The callers that hold the gateway of the application pass what it says (`PaymentGatewayService.connected()`); a caller that does
+ * not asks the environment.
+ */
+export function onlineProviderConnected(env: Record<string, unknown> = process.env): boolean {
+  return gatewayConnected(readGatewayConfig(env));
+}
 
 export const PAYMENT_WORDS = {
   noQuote: 'Aucun devis accepté trouvé pour cette intervention.',
   notOffered: 'Ce mode de paiement n’est pas proposé.',
   noAccount: 'Le virement n’est pas disponible pour le moment.',
   noProvider: 'Le paiement par carte n’est pas encore disponible.',
+  cardCurrency: 'Le paiement par carte n’est pas disponible pour cette devise.',
   nothingOffered: 'Aucun mode de paiement n’est proposé pour le moment.',
   cancelled: 'Cette demande est annulée: il n’y a rien à payer.',
 };
+
+/**
+ * A card payment is asked in the currency of the company: the provider's amount is in thousandths of it, and the payments of a job in
+ * another currency are not set against what is left to pay (a part payment would settle the job when the provider confirms it).
+ */
+export function ensureCardCurrency(currency: string | null | undefined): void {
+  if (currency && String(currency) !== currencyCode()) throw new BadRequestException(PAYMENT_WORDS.cardCurrency);
+}
 
 /** The ways of paying the settings offer (as the names of `PaymentMethod`), the card included when "online" is. */
 export function offeredMethods(settings: { paymentMethods?: unknown } | null | undefined): string[] {
@@ -112,7 +128,7 @@ export interface PaymentOptionsView {
   open: Row | null;
 }
 
-export async function paymentOptionsOf(db: Db, job: { id: number; status: string | null | undefined; clientId?: number | null }): Promise<PaymentOptionsView> {
+export async function paymentOptionsOf(db: Db, job: { id: number; status: string | null | undefined; clientId?: number | null }, online: boolean = onlineProviderConnected()): Promise<PaymentOptionsView> {
   const settings = await settingsOf(db);
   const offered = offeredMethods(settings);
   const account = accountOf(settings);
@@ -120,7 +136,7 @@ export async function paymentOptionsOf(db: Db, job: { id: number; status: string
   const quote = position.quote;
   const document = position.document;
   const currency: string = document?.currency ?? quote?.currency ?? currencyCode();
-  const waiting = position.payments.filter((payment) => OPEN_PAYMENT_STATUSES.includes(String(payment.status)) && !isPlaceholder(payment));
+  const waiting = position.payments.filter((payment) => OPEN_PAYMENT_STATUSES.includes(String(payment.status)) && !isPlaceholder(payment, { clientId: job.clientId }));
 
   let amount: number | null = null;
   let reason: string | null = null;
@@ -139,13 +155,14 @@ export async function paymentOptionsOf(db: Db, job: { id: number; status: string
   const methods = PAYMENT_CHOICES.filter((method) => offered.includes(method)).map((method) => {
     let why: string | null = reason;
 
-    if (why === null && method === 'ONLINE_CARD' && !ONLINE_PROVIDER_CONNECTED) why = PAYMENT_WORDS.noProvider;
+    if (why === null && method === 'ONLINE_CARD' && !online) why = PAYMENT_WORDS.noProvider;
+    if (why === null && method === 'ONLINE_CARD' && currency !== currencyCode()) why = PAYMENT_WORDS.cardCurrency;
     if (why === null && method === 'BANK_TRANSFER' && !account) why = PAYMENT_WORDS.noAccount;
 
     // (No reason so far means there is an amount: the reason is set whenever there is none.)
     if (why === null) {
       // The same request again is not in the way (it is answered with the open payment); any other waiting payment is.
-      const inTheWay = waiting.find((payment) => !isSameRequest(payment, { method, amount: amount as number, derived: true, clientId: job.clientId }));
+      const inTheWay = waiting.find((payment) => !isSameRequest(payment, { method, amount: amount as number, derived: true, clientId: job.clientId, customer: true }));
 
       if (inTheWay) why = otherPaymentOpenWords(inTheWay);
     }

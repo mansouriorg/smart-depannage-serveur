@@ -42,6 +42,15 @@ export const ACCESS_MANIFEST: Record<string, ManifestEntry> = {
   'GET /service-zones': { kind: 'open', why: 'the list of the zones the platform serves' },
   'GET /guest/challenge': { kind: 'open', why: 'a question for the bot check: it holds nothing of anybody' },
 
+  'GET /payments/webhooks/:': {
+    kind: 'open',
+    why: 'the card provider calls it when a payment changes: the call only tells which payment to look up, and the server asks the provider itself before it believes anything (P2-10)',
+  },
+  'POST /payments/webhooks/:': {
+    kind: 'open',
+    why: 'the same call, sent as a POST by a provider that posts: nothing in it is believed, the provider is asked (P2-10)',
+  },
+
   // ------------------------------------------------------------------ signing in and out, and the codes sent to somebody
   'POST /auth/login': {
     kind: 'proved',

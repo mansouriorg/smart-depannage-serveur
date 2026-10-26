@@ -40,6 +40,10 @@ export const STAFF_ONLY_KEYS: ReadonlySet<string> = new Set([
   'assignedTo', // the staff member who handles a complaint, as a user
   // What the provider and the staff put on a payment or an invoice for themselves.
   'providerPaymentId',
+  'idempotencyKey', // the key a caller sent with a payment or a refund (another caller's key is not theirs to read)
+  'gatewayClaimedAt',
+  'providerCheckedAt',
+  'moneySeenAt',
   'failureReason',
   'refundReason',
   'emailedTo',

@@ -31,9 +31,10 @@ export const MANUAL_METHODS: readonly string[] = ['CASH', 'BANK_TRANSFER'];
 /**
  * A payment that is asked for and not decided: the team confirms it, fails it or cancels it. Cash and transfers wait as
  * AWAITING_CONFIRMATION (or as PENDING, when they were asked for before anyone said the money was handed over). An online payment
- * that is PENDING is a placeholder with nobody behind it (no provider is connected before P2-10: it can never be paid): there is
- * nothing for the team to confirm, so it is not in the queue, in the count of the summary or in the oldest date. It stays in the
- * list of all payments.
+ * that is PENDING waits for the provider (or is a placeholder that never reached it): the server settles it by itself, from the
+ * provider's own answer (P2-10), so there is nothing for the team to confirm, and it is not in the queue, in the count of the summary
+ * or in the oldest date. It stays in the list of all payments. A card payment the server cannot count by itself (money that came
+ * late, or for another amount) is AWAITING_CONFIRMATION with a note, and is in the queue.
  */
 export function awaitingFilter(): Row {
   return { OR: [{ status: 'AWAITING_CONFIRMATION' }, { status: 'PENDING', method: { in: [...MANUAL_METHODS] } }] };
@@ -166,7 +167,7 @@ export function paymentsOrder(view: PaymentView, sort: unknown): Row[] {
   return [{ [paymentDateField(view)]: direction }, { id: direction }];
 }
 
-/** The columns of a payment that the list reads (not the whole row: no customer note, no provider id). */
+/** The columns of a payment that the list reads (not the whole row: no customer note, no pay page, no idempotency key). The team may read the provider's number: it is how a card payment is found at the provider. */
 export const PAYMENT_LIST_SELECT = {
   id: true,
   interventionId: true,
@@ -180,6 +181,8 @@ export const PAYMENT_LIST_SELECT = {
   reference: true,
   receiptNumber: true,
   adminNote: true,
+  providerPaymentId: true,
+  expiresAt: true,
   failureReason: true,
   cancelReason: true,
   refundReason: true,
@@ -214,6 +217,10 @@ export interface PaymentListRow {
   reference: string | null;
   receiptNumber: string | null;
   adminNote: string | null;
+  /** The number the card provider gave to the payment (P2-10); null for cash, a transfer, and a card request the provider never took. */
+  providerReference: string | null;
+  /** When the time to pay a card payment ends; null when it has none. */
+  expiresAt: Date | null;
   /** Why it failed, was cancelled or was refunded, whichever applies to its status. */
   reason: string | null;
   requestedAt: Date | null;
@@ -251,6 +258,8 @@ export function paymentListRow(payment: Row, declared: Row | null): PaymentListR
     reference: payment.reference ?? null,
     receiptNumber: payment.receiptNumber ?? null,
     adminNote: payment.adminNote ?? null,
+    providerReference: payment.providerPaymentId ?? null,
+    expiresAt: payment.expiresAt ?? null,
     reason: reason ?? null,
     requestedAt: payment.requestedAt ?? null,
     confirmedAt: payment.confirmedAt ?? null,

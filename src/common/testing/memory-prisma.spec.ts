@@ -290,6 +290,37 @@ describe('MemoryPrisma: what a read gives back', () => {
     expect(await ids({ orderBy: { author: { email: 'desc' } } })).toEqual([third.id, first.id, second.id]);
   });
 
+  it('orderBy: `nulls: first | last` puts the empty values where it is asked, whatever the direction', async () => {
+    const { db } = await populated();
+    const flags = async (orderBy: unknown) => (await db.post.findMany({ orderBy } as any)).map((row: any) => row.publishedAt === null);
+    const edges = (list: boolean[]) => ({ head: list[0], tail: list[list.length - 1] });
+
+    expect((await flags({ id: 'asc' })).includes(true)).toBe(true);
+    expect((await flags({ id: 'asc' })).includes(false)).toBe(true);
+
+    expect(edges(await flags({ publishedAt: { sort: 'asc', nulls: 'first' } }))).toEqual({ head: true, tail: false });
+    expect(edges(await flags({ publishedAt: { sort: 'asc', nulls: 'last' } }))).toEqual({ head: false, tail: true });
+    expect(edges(await flags({ publishedAt: { sort: 'desc', nulls: 'first' } }))).toEqual({ head: true, tail: false });
+    expect(edges(await flags({ publishedAt: { sort: 'desc', nulls: 'last' } }))).toEqual({ head: false, tail: true });
+    // not asked: null last when ascending and first when descending, as Postgres does
+    expect(edges(await flags({ publishedAt: { sort: 'asc' } }))).toEqual({ head: false, tail: true });
+    expect(edges(await flags({ publishedAt: { sort: 'desc' } }))).toEqual({ head: true, tail: false });
+    // and behind another key, it only decides among equals
+    const byScore = await db.post.findMany({ orderBy: [{ score: 'asc' }, { publishedAt: { sort: 'asc', nulls: 'first' } }] } as any);
+
+    expect(byScore.map((row: any) => row.score)).toEqual([...byScore.map((row: any) => row.score)].sort((a: number, b: number) => a - b));
+
+    // among equals it decides: two posts without a date and one with, the same score
+    await db.post.create({ data: { title: 'Égal sans date', score: 5, authorId: 1 } });
+    await db.post.create({ data: { title: 'Égal avec date', score: 5, authorId: 1, publishedAt: new Date('2026-01-03T00:00:00Z') } });
+
+    const empty = async (nulls: 'first' | 'last') =>
+      (await db.post.findMany({ where: { score: 5 }, orderBy: [{ score: 'asc' }, { publishedAt: { sort: 'asc', nulls } }] } as any)).map((row: any) => row.publishedAt === null);
+
+    expect(await empty('first')).toEqual([true, true, false]);
+    expect(await empty('last')).toEqual([false, true, true]);
+  });
+
   it('take, skip and distinct', async () => {
     const { db, first, second, third } = await populated();
 

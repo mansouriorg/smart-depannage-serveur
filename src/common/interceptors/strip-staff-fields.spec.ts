@@ -26,6 +26,25 @@ describe('stripStaffFields', () => {
     });
   });
 
+  it('a card payment loses what the system keeps for itself (the key of the caller, the claim, the times of the provider\'s answers) and keeps the page to pay on', () => {
+    const payment = {
+      id: 3,
+      status: 'PENDING',
+      amount: 10,
+      payUrl: 'https://pay.example.test/x',
+      expiresAt: '2026-10-25T13:35:00.000Z',
+      providerPaymentId: 'abc',
+      idempotencyKey: 'c1:key',
+      gatewayClaimedAt: '2026-10-25T13:00:00.000Z',
+      providerCheckedAt: '2026-10-25T13:01:00.000Z',
+      moneySeenAt: '2026-10-25T13:02:00.000Z',
+    };
+
+    expect(stripStaffFields({ payments: [payment] })).toEqual({
+      payments: [{ id: 3, status: 'PENDING', amount: 10, payUrl: 'https://pay.example.test/x', expiresAt: '2026-10-25T13:35:00.000Z' }],
+    });
+  });
+
   it('does not mutate its input', () => {
     const input = { id: 1, adminNote: 'x' };
 

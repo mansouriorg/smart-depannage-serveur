@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Header,
+  Headers,
   Ip,
   Param,
   ParseIntPipe,
@@ -220,8 +221,28 @@ export class GuestController {
     @Param('id', ParseIntPipe) id: number,
     @Query('token') token: string,
     @Body() dto: GuestPaymentDto,
+    // The same key is the same request (a retry gives the payment back instead of making a second one).
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.guestService.createGuestPayment(id, token, dto);
+    return this.guestService.createGuestPayment(id, token, dto, idempotencyKey);
+  }
+
+  // ==========================================================
+  // 7b. CHECK A CARD PAYMENT (P2-10)
+  // POST /guest/interventions/:id/payments/check?token=RAW_TOKEN
+  // The customer comes back from the payment page: the provider is asked what became of the payment, and the options are answered
+  // as they are then (the same answer as GET payment-options).
+  // ==========================================================
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ name: 'guest-payment-check', limit: 360, windowMs: 60 * 60_000 })
+  @Header('Cache-Control', 'no-store')
+  @Post('interventions/:id/payments/check')
+  checkGuestPayment(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('token') token: string,
+  ) {
+    return this.guestService.checkGuestPayment(id, token);
   }
 
   // ==========================================================

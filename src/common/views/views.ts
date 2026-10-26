@@ -250,6 +250,11 @@ export function paymentForClient(payment: any) {
 
   return {
     ...pick(payment, PAYMENT_FOR_CLIENT),
+    // The page of the provider where a card payment is made (P2-10): given while the payment waits for the customer, and only then (null
+    // otherwise). A link that is no longer good is not handed out, and a payment that is over has no use for it.
+    ...(payment.status === 'PENDING' && payment.providerPaymentId
+      ? { payUrl: payment.payUrl ?? null, expiresAt: payment.expiresAt ?? null }
+      : { payUrl: null, expiresAt: null }),
     ...(payment.intervention !== undefined ? { intervention: jobIn(payment.intervention, 'client') } : {}),
     ...(payment.quote !== undefined ? { quote: quoteForClient(payment.quote) } : {}),
     ...(payment.invoice !== undefined ? { invoice: invoiceForClient(payment.invoice) } : {}),

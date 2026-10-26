@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import * as argon2 from 'argon2';
@@ -57,11 +58,16 @@ import { lockJob } from '../assignment/artisan-lock';
 import { acceptQuote as acceptQuoteRule, askAndTell, rejectQuote as rejectQuoteRule, requestChangeAndTell } from '../quotes/quote-decisions';
 import { revisionOf } from '../quotes/quote-revisions';
 import { PAID_WORDS, amountLeft, claimOpenPayment, refreshOpenPayment } from '../payments/open-payment';
+import { PaymentGatewayService } from '../payments/gateway/payment-gateway.service';
+import { GatewayError } from '../payments/gateway/payment-gateway';
+import { CARD_WORDS, startOnlinePayment } from '../payments/online-payment';
+import { KEY_WORDS, asKeyConflict, readIdempotencyKey } from '../payments/idempotency';
+import { PaymentsService } from '../payments/payments.service';
 import { amountToPay } from '../payments/financials-ops';
 import { INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
 import { creditNotePdfFile, invoicePdfFile, type PdfFile } from '../invoices/pdf/pdf-files';
 import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
-import { PAYMENT_WORDS, ensureJobTakesPayment, ensureMethodOffered, paymentOptionsOf } from '../payments/payment-options';
+import { PAYMENT_WORDS, ensureCardCurrency, ensureJobTakesPayment, ensureMethodOffered, paymentOptionsOf } from '../payments/payment-options';
 import { money } from '../../common/money/money';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
@@ -109,6 +115,9 @@ export class GuestService {
   /** Photos of one request are added one call at a time (the cap is read, then used). */
   private readonly photoLock = new KeyedLock();
 
+  /** The payment provider of the application (P2-10): whether a card payment can be made, and the start of one. */
+  private readonly gateway: PaymentGatewayService;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
@@ -117,7 +126,12 @@ export class GuestService {
     private readonly staffAlerts: StaffAlertsService,
     private readonly files: FilesService,
     private readonly complaints: ComplaintsService,
-  ) {}
+    @Optional() gateway?: PaymentGatewayService,
+    @Optional() private readonly payments?: PaymentsService,
+  ) {
+    // Without one handed in (a spec) the gateway the environment describes: none, unless PAYMENT_PROVIDER is set.
+    this.gateway = gateway ?? new PaymentGatewayService();
+  }
 
   // ==========================================================
   // 1. HELPERS
@@ -913,14 +927,41 @@ export class GuestService {
   async getPaymentOptions(interventionId: number, rawTrackingToken: string) {
     const job = await this.findForLink(interventionId, rawTrackingToken);
 
-    return paymentOptionsOf(this.prisma, job);
+    return paymentOptionsOf(this.prisma, job, this.gateway.connected());
+  }
+
+  /**
+   * The customer comes back from the page of the card provider (or presses "Vérifier mon paiement"): the provider is asked what became
+   * of the card payment of the job, and the options are answered as they are then. A provider that cannot be reached is not an
+   * error here: the page keeps asking, and the webhook and the timer decide as well. Only the holder of the link can ask.
+   */
+  async checkGuestPayment(interventionId: number, rawTrackingToken: string) {
+    const job = await this.findForLink(interventionId, rawTrackingToken);
+
+    if (this.payments && this.gateway.connected()) {
+      const waiting = await this.payments.cardPaymentsToAsk(job.id);
+
+      for (const payment of waiting) {
+        // A payment cancelled or failed here a short while ago is asked about too: the customer may have paid in the last seconds (the answer then goes to the team).
+        try {
+          // Asked about a few seconds ago (another tab, the same page twice): that answer stands.
+          if (!this.payments.justAsked(payment)) await this.payments.syncFromProvider(payment.id);
+        } catch (error) {
+          if (!(error instanceof GatewayError)) throw error;
+        }
+      }
+    }
+
+    return paymentOptionsOf(this.prisma, job, this.gateway.connected());
   }
 
   async createGuestPayment(
     interventionId: number,
     rawTrackingToken: string,
     dto: GuestPaymentDto,
+    idempotencyKey?: unknown,
   ) {
+    const key = readIdempotencyKey(idempotencyKey, `g${interventionId}`);
     const intervention = await this.findInterventionByPublicToken(
       interventionId,
       rawTrackingToken,
@@ -938,8 +979,31 @@ export class GuestService {
     let payment: any = null;
     let reused = false;
 
+    // A card payment of this job whose time is over is closed first (after one last look at the provider), so that it is not handed back
+    // with a page that no longer takes payments.
+    if (online && this.payments) await this.payments.closeLapsedCards(intervention.id, new Date(), { required: true });
+
     await this.prisma.$transaction(async (tx) => {
       await lockJob(tx, intervention.id);
+
+      // The same key is the same request, answered with the payment it made (whatever became of it since): nothing is written.
+      if (key) {
+        const earlier = await tx.payment.findUnique({ where: { idempotencyKey: key } });
+
+        if (earlier) {
+          if (Number(earlier.interventionId) !== intervention.id || String(earlier.method) !== String(dto.method)) throw new ConflictException(KEY_WORDS.used);
+
+          // A reference the first request did not carry is something new: it is not answered as if it had been written.
+          if (dto.reference !== undefined && dto.reference !== null && String(dto.reference) !== '' && String(dto.reference) !== String(earlier.reference ?? '')) {
+            throw new ConflictException(KEY_WORDS.used);
+          }
+
+          payment = earlier;
+          reused = true;
+
+          return null;
+        }
+      }
 
       // A visitor cannot type an amount: what is left to pay of what the invoice asks (the accepted quote while there is no invoice;
       // the same rule as for a customer who is signed in and names nothing); a deposit that was paid is not asked for twice.
@@ -948,17 +1012,27 @@ export class GuestService {
 
       if (!document) throw new BadRequestException(PAYMENT_WORDS.noQuote);
 
+      // A card is paid in the currency of the company (see `ensureCardCurrency`).
+      if (online && this.gateway.connected()) ensureCardCurrency(document.currency);
+
       const amount = amountLeft(position, amountToPay(document), document.currency);
 
       if (amount === null) throw new BadRequestException(PAID_WORDS);
 
       // One open payment per job: the same way again (a second tap, the reference sent after the transfer) is answered with the
       // open payment, another one is refused.
-      const open = await claimOpenPayment(tx, { interventionId: intervention.id, method: dto.method, amount, derived: true, clientId: intervention.clientId });
+      const open = await claimOpenPayment(tx, { interventionId: intervention.id, method: dto.method, amount, derived: true, clientId: intervention.clientId, customer: true });
 
       if (open) {
         // The reference of the transfer, sent after it was made, is kept on the open payment.
         await refreshOpenPayment(tx, open, { reference: dto.reference, clientNote: dto.clientNote });
+
+        // The key of this request is kept on the payment it was answered with: the same key asked again is the same request.
+        if (key && !open.idempotencyKey) {
+          await tx.payment.updateMany({ where: { id: open.id, idempotencyKey: null }, data: { idempotencyKey: key } }).catch((error: unknown) => {
+            throw asKeyConflict(error);
+          });
+        }
 
         // A request made during the work and asked for again when the work is done moves the job then.
         await transitionStatus(tx, {
@@ -983,7 +1057,10 @@ export class GuestService {
             currency: document.currency,
             reference: dto.reference,
             clientNote: dto.clientNote,
+            idempotencyKey: key ?? null,
           },
+        }).catch((error: unknown) => {
+          throw asKeyConflict(error);
         });
 
         // A payment request must not overwrite a job that is still being worked on: soft, so the payment is recorded and the
@@ -999,29 +1076,38 @@ export class GuestService {
       }
     });
 
+    const connected = online && this.gateway.connected();
     const instructions =
-      online
-        ? 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente.'
-        : dto.method === PaymentMethod.BANK_TRANSFER
-          ? 'Effectuez le virement puis envoyez la référence.'
-          : 'Paiement en espèces à confirmer par l’administration.';
+      connected
+        ? 'Réglez par carte sur la page du prestataire de paiement : la confirmation de votre paiement est automatique.'
+        : online
+          ? 'Paiement en ligne non connecté pour le moment. Cette demande reste en attente.'
+          : dto.method === PaymentMethod.BANK_TRANSFER
+            ? 'Effectuez le virement puis envoyez la référence.'
+            : 'Paiement en espèces à confirmer par l’administration.';
 
-    if (reused) {
-      return { payment: paymentForClient(payment), instructions, replayed: true };
+    if (!reused) {
+      await this.events.create({
+        interventionId: intervention.id,
+        type: InterventionEventType.PAYMENT_PENDING,
+        title: 'Paiement en attente',
+        message:
+          connected
+            ? 'Demande de paiement par carte créée : le client est dirigé vers la page de paiement.'
+            : online
+              ? 'Demande de paiement en ligne créée. Aucun prestataire externe n’est encore connecté.'
+              : `Paiement ${dto.method} en attente de confirmation.`,
+        createdById: intervention.clientId,
+      });
     }
 
-    await this.events.create({
-      interventionId: intervention.id,
-      type: InterventionEventType.PAYMENT_PENDING,
-      title: 'Paiement en attente',
-      message:
-        online
-          ? 'Demande de paiement en ligne créée. Aucun prestataire externe n’est encore connecté.'
-          : `Paiement ${dto.method} en attente de confirmation.`,
-      createdById: intervention.clientId,
-    });
+    // A card request goes to the provider once it is recorded (a retry of a request whose provider did not answer starts it again).
+    const started = online ? await startOnlinePayment(this.prisma, this.gateway, payment) : payment;
 
-    return { payment: paymentForClient(payment), instructions };
+    // Replaced by another request while the provider was being asked: the customer is not sent to a payment that was cancelled.
+    if (online && !reused && String(started.status) === PaymentStatus.CANCELLED) throw new ConflictException(CARD_WORDS.changed);
+
+    return { payment: paymentForClient(started), instructions, ...(reused ? { replayed: true } : {}) };
   }
 
   // ==========================================================

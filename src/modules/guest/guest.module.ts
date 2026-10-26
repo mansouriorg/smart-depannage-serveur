@@ -7,6 +7,7 @@ import { InterventionsModule } from '../interventions/interventions.module';
 import { FilesModule } from '../files/files.module';
 import { ComplaintsModule } from '../complaints/complaints.module';
 import { BotCheckModule } from '../../common/bot-check/bot-check.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 import { GuestController } from './guest.controller';
 import { GuestService } from './guest.service';
@@ -23,6 +24,8 @@ import { GuestService } from './guest.service';
     ComplaintsModule,
     // The check of the public request form (P1-16).
     BotCheckModule,
+    // The payment provider, and the check of a card payment (P2-10).
+    PaymentsModule,
   ],
   controllers: [GuestController],
   providers: [GuestService],

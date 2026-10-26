@@ -43,6 +43,9 @@ import { NotificationsController } from '../../modules/notifications/notificatio
 import { NotificationsService } from '../../modules/notifications/notifications.service';
 import { PaymentsController } from '../../modules/payments/payments.controller';
 import { PaymentsService } from '../../modules/payments/payments.service';
+import { readGatewayConfig } from '../../modules/payments/gateway/gateway-config';
+import { PaymentGatewayService } from '../../modules/payments/gateway/payment-gateway.service';
+import { FakePaymentGateway } from './fake-payment-gateway';
 import { ProofsController } from '../../modules/proofs/proofs.controller';
 import { ProofsService } from '../../modules/proofs/proofs.service';
 import { QuotesController } from '../../modules/quotes/quotes.controller';
@@ -158,6 +161,10 @@ export class World {
   readonly sink: string[] = [];
   readonly router: Router;
   readonly svc: Record<string, any> = {};
+  /** The card provider of this world: it answers only for the payments a spec put there (`kept`), and only once `connectPaymentProvider` was called. */
+  readonly paymentGateway = new FakePaymentGateway();
+  /** The settings the payments of this world read: no provider is set up until a spec asks for one (a card payment is then an empty request). */
+  readonly paymentProvider = new PaymentGatewayService(readGatewayConfig({}), null);
   readonly people: Record<string, Person> = {};
   readonly ids: Record<Household, Ids> = { A: {}, B: {} };
 
@@ -193,7 +200,7 @@ export class World {
     svc.clientAddresses = new ClientAddressesService(prisma);
     svc.quotes = new QuotesService(prisma, svc.events, svc.told);
     svc.invoices = new InvoicesService(prisma, svc.events, svc.told);
-    svc.payments = new PaymentsService(prisma, svc.events, svc.told);
+    svc.payments = new PaymentsService(prisma, svc.events, svc.told, this.paymentProvider);
     svc.messages = new MessagesService(prisma, svc.realtime, svc.told);
     svc.complaints = new ComplaintsService(prisma, svc.told);
     svc.reviews = new ReviewsService(prisma);
@@ -240,6 +247,13 @@ export class World {
       ].map(([name, instance]) => ({ source: source(`modules/${name as string}.controller.ts`), instance })),
       TICKET_STAFF_ROLES,
     );
+  }
+
+  /** Sets up the card provider for the payments of this world: from now on they ask `paymentGateway` (a fake) what became of a card payment. */
+  connectPaymentProvider(): void {
+    const config = readGatewayConfig({ PAYMENT_PROVIDER: 'konnect', KONNECT_API_KEY: 'key-of-the-world', KONNECT_WALLET_ID: 'wallet-of-the-world', API_PUBLIC_URL: 'https://api.example.test' });
+
+    Object.assign(this.paymentProvider, { config, gateway: this.paymentGateway });
   }
 
   /** Changes rows of the world to put it in the state a spec needs: the rows of `model` that `which` selects (every row when it is left out). */

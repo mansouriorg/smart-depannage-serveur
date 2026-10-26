@@ -313,6 +313,39 @@ describe('who is told about what', () => {
     expect(notifications.filter((n) => n.recipientId === 10).length).toBe(1);
   });
 
+  it('a card payment to check: the money people are told, with a high priority and the mark that it is to check; the customer is not', async () => {
+    const payment = {
+      id: 9,
+      interventionId: 100,
+      amount: 50,
+      currency: 'TND',
+      intervention: { id: 100, clientId: 10 },
+    };
+    const { service, notifications } = makeWorld({ payments: [payment] });
+
+    await service.notifyPaymentToCheck(9);
+
+    // the admin (1), the accountant (3) and the super admin (5): not the inactive admin, not the customer
+    expect(recipients(notifications)).toEqual([1, 3, 5]);
+
+    for (const notification of notifications) {
+      expect(notification.type).toBe('PAYMENT_RECEIVED');
+      expect(notification.priority).toBe('HIGH');
+      expect(notification.title).toBe('Paiement par carte à vérifier');
+      expect(notification.entityType).toBe('PAYMENT');
+      expect(notification.entityId).toBe(9);
+      expect(notification.data).toEqual({ paymentId: 9, interventionId: 100, toCheck: true });
+    }
+  });
+
+  it('a card payment to check that is not found tells nobody', async () => {
+    const { service, notifications } = makeWorld({ payments: [] });
+
+    await service.notifyPaymentToCheck(404);
+
+    expect(notifications.length).toBe(0);
+  });
+
   it('a complaint opened: support and admins', async () => {
     const complaint = { id: 4, interventionId: 100, title: 'Fuite', assignedToId: null };
     const { service, notifications } = makeWorld({ complaints: [complaint] });

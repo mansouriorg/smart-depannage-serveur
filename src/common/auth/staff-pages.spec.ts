@@ -631,6 +631,7 @@ describe('the finance console in the table (P2-08)', () => {
       'POST /business/payouts',
       'POST /cash-ledger/artisans/:artisanId/remittances',
       'POST /invoices/:invoiceId/credit-notes',
+      'POST /payments/:paymentId/check',
     ]);
   });
 

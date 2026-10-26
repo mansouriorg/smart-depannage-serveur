@@ -149,6 +149,7 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
       { method: 'PATCH', path: '/payments/:paymentId/fail' },
       { method: 'PATCH', path: '/payments/:paymentId/cancel' },
       { method: 'PATCH', path: '/payments/:paymentId/refund' },
+      { method: 'POST', path: '/payments/:paymentId/check' },
       { method: 'POST', path: '/invoices/:invoiceId/credit-notes' },
       { method: 'POST', path: '/cash-ledger/artisans/:artisanId/remittances' },
       { method: 'POST', path: '/business/payouts' },

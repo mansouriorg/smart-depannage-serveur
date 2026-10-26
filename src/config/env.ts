@@ -22,6 +22,8 @@
  *                       the new names; see scripts/migrate-status-vocabulary.ts.
  *   SMS_PROVIDER, SMTP_HOST, PUSH_PROVIDER, ...  how messages are delivered (P1-03);
  *                       the full list is in ./delivery.ts and .env.example.
+ *   PAYMENT_PROVIDER, KONNECT_API_KEY, KONNECT_WALLET_ID, API_PUBLIC_URL, ...  card payments (P2-10);
+ *                       the full list is in ../modules/payments/gateway/gateway-config.ts and .env.example.
  *   API_DOCS            "true" serves /api/docs in production, "false" hides it elsewhere;
  *                       empty means on outside production, off in production (P1-09).
  *   BUSINESS_TIMEZONE   the time zone of the artisans' weekly schedules and of
@@ -31,6 +33,7 @@
  */
 
 import { deliveryConfigProblems } from './delivery';
+import { gatewayConfigProblems } from '../modules/payments/gateway/gateway-config';
 import { botCheckConfigProblems } from '../common/bot-check/bot-check';
 import { isValidTimeZone, loadedLocale } from '../common/locale/locale';
 
@@ -142,6 +145,7 @@ export function validateEnv(
 
   errors.push(...deliveryConfigProblems(rawEnv));
   errors.push(...botCheckConfigProblems(rawEnv));
+  errors.push(...gatewayConfigProblems(rawEnv));
 
   if (errors.length > 0) {
     throw new Error(

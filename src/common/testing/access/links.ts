@@ -96,6 +96,15 @@ export const linkScenarios: LinkScenario[] = [
     request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token), body: { method: 'CASH' } }),
   },
   {
+    route: 'POST /guest/interventions/:/payments/check',
+    note: 'asks the provider where the card payment of a job stands: only the holder of the link of this job is answered (another job\'s link, a made-up link and no link are refused)',
+    prepare: (w) => {
+      w.set('intervention', { status: 'PAYMENT_PENDING' });
+      w.set('quote', { status: 'ACCEPTED' });
+    },
+    request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token) }),
+  },
+  {
     route: 'POST /guest/interventions/:/feedback',
     prepare: (w) => {
       w.set('intervention', { status: 'PAID' });

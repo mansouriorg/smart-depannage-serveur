@@ -40,6 +40,8 @@ function makeWorld(payment: Record<string, unknown> = {}) {
     complaint: { findMany: async () => [], updateMany: async () => ({ count: 0 }) },
     // A cancel or a fail changes the payment and the cash ledger in one transaction (P2-02); no cash was declared here.
     cashLedgerEntry: { findMany: async () => [] },
+    // A refund is written as a row of its own, with the key it came with (P2-10); none was sent here.
+    paymentRefund: { create: async ({ data }: any) => ({ id: 1, ...data }), findUnique: async () => null },
     $executeRaw: async () => 1,
     $transaction: async (work: (tx: any) => unknown) => work(prisma),
   };

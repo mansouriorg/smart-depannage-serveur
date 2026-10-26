@@ -1752,6 +1752,34 @@ export class NotificationsService {
   }
 
   /**
+   * A card payment arrived that the team must look at before it counts (another amount, a payment cancelled meanwhile, no room left on
+   * the job). Told to the accountants and the admins; the customer is not (nothing is wrong for them). It travels as a payment notice,
+   * like the refunds: a type of its own would change the shared contract of all four other projects.
+   */
+  async notifyPaymentToCheck(paymentId: number) {
+    return this.guarded('payment to check', async () => {
+      const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+
+      if (!payment) return null;
+
+      return this.notifyAdmins({
+        roles: MONEY_ROLES,
+        type: NotificationType.PAYMENT_RECEIVED,
+        priority: NotificationPriority.HIGH,
+        title: 'Paiement par carte à vérifier',
+        message: `Un paiement par carte de ${formatMoney(payment.amount, { currency: payment.currency })} est arrivé et doit être vérifié avant d’être compté.`,
+        entityType: 'PAYMENT',
+        entityId: paymentId,
+        data: {
+          paymentId,
+          interventionId: payment.interventionId,
+          toCheck: true,
+        },
+      });
+    });
+  }
+
+  /**
    * The customer is told that money went back to them. It travels as a payment notice (the same channels and the same switch in
    * the notification preferences): a type of its own would change the shared contract of all four other projects.
    */
@@ -1770,12 +1798,19 @@ export class NotificationsService {
         return null;
       }
 
+      // A refund of a card payment is made at the payment provider by the team (the server does not send it): the customer is told it is
+      // recorded and will reach the card, not that the money is already back.
+      const byCard = Boolean(payment.providerPaymentId);
+      const sum = formatMoney(amount, { currency: payment.currency });
+
       return this.notify({
         recipientId: payment.intervention.clientId,
         actorId,
         type: NotificationType.PAYMENT_RECEIVED,
-        title: 'Remboursement effectué',
-        message: `Un remboursement de ${formatMoney(amount, { currency: payment.currency })} a été effectué sur votre paiement.`,
+        title: byCard ? 'Remboursement enregistré' : 'Remboursement effectué',
+        message: byCard
+          ? `Un remboursement de ${sum} a été enregistré sur votre paiement par carte. Il sera versé sur votre carte par notre prestataire de paiement.`
+          : `Un remboursement de ${sum} a été effectué sur votre paiement.`,
         entityType: 'PAYMENT',
         entityId: paymentId,
         data: {
