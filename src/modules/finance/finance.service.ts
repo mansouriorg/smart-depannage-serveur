@@ -37,10 +37,11 @@ import {
 } from './finance-queries';
 import { FinancePeriod, periodOf } from './finance-period';
 import type { DayTotal, FinancePage, FinanceSummary, InvoiceListRow, MethodTotal, PaymentListRow, RefundDueRow, RefundsDue } from './finance.types';
+import { Permission, rolesWith } from '../../common/auth/permissions';
 
 type Row = Record<string, any>;
 
-const FINANCE_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT];
+const FINANCE_ROLES: Role[] = rolesWith(Permission.FINANCE_READ);
 
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;

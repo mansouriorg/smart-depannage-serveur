@@ -33,6 +33,7 @@ import {
   AssignMatchedArtisanDto,
   MatchArtisansQueryDto,
 } from './dto/matching.dto';
+import { Permission, can } from '../../common/auth/permissions';
 
 type MatchingRange = {
   startsAt?: Date;
@@ -67,15 +68,7 @@ export class MatchingService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    const staffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return staffRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private assertStaff(role: Role) {

@@ -997,7 +997,7 @@ describe('the doors of the routes this change adds (P2-04)', () => {
 
     expect(route.how).toBe('roles');
     expect([...route.roles].sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'ARTISAN', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
-    expect(route.guards).toEqual(['JwtAuthGuard', 'RolesGuard']);
+    expect(route.guards).toEqual(['JwtAuthGuard', 'PermissionsGuard']);
   });
 
   it('the question of a visitor is opened by the tracking link like the other answers, and by nothing else', () => {

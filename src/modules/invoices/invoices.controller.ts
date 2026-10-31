@@ -18,8 +18,9 @@ import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 import { sendPdf } from './pdf/pdf-files';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import {
@@ -51,7 +52,7 @@ type ExportInvoicesQuery = {
 };
 
 @Controller('invoices')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class InvoicesController {
   constructor(private readonly service: InvoicesService) {}
 
@@ -65,13 +66,7 @@ export class InvoicesController {
    *
    * POST /invoices/interventions/:interventionId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_ISSUE)
   @Post('interventions/:interventionId')
   createForIntervention(
     @CurrentUser('id') adminId: number,
@@ -99,13 +94,7 @@ export class InvoicesController {
    *   "notes": "Merci pour votre confiance."
    * }
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_ISSUE)
   @Post('generate')
   generateInvoice(
     @CurrentUser() user: AuthenticatedUser,
@@ -124,7 +113,7 @@ export class InvoicesController {
    *
    * GET /invoices/mine
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.INVOICES_MINE)
   @Get('mine')
   findMine(@CurrentUser('id') userId: number) {
     return this.service.findMine(userId);
@@ -144,7 +133,7 @@ export class InvoicesController {
    * GET /invoices/export?paymentStatus=PAID
    * GET /invoices/export?dateFrom=2026-01-01&dateTo=2026-12-31
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.INVOICES_EXPORT)
   @Get('export')
   exportInvoices(
     @CurrentUser() user: AuthenticatedUser,
@@ -163,15 +152,7 @@ export class InvoicesController {
    *
    * GET /invoices/intervention/:interventionId
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_VIEW)
   @Get('intervention/:interventionId')
   findByIntervention(
     @CurrentUser() user: AuthenticatedUser,
@@ -190,7 +171,7 @@ export class InvoicesController {
    *
    * GET /invoices/client/:invoiceId
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.INVOICES_MINE)
   @Get('client/:invoiceId')
   findOneForClient(
     @CurrentUser('id') userId: number,
@@ -208,7 +189,7 @@ export class InvoicesController {
    *
    * GET /invoices/client/:invoiceId/download
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.INVOICES_MINE)
   @Get('client/:invoiceId/download')
   downloadForClient(
     @CurrentUser('id') userId: number,
@@ -227,15 +208,7 @@ export class InvoicesController {
   /**
    * GET /invoices/:invoiceId/pdf
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_VIEW)
   @Get(':invoiceId/pdf')
   async invoicePdf(
     @CurrentUser() user: AuthenticatedUser,
@@ -248,15 +221,7 @@ export class InvoicesController {
   /**
    * GET /invoices/credit-notes/:creditNoteId/pdf
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_VIEW)
   @Get('credit-notes/:creditNoteId/pdf')
   async creditNotePdf(
     @CurrentUser() user: AuthenticatedUser,
@@ -281,7 +246,7 @@ export class InvoicesController {
    *   "amountTTC": 59.5      // left out: all that is left on the invoice
    * }
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.INVOICES_VOID)
   @Post(':invoiceId/credit-notes')
   createCreditNote(
     @CurrentUser() user: AuthenticatedUser,
@@ -306,13 +271,7 @@ export class InvoicesController {
    *   "message": "Bonjour, votre facture est disponible."
    * }
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_ISSUE)
   @Post(':invoiceId/send-email')
   sendInvoiceByEmail(
     @CurrentUser() user: AuthenticatedUser,
@@ -336,7 +295,7 @@ export class InvoicesController {
    *   "reason": "Erreur de facturation"
    * }
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.INVOICES_VOID)
   @Patch(':invoiceId/cancel')
   cancelInvoice(
     @CurrentUser() user: AuthenticatedUser,
@@ -356,15 +315,7 @@ export class InvoicesController {
    *
    * GET /invoices/:invoiceId/download
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_VIEW)
   @Get(':invoiceId/download')
   download(
     @CurrentUser() user: AuthenticatedUser,
@@ -383,15 +334,7 @@ export class InvoicesController {
    *
    * GET /invoices/:invoiceId
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.INVOICES_VIEW)
   @Get(':invoiceId')
   findOne(
     @CurrentUser() user: AuthenticatedUser,

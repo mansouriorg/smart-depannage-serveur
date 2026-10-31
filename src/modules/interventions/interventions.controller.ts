@@ -11,6 +11,7 @@ import {
   UploadedFile, 
   UseInterceptors, 
   BadRequestException,
+  ParseIntPipe,
   Query 
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -22,9 +23,9 @@ import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
 import { ReportIssueDto } from './dto/report-issue.dto'; 
 import { AuthGuard } from '@nestjs/passport';
 import { isTicketStaff } from '../../common/auth/role-policy';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Role } from '../../../generated/prisma/client';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { PROOF_UPLOAD } from '../proofs/proof-upload';
 import { AddProofDto } from '../proofs/dto/proofs.dto';
 import {
@@ -122,13 +123,13 @@ export class InterventionsController {
   @UseGuards(AuthGuard('jwt'))
   update(
     @Request() req, 
-    @Param('id') id: string, 
+    @Param('id', ParseIntPipe) id: number, 
     @Body() updateInterventionDto: UpdateInterventionDto
   ) {
     // P0-16: staff manage tickets; an artisan may only advance their own
     // mission (en route / on site / in progress); everybody else is refused.
     if (isTicketStaff(req.user.role)) {
-      return this.interventionsService.update(+id, updateInterventionDto, {
+      return this.interventionsService.update(id, updateInterventionDto, {
         kind: 'staff',
         userId: req.user.id,
       });
@@ -136,7 +137,7 @@ export class InterventionsController {
 
     if (req.user.role === 'ARTISAN') {
       return this.interventionsService.updateAsArtisan(
-        +id,
+        id,
         req.user.id,
         updateInterventionDto,
       );
@@ -151,10 +152,10 @@ export class InterventionsController {
   // multipart: photo, latitude, longitude, accuracy (metres), mocked (true/false), timestamp.
   // The photo is received in memory (never in a folder the web server could serve) and judged by
   // the proof service (P1-07) before anything is kept.
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post(':id/complete-work')
   // The role is checked BEFORE the interceptor reads the photo.
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(AuthGuard('jwt'), PermissionsGuard)
   @UseInterceptors(FileInterceptor('photo', PROOF_UPLOAD))
   async completeWork(
     @Request() req,

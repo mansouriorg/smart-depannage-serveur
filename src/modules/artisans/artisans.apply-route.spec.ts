@@ -58,7 +58,7 @@ describe('the public application route (P1-11 review)', () => {
     const route = applyRoute();
 
     expect(route).not.toContain('JwtAuthGuard');
-    expect(route).not.toContain('@Roles(');
+    expect(route).not.toContain('@RequirePermission(');
   });
 
   it('checks the form before anything is stored (parseApplication first, then the service)', () => {

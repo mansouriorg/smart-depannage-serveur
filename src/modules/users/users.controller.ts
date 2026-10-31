@@ -27,8 +27,9 @@ import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
 import { Role } from '../../../generated/prisma/client';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { canManage } from '../../common/auth/role-policy';
 import {
@@ -173,13 +174,8 @@ export class UsersController {
 
   // GET /users/artisans
   // Used by Admin Dashboard to populate artisan dropdown/list
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_LIST_ARTISANS)
   @Get('artisans')
   findArtisans(
     @Query('page') page?: string,
@@ -204,8 +200,8 @@ export class UsersController {
   // ==========================================================
 
   // POST /users/staff/create
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.STAFF_CREATE)
   @Post('staff/create')
   async createStaffUser(
     @Body()
@@ -226,8 +222,8 @@ export class UsersController {
   // ==========================================================
 
   // PATCH /users/location
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.LOCATION_REPORT)
   @Patch('location')
   updateLocation(
     @CurrentUser('id') userId: number,
@@ -250,8 +246,8 @@ export class UsersController {
 
   // POST /users
   // Admin creates a user manually
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
   @Post()
   create(
     @CurrentUser('role') currentUserRole: Role,
@@ -269,14 +265,8 @@ export class UsersController {
   }
 
   // GET /users?page=1&limit=20&role=CLIENT&search=test
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_READ)
   @Get()
   findAll(
     @Query('page') page?: string,
@@ -311,22 +301,16 @@ export class UsersController {
   }
 
   // GET /users/:id
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_READ)
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.usersService.getProfile(id);
   }
 
   // PATCH /users/:id
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
   @Patch(':id')
   async update(
     @CurrentUser('id') currentUserId: number,
@@ -355,8 +339,8 @@ export class UsersController {
 
   // DELETE /users/:id
   // Soft delete / deactivate user
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
   @Delete(':id')
   remove(
     @CurrentUser('id') currentUserId: number,
@@ -378,8 +362,8 @@ export class UsersController {
   // POST /users/:id/password-setup-link
   // New one-time link to choose a password. While e-mail delivery is simulated
   // the link is returned here so the admin can hand it over.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
   @Post(':id/password-setup-link')
   async reissuePasswordSetupLink(
     @CurrentUser('id') currentUserId: number,
@@ -400,8 +384,8 @@ export class UsersController {
   }
 
   // PATCH /users/:id/reactivate
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
   @Patch(':id/reactivate')
   async reactivateUser(
     @CurrentUser('role') currentUserRole: Role,

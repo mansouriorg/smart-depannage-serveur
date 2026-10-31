@@ -15,8 +15,9 @@ import { UpdateQuoteDto } from './dto/quote.dto';
 import { ClientQuoteActionDto } from './dto/client-quote-action.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -24,7 +25,7 @@ import { isBackOffice } from '../../common/auth/role-policy';
 import { quoteForArtisan } from '../../common/views/views';
 
 @Controller('quotes')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class QuotesController {
   constructor(private readonly service: QuotesService) {}
 
@@ -45,13 +46,7 @@ export class QuotesController {
    *
    * POST /quotes/interventions/:interventionId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Post('interventions/:interventionId')
   async createForIntervention(
     @CurrentUser('id') userId: number,
@@ -67,13 +62,7 @@ export class QuotesController {
    *
    * POST /quotes/interventions/:interventionId/draft
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Post('interventions/:interventionId/draft')
   async createDraftForIntervention(
     @CurrentUser('id') userId: number,
@@ -97,7 +86,7 @@ export class QuotesController {
    *
    * GET /quotes/interventions/:interventionId
    */
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @RequirePermission(Permission.QUOTES_FOR_JOB)
   @Get('interventions/:interventionId')
   findForClient(
     @CurrentUser('id') userId: number,
@@ -115,13 +104,7 @@ export class QuotesController {
    *
    * PATCH /quotes/:quoteId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Patch(':quoteId')
   async updateQuote(
     @CurrentUser('id') userId: number,
@@ -137,13 +120,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/send
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Post(':quoteId/send')
   async sendQuote(
     @CurrentUser('id') userId: number,
@@ -158,13 +135,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/cancel
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Post(':quoteId/cancel')
   async cancelQuote(
     @CurrentUser('id') userId: number,
@@ -180,7 +151,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/expire
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @RequirePermission(Permission.QUOTES_EXPIRE)
   @Post(':quoteId/expire')
   expireQuote(
     @CurrentUser('id') userId: number,
@@ -199,13 +170,7 @@ export class QuotesController {
    *   "pdfUrl": "/uploads/quotes/quote-12.pdf"
    * }
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_WRITE)
   @Patch(':quoteId/pdf')
   async setPdfUrl(
     @CurrentUser('id') userId: number,
@@ -225,7 +190,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/accept
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.QUOTES_RESPOND)
   @Post(':quoteId/accept')
   accept(
     @CurrentUser('id') userId: number,
@@ -240,7 +205,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/reject
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.QUOTES_RESPOND)
   @Post(':quoteId/reject')
   reject(
     @CurrentUser('id') userId: number,
@@ -255,7 +220,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/request-modification
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.QUOTES_RESPOND)
   @Post(':quoteId/request-modification')
   requestModification(
     @CurrentUser('id') userId: number,
@@ -270,7 +235,7 @@ export class QuotesController {
    *
    * POST /quotes/:quoteId/question
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.QUOTES_RESPOND)
   @Post(':quoteId/question')
   askQuestion(
     @CurrentUser('id') userId: number,
@@ -285,7 +250,7 @@ export class QuotesController {
    *
    * GET /quotes/:quoteId/download
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.QUOTES_RESPOND)
   @Get(':quoteId/download')
   download(
     @CurrentUser('id') userId: number,
@@ -306,7 +271,7 @@ export class QuotesController {
    *
    * Important: this route must stay before GET /quotes/:quoteId.
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @RequirePermission(Permission.QUOTES_EXPIRE)
   @Get('system/expired')
   findExpiredQuotes() {
     return this.service.findExpiredQuotes();
@@ -317,14 +282,7 @@ export class QuotesController {
    *
    * GET /quotes/:quoteId/revisions
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_READ)
   @Get(':quoteId/revisions')
   findRevisions(
     @CurrentUser() user: { id: number; role: Role },
@@ -338,14 +296,7 @@ export class QuotesController {
    *
    * GET /quotes/:quoteId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-    Role.ARTISAN,
-  )
+  @RequirePermission(Permission.QUOTES_READ)
   @Get(':quoteId')
   findOne(
     @CurrentUser() user: { id: number; role: Role },

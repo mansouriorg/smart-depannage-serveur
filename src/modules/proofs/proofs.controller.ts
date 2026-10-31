@@ -16,9 +16,9 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 
-import { Role } from '../../../generated/prisma/client';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { AddProofDto, ListProofsDto, ReviewProofDto } from './dto/proofs.dto';
 import { PROOF_UPLOAD } from './proof-upload';
 import { ProofsService } from './proofs.service';
@@ -34,9 +34,9 @@ export class ProofsController {
    * The role is checked BEFORE the photo is read. An artisan must be the artisan of the job and
    * on site; the back office may add a photo without a position.
    */
+  @RequirePermission(Permission.PROOFS_ADD)
   @Post('interventions/:id/proofs/:kind')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @UseGuards(AuthGuard('jwt'), PermissionsGuard)
   @UseInterceptors(FileInterceptor('photo', PROOF_UPLOAD))
   async add(
     @Request() req,
@@ -63,17 +63,17 @@ export class ProofsController {
   }
 
   /** GET /proofs?status=NEEDS_REVIEW&interventionId=12 — the back office. */
+  @RequirePermission(Permission.PROOFS_REVIEW)
   @Get('proofs')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @UseGuards(AuthGuard('jwt'), PermissionsGuard)
   list(@Query() query: ListProofsDto) {
     return this.proofs.list(query);
   }
 
   /** PATCH /proofs/:id/review { decision: APPROVE | REJECT, note? } — the back office. */
+  @RequirePermission(Permission.PROOFS_REVIEW)
   @Patch('proofs/:id/review')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @UseGuards(AuthGuard('jwt'), PermissionsGuard)
   review(@Request() req, @Param('id', ParseIntPipe) id: number, @Body() dto: ReviewProofDto) {
     return this.proofs.review({
       proofId: id,

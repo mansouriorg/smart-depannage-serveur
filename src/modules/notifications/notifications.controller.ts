@@ -21,8 +21,9 @@ import {
 } from './dto/notification.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -33,7 +34,7 @@ type AuthenticatedUser = {
 };
 
 @Controller('notifications')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
@@ -42,7 +43,7 @@ export class NotificationsController {
   // Keeps your old POST /notifications route. The sender is always the caller.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.NOTIFICATIONS_MANAGE)
   @Post()
   create(
     @CurrentUser() user: AuthenticatedUser,
@@ -57,7 +58,7 @@ export class NotificationsController {
   // text of a notification can quote a chat.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.NOTIFICATIONS_MANAGE)
   @Get()
   findAll() {
     return this.notificationsService.findAll();
@@ -69,7 +70,7 @@ export class NotificationsController {
   // became of it (without the text). Both must stay before the :notificationId routes.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.NOTIFICATIONS_MANAGE)
   @Post('test-delivery')
   testDelivery(
     @CurrentUser() user: AuthenticatedUser,
@@ -78,7 +79,7 @@ export class NotificationsController {
     return this.notificationsService.testDelivery(user, dto.channel);
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.NOTIFICATIONS_MANAGE)
   @Get('outbox/:outboxId')
   outboxStatus(@Param('outboxId', ParseIntPipe) outboxId: number) {
     return this.notificationsService.outboxStatus(outboxId);
@@ -88,15 +89,7 @@ export class NotificationsController {
   // 3. NOTIFICATION CENTER - MY NOTIFICATIONS
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get('mine')
   findMine(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.findMine(user);
@@ -107,15 +100,7 @@ export class NotificationsController {
   // Must stay before GET /notifications/:notificationId
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get('unread/count')
   countUnread(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.countUnread(user);
@@ -125,15 +110,7 @@ export class NotificationsController {
   // 5. NOTIFICATION CENTER - UNREAD
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get('unread')
   findUnread(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.findUnread(user);
@@ -143,15 +120,7 @@ export class NotificationsController {
   // 6. NOTIFICATION CENTER - READ
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get('read')
   findRead(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.findRead(user);
@@ -162,29 +131,13 @@ export class NotificationsController {
   // Must stay before GET /notifications/:notificationId
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get('preferences/me')
   getMyPreferences(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.getMyPreferences(user);
   }
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Patch('preferences/me')
   updateMyPreferences(
     @CurrentUser() user: AuthenticatedUser,
@@ -198,15 +151,7 @@ export class NotificationsController {
   // Used later for real mobile push notifications
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Post('push-tokens')
   registerPushToken(
     @CurrentUser() user: AuthenticatedUser,
@@ -215,15 +160,7 @@ export class NotificationsController {
     return this.notificationsService.registerPushToken(user, dto);
   }
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Delete('push-tokens/:token')
   deactivatePushToken(
     @CurrentUser() user: AuthenticatedUser,
@@ -237,15 +174,7 @@ export class NotificationsController {
   // Must stay before PATCH /notifications/:notificationId/read
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Patch('read-all')
   markAllAsRead(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationsService.markAllAsRead(user);
@@ -257,7 +186,7 @@ export class NotificationsController {
   // notification, or a super admin, can correct it.
   // ==========================================================
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.NOTIFICATIONS_MANAGE)
   @Patch(':notificationId')
   update(
     @CurrentUser() user: AuthenticatedUser,
@@ -275,15 +204,7 @@ export class NotificationsController {
   // 11. MARK ONE AS READ
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Patch(':notificationId/read')
   markAsRead(
     @CurrentUser() user: AuthenticatedUser,
@@ -297,15 +218,7 @@ export class NotificationsController {
   // Must stay after all specific GET routes
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Get(':notificationId')
   findOne(
     @CurrentUser() user: AuthenticatedUser,
@@ -319,15 +232,7 @@ export class NotificationsController {
   // Soft delete for users/admins
   // ==========================================================
 
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.NOTIFICATIONS_OWN)
   @Delete(':notificationId')
   remove(
     @CurrentUser() user: AuthenticatedUser,

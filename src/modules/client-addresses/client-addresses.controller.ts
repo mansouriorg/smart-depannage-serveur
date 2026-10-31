@@ -13,17 +13,16 @@ import { ClientAddressesService } from './client-addresses.service';
 import { CreateClientAddressDto } from './dto/create-client-address.dto';
 import { UpdateClientAddressDto } from './dto/update-client-address.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Role } from '../../../generated/prisma/client';
-
 @Controller('client/addresses')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ClientAddressesController {
   constructor(private readonly service: ClientAddressesService) {}
 
+  @RequirePermission(Permission.CLIENT_ADDRESSES)
   @Post()
   create(
     @CurrentUser('id') userId: number,
@@ -32,11 +31,13 @@ export class ClientAddressesController {
     return this.service.create(userId, dto);
   }
 
+  @RequirePermission(Permission.CLIENT_ADDRESSES)
   @Get()
   findMine(@CurrentUser('id') userId: number) {
     return this.service.findMine(userId);
   }
 
+  @RequirePermission(Permission.CLIENT_ADDRESSES)
   @Get(':id')
   findOne(
     @CurrentUser('id') userId: number,
@@ -45,6 +46,7 @@ export class ClientAddressesController {
     return this.service.findOneForClient(userId, id);
   }
 
+  @RequirePermission(Permission.CLIENT_ADDRESSES)
   @Patch(':id')
   update(
     @CurrentUser('id') userId: number,
@@ -54,6 +56,7 @@ export class ClientAddressesController {
     return this.service.update(userId, id, dto);
   }
 
+  @RequirePermission(Permission.CLIENT_ADDRESSES)
   @Delete(':id')
   remove(
     @CurrentUser('id') userId: number,

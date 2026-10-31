@@ -4,10 +4,10 @@ import { buildWorld } from './world';
 
 /**
  * The second line (P1-17). `access-matrix.spec.ts` asks the roles of the route first, as the application does, so a
- * service that trusts its `@Roles` is never tried. Here the roles are not asked, as if somebody had taken the `@Roles`
+ * service that trusts its `@RequirePermission` is never tried. Here the roles are not asked, as if somebody had taken the `@RequirePermission`
  * off a controller by mistake, and every customer and artisan that a scenario does not name must still be turned away by
  * the service itself: the other household's, and the one of the wrong kind (the artisan on a customer's route, the
- * customer on an artisan's, the customer on a staff route). Taking one check out of a service, or one `@Roles` off a
+ * customer on an artisan's, the customer on a staff route). Taking one check out of a service, or one `@RequirePermission` off a
  * controller, is then not enough to open a route.
  *
  * Not tried: the staff roles (the door is their line on most routes, and `route-inventory.spec.ts` runs the real
@@ -20,7 +20,7 @@ const DOOR_ONLY: Record<string, string> = {
   'GET /users/artisans': 'the same, the list of artisans for the dispatcher',
 };
 
-/** The services of the admin controller never look at the role of the caller: the door (`@Roles` on the controller) is their only line. */
+/** The services of the admin controller never look at the role of the caller: the door (the `@RequirePermission` of each route, with `PermissionsGuard` on the controller) is their only line. */
 const isDoorOnly = (route: string) => route in DOOR_ONLY || /^[A-Z]+ \/admin(\/|$)/.test(route);
 
 const TRIED = SCENARIOS.map((scenario, at) => ({ scenario, at })).filter(({ scenario }) => !scenario.gateOnly && !isDoorOnly(scenario.route));

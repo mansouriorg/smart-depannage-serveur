@@ -12,8 +12,9 @@ import {
 import { MatchingService } from './matching.service';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -28,8 +29,7 @@ import {
 // the matches and give a job through these routes before, although the admin route
 // (POST /admin/interventions/:id/assign-artisan) never let them.
 @Controller('matching')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class MatchingController {
   constructor(private readonly service: MatchingService) {}
 
@@ -46,6 +46,7 @@ export class MatchingController {
    * &onlyAvailable=true
    * &limit=10
    */
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Get('admin/interventions/:interventionId/artisans')
   findMatchingArtisansForIntervention(
     @CurrentUser('id') userId: number,
@@ -80,6 +81,7 @@ export class MatchingController {
    * &onlyAvailable=true
    * &limit=10
    */
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Get('admin/artisans')
   findMatchingArtisans(
     @CurrentUser('id') userId: number,
@@ -107,6 +109,7 @@ export class MatchingController {
    *   "adminNote": "Assigned from smart matching"
    * }
    */
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Post('admin/interventions/:interventionId/assign-best')
   assignBestArtisan(
     @CurrentUser('id') userId: number,
@@ -136,6 +139,7 @@ export class MatchingController {
    *   "adminNote": "Manual choice from smart matching"
    * }
    */
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Post('admin/interventions/:interventionId/assign/:artisanId')
   assignArtisan(
     @CurrentUser('id') userId: number,

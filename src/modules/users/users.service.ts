@@ -29,6 +29,7 @@ import {
   Role,
   AuthTokenType,
 } from '../../../generated/prisma/client';
+import { Permission, can } from '../../common/auth/permissions';
 
 @Injectable()
 export class UsersService {
@@ -496,15 +497,7 @@ export class UsersService {
     phone?: string;
     role: Role;
   }) {
-    const allowedStaffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    if (!allowedStaffRoles.includes(data.role)) {
+    if (!can(data.role, Permission.BACK_OFFICE_ACCESS)) {
       throw new BadRequestException('Rôle staff invalide.');
     }
 

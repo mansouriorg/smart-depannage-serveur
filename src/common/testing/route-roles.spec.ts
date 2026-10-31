@@ -1,4 +1,5 @@
-import { guardsIn, rolesIn, routeKey, scanController, withoutComments } from './route-roles';
+import { Permission, PERMISSION_ROLES } from '../auth/permissions';
+import { guardsIn, permissionIn, rolesIn, routeKey, scanController, withoutComments } from './route-roles';
 
 const TICKET_STAFF = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER'];
 
@@ -6,8 +7,8 @@ const SAMPLE = `
 import { Controller } from '@nestjs/common';
 
 @Controller('things')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermission(Permission.FINANCE_READ)
 export class ThingsController {
   constructor(private readonly things: ThingsService) {}
 
@@ -17,7 +18,7 @@ export class ThingsController {
   }
 
   @Post(':id/assign')
-  @Roles(Role.ADMIN, Role.DISPATCHER)
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   assign(@Param('id') id: string) {
     return this.things.assign(id);
   }
@@ -32,9 +33,8 @@ export class ThingsController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Roles(
-    Role.SUPPORT,
-    Role.SUPER_ADMIN,
+  @RequirePermission(
+    Permission.ARTISANS_REVIEW,
   )
   @Delete(':id')
   remove(@Param('id') id: string) {
@@ -60,15 +60,16 @@ export class OpenController {
 `;
 
 describe('route-roles: the roles of each route, read from a controller (P1-12)', () => {
-  it('reads the roles of the class, of a method, and of a method whose @Roles sits above its route decorator', () => {
+  it('reads the roles of the class, of a method, and of a method whose @RequirePermission sits above its route decorator', () => {
     const routes = scanController(SAMPLE, TICKET_STAFF);
     const byKey = Object.fromEntries(routes.map((route) => [routeKey(route.method, route.path), route]));
 
     expect(byKey['GET /things'].roles).toEqual(['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT']);
+    expect(byKey['GET /things'].permission).toBe(Permission.FINANCE_READ);
     expect(byKey['GET /things'].how).toBe('class-roles');
-    expect(byKey['POST /things/:/assign'].roles).toEqual(['ADMIN', 'DISPATCHER']);
+    expect(byKey['POST /things/:/assign'].roles).toEqual(['ADMIN', 'SUPER_ADMIN', 'DISPATCHER']);
     expect(byKey['POST /things/:/assign'].how).toBe('roles');
-    expect(byKey['DELETE /things/:'].roles).toEqual(['SUPPORT', 'SUPER_ADMIN']);
+    expect(byKey['DELETE /things/:'].roles).toEqual(['ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
   });
 
   it('a method keeps its own roles: the roles of the method before it do not leak into it', () => {
@@ -76,6 +77,7 @@ describe('route-roles: the roles of each route, read from a controller (P1-12)',
     const list = routes.find((route) => route.method === 'GET' && route.path === '/things');
 
     expect(list?.roles).not.toContain('DISPATCHER');
+    expect(list?.permission).toBe(Permission.FINANCE_READ);
   });
 
   it('a method that asks isTicketStaff in its body answers to the staff list it was given, unless the class names roles', () => {
@@ -101,7 +103,7 @@ export class OldController {
     expect([routes[1].method, routes[1].path, routes[1].roles, routes[1].how]).toEqual(['GET', '/interventions/:id', null, 'public']);
   });
 
-  it('a route with no @Roles is open to every signed-in account when JwtAuthGuard applies, and to anybody when it does not (roles: null both ways)', () => {
+  it('a route with no @RequirePermission is open to every signed-in account when JwtAuthGuard applies, and to anybody when it does not (roles: null both ways)', () => {
     const routes = scanController(OPEN, TICKET_STAFF);
 
     expect(routes.map((route) => [route.method, route.path, route.roles, route.how])).toEqual([
@@ -122,11 +124,13 @@ export class OldController {
     expect(withoutComments("a // @Get('x')\nb /* @Post('y') */ c 'http://x.tn'")).toBe("a \nb  c 'http://x.tn'");
   });
 
-  it('rolesIn: the first @Roles of a text, and null when there is none', () => {
-    expect(rolesIn('@Roles(Role.A_B, Role.C)')).toEqual(['A_B', 'C']);
+  it('permissionIn and rolesIn: the first @RequirePermission of a text, and null when there is none', () => {
+    expect(permissionIn('@RequirePermission(Permission.FINANCE_READ)')).toBe('finance.read');
+    expect(rolesIn('@RequirePermission(Permission.FINANCE_READ)')).toEqual(['ADMIN', 'SUPER_ADMIN', 'ACCOUNTANT']);
     expect(rolesIn('nothing here')).toBeNull();
-    expect(() => rolesIn('@Roles(')).toThrow('not closed');
-    expect(() => rolesIn('@Roles()')).toThrow('names no role');
+    expect(permissionIn('nothing here')).toBeNull();
+    expect(() => rolesIn('@RequirePermission(')).toThrow('not closed');
+    expect(() => rolesIn('@RequirePermission()')).toThrow('names 0 permissions');
   });
 
   it('refuses a file that is not a controller', () => {
@@ -140,21 +144,21 @@ export class OldController {
 });
 
 describe('route-roles: what it refuses to guess (P1-12)', () => {
-  const CLASS_GUARDED = (body: string, classHeader = "@Controller('x')\n@UseGuards(JwtAuthGuard, RolesGuard)") => `${classHeader}\nexport class XController {\n${body}\n}\n`;
+  const CLASS_GUARDED = (body: string, classHeader = "@Controller('x')\n@UseGuards(JwtAuthGuard, PermissionsGuard)") => `${classHeader}\nexport class XController {\n${body}\n}\n`;
 
-  it('@Roles without RolesGuard is reported as not enforced; with RolesGuard on the method or on the class it is', () => {
+  it('@RequirePermission without PermissionsGuard is reported as not enforced; with PermissionsGuard on the method or on the class it is', () => {
     const source = `
 @Controller('x')
 export class XController {
   @UseGuards(JwtAuthGuard)
-  @Roles(Role.ADMIN)
+  @RequirePermission(Permission.STAFF_CREATE)
   @Delete(':id')
   remove() {
     return 1;
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.STAFF_CREATE)
   @Patch(':id')
   change() {
     return 2;
@@ -163,21 +167,21 @@ export class XController {
 `;
     const [remove, change] = scanController(source, TICKET_STAFF);
 
-    expect(remove.roles).toEqual(['ADMIN']);
+    expect(remove.roles).toEqual(['SUPER_ADMIN']);
     expect(remove.rolesEnforced).toBe(false);
     expect(change.rolesEnforced).toBe(true);
 
-    const [classWide] = scanController(CLASS_GUARDED("  @Roles(Role.ADMIN)\n  @Get()\n  list() {\n    return 1;\n  }"), TICKET_STAFF);
+    const [classWide] = scanController(CLASS_GUARDED("  @RequirePermission(Permission.STAFF_CREATE)\n  @Get()\n  list() {\n    return 1;\n  }"), TICKET_STAFF);
 
     expect(classWide.rolesEnforced).toBe(true);
-    expect(classWide.guards).toEqual(['JwtAuthGuard', 'RolesGuard']);
+    expect(classWide.guards).toEqual(['JwtAuthGuard', 'PermissionsGuard']);
   });
 
   it('AuthGuard(\'jwt\') counts as the JWT guard', () => {
-    expect(guardsIn("@UseGuards(AuthGuard('jwt'), RolesGuard)")).toEqual(['JwtAuthGuard', 'RolesGuard']);
+    expect(guardsIn("@UseGuards(AuthGuard('jwt'), PermissionsGuard)")).toEqual(['JwtAuthGuard', 'PermissionsGuard']);
     expect(guardsIn('@UseGuards(RateLimitGuard)')).toEqual(['RateLimitGuard']);
     expect(guardsIn('nothing')).toEqual([]);
-    expect(guardsIn('@UseGuards(Throttle(1, 2), RolesGuard)')).toEqual(['Throttle(1, 2)', 'RolesGuard']);
+    expect(guardsIn('@UseGuards(Throttle(1, 2), PermissionsGuard)')).toEqual(['Throttle(1, 2)', 'PermissionsGuard']);
     expect(() => guardsIn('@UseGuards(')).toThrow('not closed');
   });
 
@@ -209,16 +213,16 @@ export class TController {
     expect([branch.how, branch.roles]).toEqual(['in-code', null]);
   });
 
-  it('a method on one line keeps its @Roles to itself (the next route is not given them)', () => {
-    const code = CLASS_GUARDED(`  @Roles(Role.ADMIN) @Get('a') a() { return 1; }
+  it('a method on one line keeps its @RequirePermission to itself (the next route is not given them)', () => {
+    const code = CLASS_GUARDED(`  @RequirePermission(Permission.STAFF_CREATE) @Get('a') a() { return 1; }
   @Get('b') b() { return 2; }
-  @Post('c') @Roles(Role.SUPPORT) c() { return 3; }`, "@Controller('x')\n@UseGuards(JwtAuthGuard, RolesGuard)");
+  @Post('c') @RequirePermission(Permission.MISSIONS_WORK) c() { return 3; }`, "@Controller('x')\n@UseGuards(JwtAuthGuard, PermissionsGuard)");
     const routes = scanController(code, TICKET_STAFF);
 
     expect(routes.map((route) => [route.path, route.roles])).toEqual([
-      ['/x/a', ['ADMIN']],
+      ['/x/a', ['SUPER_ADMIN']],
       ['/x/b', null],
-      ['/x/c', ['SUPPORT']],
+      ['/x/c', ['ARTISAN']],
     ]);
   });
 
@@ -228,7 +232,7 @@ export class TController {
 
   constructor(private readonly service: Service) {}
 
-  @Roles(Role.ADMIN)
+  @RequirePermission(Permission.STAFF_CREATE)
   @Get('a')
   a() {
     const text = "closing } brace and { opening one";
@@ -242,7 +246,7 @@ export class TController {
     const routes = scanController(code, TICKET_STAFF);
 
     expect(routes.map((route) => [route.path, route.roles])).toEqual([
-      ['/x/a', ['ADMIN']],
+      ['/x/a', ['SUPER_ADMIN']],
       ['/x/b', null],
     ]);
     expect(routes[0].source).toContain('closing } brace');
@@ -250,7 +254,7 @@ export class TController {
   });
 
   it('a decorator with an object inside its brackets (an upload with its limits) does not cut the method short', () => {
-    const code = CLASS_GUARDED(`  @Roles(Role.ADMIN)
+    const code = CLASS_GUARDED(`  @RequirePermission(Permission.STAFF_CREATE)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 }, fileFilter: (req, file, cb) => { cb(null, true); } }))
   @Post('upload')
   upload(@UploadedFile() file: { name: string }) {
@@ -264,17 +268,17 @@ export class TController {
     const routes = scanController(code, TICKET_STAFF);
 
     expect(routes.map((route) => [route.method, route.path, route.roles])).toEqual([
-      ['POST', '/x/upload', ['ADMIN']],
+      ['POST', '/x/upload', ['SUPER_ADMIN']],
       ['GET', '/x/after', null],
     ]);
     expect(routes[0].source).toContain('return file;');
   });
 
   it('a property with its own decorators does not lend them to the route that follows it', () => {
-    const code = CLASS_GUARDED(`  @UseGuards(RolesGuard)
+    const code = CLASS_GUARDED(`  @UseGuards(PermissionsGuard)
   private readonly guarded = 1;
 
-  @Roles(Role.ADMIN)
+  @RequirePermission(Permission.STAFF_CREATE)
   @Get('a')
   a() {
     return 1;
@@ -285,12 +289,20 @@ export class TController {
     expect(route.rolesEnforced).toBe(false);
   });
 
-  it('a spread, a constant or a role written another way in @Roles is an error, not a smaller list', () => {
-    expect(() => rolesIn('@Roles(...BACK_OFFICE, Role.ADMIN)')).toThrow('not Role.NAME');
-    expect(() => rolesIn('@Roles(STAFF)')).toThrow('not Role.NAME');
-    expect(() => rolesIn("@Roles('ADMIN')")).toThrow('not Role.NAME');
-    expect(rolesIn('@Roles(\n    Role.ADMIN,\n    Role.SUPPORT,\n  )')).toEqual(['ADMIN', 'SUPPORT']);
-    expect(rolesIn('@Roles(Role.ADMIN) then @Roles(Role.SUPPORT)')).toEqual(['ADMIN']);
+  it('a role, a spread, a text or an unknown permission in @RequirePermission is an error, not a smaller list', () => {
+    expect(() => permissionIn('@RequirePermission(Role.ADMIN)')).toThrow('not Permission.NAME');
+    expect(() => permissionIn("@RequirePermission('finance.read')")).toThrow('not Permission.NAME');
+    expect(() => permissionIn('@RequirePermission(...PERMISSIONS)')).toThrow('not Permission.NAME');
+    expect(() => permissionIn('@RequirePermission(Permission.FINANCE_READ, Permission.CASH_READ)')).toThrow('names 2 permissions');
+    expect(() => permissionIn('@RequirePermission(Permission.NO_SUCH_THING)')).toThrow('the matrix does not have');
+    expect(rolesIn('@RequirePermission(\n    Permission.ARTISANS_REVIEW,\n  )')).toEqual(['ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(rolesIn('@RequirePermission(Permission.USERS_MANAGE) then @RequirePermission(Permission.FINANCE_READ)')).toEqual(['ADMIN', 'SUPER_ADMIN']);
+  });
+
+  it('every permission of the matrix can be read back by name', () => {
+    for (const [name, value] of Object.entries(Permission)) {
+      expect(rolesIn(`@RequirePermission(Permission.${name})`)).toEqual([...PERMISSION_ROLES[value]]);
+    }
   });
 
   it('a route path that is not a plain string, and a method with two routes, are errors', () => {
@@ -300,7 +312,7 @@ export class TController {
   });
 
   it('reads a file saved with Windows line endings the same way', () => {
-    const unix = CLASS_GUARDED("  @Roles(Role.ADMIN)\n  @Get('a')\n  a() {\n    return 1;\n  }\n\n  @Get('b')\n  b() {\n    return 2;\n  }");
+    const unix = CLASS_GUARDED("  @RequirePermission(Permission.STAFF_CREATE)\n  @Get('a')\n  a() {\n    return 1;\n  }\n\n  @Get('b')\n  b() {\n    return 2;\n  }");
     const windows = unix.replace(/\n/g, '\r\n');
 
     expect(scanController(windows, TICKET_STAFF).map((route) => [route.path, route.roles])).toEqual(

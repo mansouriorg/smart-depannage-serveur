@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 
-import { RolesGuard } from '../guards/roles.guard';
+import { PermissionsGuard } from '../guards/permissions.guard';
 import { GuestTrackingLinkGuard } from '../../modules/guest/guest-tracking-link.guard';
 import { BACK_OFFICE_ROLES, TICKET_STAFF_ROLES } from '../auth/role-policy';
 import { FakeRequest } from './route-invoker';
@@ -113,10 +113,10 @@ export function resolve(parties: Party[], household: Household, world: World): P
 }
 
 class Reflected {
-  constructor(private readonly roles: string[] | null) {}
+  constructor(private readonly permission: string | null) {}
 
   getAllAndOverride() {
-    return this.roles ?? undefined;
+    return this.permission ?? undefined;
   }
 }
 
@@ -153,14 +153,14 @@ export interface Outcome {
   status: number | null;
 }
 
-/** Whether the guards of the route let the person in (the same `RolesGuard` as the application, fed with the roles read from the controller). */
+/** Whether the guards of the route let the person in (the same `PermissionsGuard` as the application, fed with the permission read from the controller). */
 export function passesGuards(world: World, key: string, person: Person | null): { ok: true } | { ok: false; status: number; message: string } {
   const route = world.router.route(key);
 
   if (route.guards.includes('JwtAuthGuard') && !person) return { ok: false, status: 401, message: 'Unauthorized' };
 
-  if (route.guards.includes('RolesGuard')) {
-    const guard = new RolesGuard(new Reflected(route.how === 'roles' || route.how === 'class-roles' ? route.roles : null) as any);
+  if (route.guards.includes('PermissionsGuard')) {
+    const guard = new PermissionsGuard(new Reflected(route.how === 'roles' || route.how === 'class-roles' ? route.permission : null) as any);
 
     try {
       guard.canActivate({
@@ -178,7 +178,7 @@ export function passesGuards(world: World, key: string, person: Person | null): 
 
 /** The call of a person on a route: the guards of the route first, then the method. */
 export async function attempt(world: World, person: Person | null, key: string, request: Omit<FakeRequest, 'user'>, options: { doorOpen?: boolean } = {}): Promise<Outcome> {
-  // `doorOpen`: the roles of the route are not asked, as if someone had taken the @Roles off; only a person who is signed in is let through
+  // `doorOpen`: the permission of the route is not asked, as if someone had taken the @RequirePermission off; only a person who is signed in is let through
   const guards: ReturnType<typeof passesGuards> = options.doorOpen ? (person ? { ok: true } : passesGuards(world, key, person)) : passesGuards(world, key, person);
 
   if (!guards.ok) return { ok: false, status: guards.status, error: Object.assign(new Error(guards.message), { status: guards.status }) };
@@ -255,7 +255,7 @@ export function foreignRows(changes: RowChange[], own: Household | null, world: 
 }
 
 /**
- * `doorOpen`: the second line. The roles of the route are not asked, as if the `@Roles` had been taken off the controller,
+ * `doorOpen`: the second line. The permission of the route is not asked, as if the `@RequirePermission` had been taken off the controller,
  * and every customer and artisan the scenario does not name must still be refused by the service itself.
  */
 export async function runScenario(scenario: Scenario, options: { doorOpen?: boolean } = {}): Promise<string[]> {

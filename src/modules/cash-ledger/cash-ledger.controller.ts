@@ -4,8 +4,9 @@ import { CashLedgerService } from './cash-ledger.service';
 import { CollectCashDto, LedgerQueryDto, RecordAdjustmentDto, RecordRemittanceDto } from './dto/cash-ledger.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -17,7 +18,7 @@ import { Role } from '../../../generated/prisma/client';
  * ledger and record what the artisans hand over and what has to be put right.
  */
 @Controller('cash-ledger')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CashLedgerController {
   constructor(private readonly service: CashLedgerService) {}
 
@@ -26,7 +27,7 @@ export class CashLedgerController {
    *
    * POST /cash-ledger/interventions/:interventionId/collect-cash
    */
-  @Roles(Role.ARTISAN)
+  @RequirePermission(Permission.CASH_COLLECT)
   @Post('interventions/:interventionId/collect-cash')
   collectCash(
     @CurrentUser('id') userId: number,
@@ -42,7 +43,7 @@ export class CashLedgerController {
    *
    * GET /cash-ledger/interventions/:interventionId/position
    */
-  @Roles(Role.ARTISAN)
+  @RequirePermission(Permission.CASH_COLLECT)
   @Get('interventions/:interventionId/position')
   position(@CurrentUser('id') userId: number, @CurrentUser('role') role: Role, @Param('interventionId', ParseIntPipe) interventionId: number) {
     return this.service.getCashPosition(userId, role, interventionId);
@@ -53,7 +54,7 @@ export class CashLedgerController {
    *
    * GET /cash-ledger/mine
    */
-  @Roles(Role.ARTISAN)
+  @RequirePermission(Permission.CASH_COLLECT)
   @Get('mine')
   mine(@CurrentUser('id') userId: number, @CurrentUser('role') role: Role, @Query() query: LedgerQueryDto) {
     return this.service.getMyLedger(userId, role, query);
@@ -64,7 +65,7 @@ export class CashLedgerController {
    *
    * GET /cash-ledger/balances
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.CASH_READ)
   @Get('balances')
   balances(@CurrentUser('role') role: Role) {
     return this.service.listBalances(role);
@@ -75,7 +76,7 @@ export class CashLedgerController {
    *
    * GET /cash-ledger/artisans/:artisanId
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.CASH_READ)
   @Get('artisans/:artisanId')
   artisanLedger(@CurrentUser('role') role: Role, @Param('artisanId', ParseIntPipe) artisanId: number, @Query() query: LedgerQueryDto) {
     return this.service.getArtisanLedger(role, artisanId, query);
@@ -86,7 +87,7 @@ export class CashLedgerController {
    *
    * POST /cash-ledger/artisans/:artisanId/remittances
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.CASH_WRITE)
   @Post('artisans/:artisanId/remittances')
   recordRemittance(
     @CurrentUser('id') userId: number,
@@ -102,7 +103,7 @@ export class CashLedgerController {
    *
    * POST /cash-ledger/artisans/:artisanId/adjustments
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.CASH_WRITE)
   @Post('artisans/:artisanId/adjustments')
   recordAdjustment(
     @CurrentUser('id') userId: number,

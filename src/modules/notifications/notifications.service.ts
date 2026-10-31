@@ -32,27 +32,19 @@ import {
   Prisma,
   Role,
 } from '../../../generated/prisma/client';
+import { Permission, can, rolesWith } from '../../common/auth/permissions';
 
 type AuthenticatedUser = {
   id: number;
   role: Role;
 };
 
-const ALL_ADMIN_ROLES: Role[] = [
-  Role.ADMIN,
-  Role.SUPER_ADMIN,
-  Role.SUPPORT,
-  Role.DISPATCHER,
-  Role.ACCOUNTANT,
-];
+const ALL_ADMIN_ROLES: Role[] = rolesWith(Permission.BACK_OFFICE_ACCESS);
 
-/** Who handles what: money for the accountant, disputes and chats for support. */
-const MONEY_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT];
-const SUPPORT_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT];
-const DISPATCH_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER, Role.SUPPORT];
-
-/** The only roles that may look at, list or edit other people's notifications. */
-const AUDIT_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN];
+/** Who is told what: money for the accountant, disputes and chats for support (the "notices" rows of the matrix). */
+const MONEY_ROLES: Role[] = rolesWith(Permission.NOTICES_MONEY);
+const SUPPORT_ROLES: Role[] = rolesWith(Permission.NOTICES_SUPPORT);
+const DISPATCH_ROLES: Role[] = rolesWith(Permission.NOTICES_DISPATCH);
 
 /** What the callers of sendSms / sendEmail / sendPush can add. */
 export type SendOptions = {
@@ -167,15 +159,7 @@ export class NotificationsService {
   // ==========================================================
 
   private isAdminRole(role: Role): boolean {
-    const adminRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return adminRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private defaultChannelsForType(type: NotificationType): NotificationChannel[] {
@@ -361,7 +345,7 @@ export class NotificationsService {
     user: AuthenticatedUser,
     notification: { recipientId: number },
   ) {
-    if (notification.recipientId !== user.id && !AUDIT_ROLES.includes(user.role)) {
+    if (notification.recipientId !== user.id && !can(user.role, Permission.NOTIFICATIONS_MANAGE)) {
       throw new ForbiddenException('Accès refusé.');
     }
   }
@@ -459,7 +443,7 @@ export class NotificationsService {
   ) {
     const existing = await this.getNotificationOrFail(id);
 
-    if (existing.actorId !== user.id && user.role !== Role.SUPER_ADMIN) {
+    if (existing.actorId !== user.id && !can(user.role, Permission.NOTIFICATIONS_EDIT_ANY)) {
       throw new ForbiddenException('Accès refusé.');
     }
 
@@ -1547,7 +1531,7 @@ export class NotificationsService {
       entityType: 'ARTISAN_PROFILE',
       entityId: params.profileId,
       data: { profileId: params.profileId },
-      roles: [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT],
+      roles: rolesWith(Permission.ARTISANS_REVIEW),
     });
   }
 

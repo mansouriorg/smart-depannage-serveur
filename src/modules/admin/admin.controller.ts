@@ -45,22 +45,14 @@ import {
   VerifyArtisanDocumentDto,
 } from './dto/admin.dto';
 
-import { Role } from '../../../generated/prisma/client';
-
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('admin')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(
-  Role.ADMIN,
-  Role.SUPER_ADMIN,
-  Role.SUPPORT,
-  Role.DISPATCHER,
-  Role.ACCOUNTANT,
-)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
@@ -68,6 +60,7 @@ export class AdminController {
   // 1. MAIN DASHBOARD
   // ==========================================================
 
+  @RequirePermission(Permission.DASHBOARD_KPIS)
   @Get('dashboard/kpis')
   getDashboardKpis(@Query() query: DashboardQueryDto) {
     return this.adminService.getDashboardKpis(query);
@@ -79,21 +72,21 @@ export class AdminController {
 
   // The dispatcher's list (P1-13): names, phones and addresses of every job, for the roles that work on
   // jobs. An accountant has no page that needs it.
+  @RequirePermission(Permission.TICKETS_READ)
   @Get('interventions')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   findAllInterventions(@Query() query: AdminInterventionQueryDto) {
     return this.adminService.findAllInterventions(query);
   }
 
   // The case file of a job (P1-14): the whole history for the people who work on jobs, not for the accountant.
+  @RequirePermission(Permission.TICKETS_READ)
   @Get('interventions/:id')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   getInterventionDetail(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.getInterventionDetail(id);
   }
 
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Post('interventions/:id/assign-artisan')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
   assignArtisan(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
@@ -102,8 +95,8 @@ export class AdminController {
     return this.adminService.assignArtisan(adminId, id, dto);
   }
 
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Patch('interventions/:id/status')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
   changeInterventionStatus(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
@@ -112,8 +105,8 @@ export class AdminController {
     return this.adminService.changeInterventionStatus(adminId, id, dto);
   }
 
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Patch('interventions/:id/cancel')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
   cancelIntervention(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
@@ -122,8 +115,8 @@ export class AdminController {
     return this.adminService.cancelIntervention(adminId, id, dto);
   }
 
+  @RequirePermission(Permission.TICKETS_DISPATCH)
   @Post('interventions/:id/quotes')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.DISPATCHER)
   sendQuote(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
@@ -133,8 +126,8 @@ export class AdminController {
   }
 
   // A note on a job: written by the roles that can read the case file it appears in.
+  @RequirePermission(Permission.TICKETS_NOTE)
   @Post('interventions/:id/internal-notes')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
   addInterventionInternalNote(
     @CurrentUser('id') adminId: number,
     @Param('id', ParseIntPipe) id: number,
@@ -149,20 +142,20 @@ export class AdminController {
 
   // The applications queue (P1-12): applicants' identities and papers are for the people who check
   // them, not for every back-office role. A dispatcher assigns from GET /users/artisans.
+  @RequirePermission(Permission.ARTISANS_REVIEW)
   @Get('artisans')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   findAllArtisans(@Query() query: AdminArtisanQueryDto) {
     return this.adminService.findAllArtisans(query);
   }
 
+  @RequirePermission(Permission.ARTISANS_REVIEW)
   @Get('artisans/:profileId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   getArtisanDetail(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanDetail(profileId);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Post('artisans')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   createArtisanManually(
     @CurrentUser('id') adminId: number,
     @Body() dto: CreateArtisanManualDto,
@@ -170,8 +163,8 @@ export class AdminController {
     return this.adminService.createArtisanManually(adminId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Patch('artisans/:profileId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   editArtisanProfile(
     @Param('profileId', ParseIntPipe) profileId: number,
     @Body() dto: EditArtisanProfileDto,
@@ -179,8 +172,8 @@ export class AdminController {
     return this.adminService.editArtisanProfile(profileId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Patch('artisans/:profileId/approve')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   approveArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
@@ -189,8 +182,8 @@ export class AdminController {
     return this.adminService.approveArtisan(adminId, profileId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Patch('artisans/:profileId/reject')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   rejectArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
@@ -199,8 +192,8 @@ export class AdminController {
     return this.adminService.rejectArtisan(adminId, profileId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Patch('artisans/:profileId/suspend')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   suspendArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
@@ -209,8 +202,8 @@ export class AdminController {
     return this.adminService.suspendArtisan(adminId, profileId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_MANAGE)
   @Patch('artisans/:profileId/reactivate')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   reactivateArtisan(
     @CurrentUser('id') adminId: number,
     @Param('profileId', ParseIntPipe) profileId: number,
@@ -219,8 +212,8 @@ export class AdminController {
     return this.adminService.reactivateArtisan(adminId, profileId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_REVIEW)
   @Patch('artisans/documents/:documentId/verify')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   verifyArtisanDocument(
     @CurrentUser('id') adminId: number,
     @Param('documentId', ParseIntPipe) documentId: number,
@@ -229,26 +222,31 @@ export class AdminController {
     return this.adminService.verifyArtisanDocument(adminId, documentId, dto);
   }
 
+  @RequirePermission(Permission.ARTISANS_ACTIVITY)
   @Get('artisans/:profileId/missions')
   getArtisanMissions(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanMissions(profileId);
   }
 
+  @RequirePermission(Permission.ARTISANS_ACTIVITY)
   @Get('artisans/:profileId/ratings')
   getArtisanRatings(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanRatings(profileId);
   }
 
+  @RequirePermission(Permission.ARTISANS_ACTIVITY)
   @Get('artisans/:profileId/location')
   getArtisanLocation(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanLocation(profileId);
   }
 
+  @RequirePermission(Permission.ARTISANS_ACTIVITY)
   @Get('artisans/:profileId/revenue')
   getArtisanRevenue(@Param('profileId', ParseIntPipe) profileId: number) {
     return this.adminService.getArtisanRevenue(profileId);
   }
 
+  @RequirePermission(Permission.NOTES_WRITE)
   @Post('artisans/:profileId/internal-notes')
   addArtisanInternalNote(
     @CurrentUser('id') adminId: number,
@@ -262,18 +260,20 @@ export class AdminController {
   // 4. CLIENT MANAGEMENT
   // ==========================================================
 
+  @RequirePermission(Permission.CLIENTS_READ)
   @Get('clients')
   findAllClients(@Query() query: AdminClientQueryDto) {
     return this.adminService.findAllClients(query);
   }
 
+  @RequirePermission(Permission.CLIENTS_READ)
   @Get('clients/:clientId')
   getClientDetail(@Param('clientId', ParseIntPipe) clientId: number) {
     return this.adminService.getClientDetail(clientId);
   }
 
+  @RequirePermission(Permission.CLIENTS_EDIT)
   @Patch('clients/:clientId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT)
   editClient(
     @Param('clientId', ParseIntPipe) clientId: number,
     @Body() dto: EditClientDto,
@@ -281,12 +281,13 @@ export class AdminController {
     return this.adminService.editClient(clientId, dto);
   }
 
+  @RequirePermission(Permission.CLIENTS_DEACTIVATE)
   @Patch('clients/:clientId/deactivate')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   deactivateClient(@Param('clientId', ParseIntPipe) clientId: number) {
     return this.adminService.deactivateClient(clientId);
   }
 
+  @RequirePermission(Permission.NOTES_WRITE)
   @Post('clients/:clientId/internal-notes')
   addClientInternalNote(
     @CurrentUser('id') adminId: number,
@@ -302,8 +303,8 @@ export class AdminController {
 
   // The reads of the complaints are for the roles that have the page (P2-09): not for the dispatcher, who has no use for the contacts,
   // the notes and the money of a complaint.
+  @RequirePermission(Permission.COMPLAINTS_READ)
   @Get('complaints')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.ACCOUNTANT)
   findAllComplaints(
     @CurrentUser('id') adminId: number,
     @Query() query: AdminComplaintQueryDto,
@@ -311,14 +312,15 @@ export class AdminController {
     return this.adminService.findAllComplaints(query, adminId);
   }
 
+  @RequirePermission(Permission.COMPLAINTS_READ)
   @Get('complaints/:complaintId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.ACCOUNTANT)
   getComplaintDetail(
     @Param('complaintId', ParseIntPipe) complaintId: number,
   ) {
     return this.adminService.getComplaintCase(complaintId);
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Patch('complaints/:complaintId/assign')
   assignComplaint(
     @CurrentUser('id') adminId: number,
@@ -328,6 +330,7 @@ export class AdminController {
     return this.adminService.assignComplaint(adminId, complaintId, dto);
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Patch('complaints/:complaintId/status')
   updateComplaintStatus(
     @CurrentUser('id') adminId: number,
@@ -341,6 +344,7 @@ export class AdminController {
     );
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Post('complaints/:complaintId/internal-notes')
   addComplaintInternalNote(
     @CurrentUser('id') adminId: number,
@@ -354,6 +358,7 @@ export class AdminController {
     );
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Post('complaints/:complaintId/contact-client')
   complaintContactClient(
     @CurrentUser('id') adminId: number,
@@ -367,6 +372,7 @@ export class AdminController {
     );
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Post('complaints/:complaintId/contact-artisan')
   complaintContactArtisan(
     @CurrentUser('id') adminId: number,
@@ -380,8 +386,8 @@ export class AdminController {
     );
   }
 
+  @RequirePermission(Permission.COMPLAINTS_REFUND)
   @Patch('complaints/:complaintId/refund')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
   decideRefund(
     @CurrentUser('id') adminId: number,
     @Param('complaintId', ParseIntPipe) complaintId: number,
@@ -390,6 +396,7 @@ export class AdminController {
     return this.adminService.decideRefund(adminId, complaintId, dto);
   }
 
+  @RequirePermission(Permission.COMPLAINTS_HANDLE)
   @Patch('complaints/:complaintId/close')
   closeComplaint(
     @CurrentUser('id') adminId: number,
@@ -404,31 +411,32 @@ export class AdminController {
   // ==========================================================
 
   // The company is read by the roles that have its page (P2-09): the RIB and the tax numbers are not for support or dispatch.
+  @RequirePermission(Permission.COMPANY_READ)
   @Get('settings/company')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
   getCompanySettings() {
     return this.adminService.getCompanySettings();
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Patch('settings/company')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   updateCompanySettings(@Body() dto: UpdateCompanySettingsDto) {
     return this.adminService.updateCompanySettings(dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_READ)
   @Get('settings/service-zones')
   findServiceZones() {
     return this.adminService.findServiceZones();
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Post('settings/service-zones')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   createServiceZone(@Body() dto: CreateAdminServiceZoneDto) {
     return this.adminService.createServiceZone(dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Patch('settings/service-zones/:zoneId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   updateServiceZone(
     @Param('zoneId', ParseIntPipe) zoneId: number,
     @Body() dto: UpdateAdminServiceZoneDto,
@@ -436,14 +444,14 @@ export class AdminController {
     return this.adminService.updateServiceZone(zoneId, dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Delete('settings/service-zones/:zoneId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   deleteServiceZone(@Param('zoneId', ParseIntPipe) zoneId: number) {
     return this.adminService.deleteServiceZone(zoneId);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Patch('settings/service-categories/:categoryId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   updateServiceCategory(
     @Param('categoryId', ParseIntPipe) categoryId: number,
     @Body() dto: UpdateServiceCategoryPricingDto,
@@ -451,8 +459,8 @@ export class AdminController {
     return this.adminService.updateServiceCategory(categoryId, dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Patch('settings/sub-services/:subServiceId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   updateSubServicePricing(
     @Param('subServiceId', ParseIntPipe) subServiceId: number,
     @Body() dto: UpdateSubServicePricingDto,
@@ -460,19 +468,20 @@ export class AdminController {
     return this.adminService.updateSubServicePricing(subServiceId, dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_READ)
   @Get('settings/notification-templates')
   findNotificationTemplates() {
     return this.adminService.findNotificationTemplates();
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Post('settings/notification-templates')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   createNotificationTemplate(@Body() dto: CreateNotificationTemplateDto) {
     return this.adminService.createNotificationTemplate(dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Patch('settings/notification-templates/:templateId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   updateNotificationTemplate(
     @Param('templateId', ParseIntPipe) templateId: number,
     @Body() dto: UpdateNotificationTemplateDto,
@@ -480,8 +489,8 @@ export class AdminController {
     return this.adminService.updateNotificationTemplate(templateId, dto);
   }
 
+  @RequirePermission(Permission.SETTINGS_MANAGE)
   @Delete('settings/notification-templates/:templateId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   deleteNotificationTemplate(
     @Param('templateId', ParseIntPipe) templateId: number,
   ) {

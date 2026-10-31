@@ -29,6 +29,7 @@ import {
   Role,
   Status,
 } from '../../../generated/prisma/client';
+import { Permission, can } from '../../common/auth/permissions';
 
 type AuthenticatedUser = {
   id: number;
@@ -49,15 +50,7 @@ export class InterventionWorkflowService {
   }
 
   private isAdminRole(role: Role): boolean {
-    const adminRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return adminRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private async getInterventionOrFail(interventionId: number) {

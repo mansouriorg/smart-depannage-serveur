@@ -1,4 +1,15 @@
+import { rolesIn } from '../../common/testing/route-roles';
 import { balanced, listSourceFiles, readSource, stripComments } from '../../common/testing/source-scan';
+
+/** The roles the permission named on a route lets in (read from the matrix, the way the guard does). */
+const rolesOfRoute = (route: string): string[] => {
+  const roles = rolesIn(route);
+
+  // A route that names no permission would read as "nobody", and every "no CLIENT in it" check below would pass for nothing.
+  if (roles === null) throw new Error(`a route with no @RequirePermission: ${route.slice(0, 120)}`);
+
+  return roles;
+};
 
 /**
  * P1-07 guard: a before/after photo gets onto a job in ONE place, ProofsService, and nowhere
@@ -170,12 +181,12 @@ describe('who may send a proof and who may judge one (P1-07)', () => {
     const route = routeOf(code('modules/proofs/proofs.controller.ts'), 'add');
 
     expect(route.indexOf("AuthGuard('jwt')")).toBeGreaterThan(-1);
-    expect(route.indexOf('RolesGuard')).toBeGreaterThan(-1);
+    expect(route.indexOf('PermissionsGuard')).toBeGreaterThan(-1);
 
-    const roles = /@Roles\(([^)]*)\)/.exec(route)![1];
+    const roles = rolesOfRoute(route);
 
-    expect(roles).toContain('Role.ARTISAN');
-    expect(/Role\.CLIENT|Role\.ACCOUNTANT/.test(roles)).toBe(false);
+    expect(roles).toContain('ARTISAN');
+    expect(/CLIENT|ACCOUNTANT/.test(roles.join(' '))).toBe(false);
     // Guards run before interceptors: the role is checked before the photo is read.
     expect(route.indexOf('@UseGuards(')).toBeLessThan(route.indexOf('@UseInterceptors('));
     expect(/FileInterceptor\('photo', PROOF_UPLOAD\)/.test(route)).toBe(true);
@@ -186,11 +197,11 @@ describe('who may send a proof and who may judge one (P1-07)', () => {
 
     for (const name of ['list', 'review']) {
       const route = routeOf(source, name);
-      const roles = /@Roles\(([^)]*)\)/.exec(route)![1];
+      const roles = rolesOfRoute(route);
 
       expect(route.indexOf("AuthGuard('jwt')")).toBeGreaterThan(-1);
-      expect(route.indexOf('RolesGuard')).toBeGreaterThan(-1);
-      expect(/Role\.ARTISAN|Role\.CLIENT|Role\.ACCOUNTANT/.test(roles)).toBe(false);
+      expect(route.indexOf('PermissionsGuard')).toBeGreaterThan(-1);
+      expect(/ARTISAN|CLIENT|ACCOUNTANT/.test(roles.join(' '))).toBe(false);
     }
   });
 
@@ -198,7 +209,7 @@ describe('who may send a proof and who may judge one (P1-07)', () => {
     const controller = code('modules/interventions/interventions.controller.ts');
     const route = routeOf(controller, 'completeWork');
 
-    expect(/@Roles\(Role\.ARTISAN\)/.test(route)).toBe(true);
+    expect(rolesOfRoute(route)).toEqual(['ARTISAN']);
     expect(/FileInterceptor\('photo', PROOF_UPLOAD\)/.test(route)).toBe(true);
 
     const service = code('modules/interventions/interventions.service.ts');

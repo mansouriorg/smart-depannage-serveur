@@ -17,8 +17,9 @@ import { CreateTimelineEventDto } from './dto/create-timeline-event.dto';
 import { PublicTimelineQueryDto } from './dto/public-timeline-query.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import { Role } from '../../../generated/prisma/client';
@@ -34,16 +35,8 @@ export class InterventionWorkflowController {
   // Admin / client / artisan
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.WORKFLOW_TIMELINE)
   @Get(':id/timeline')
   getTimeline(
     @CurrentUser() user: { id: number; role: Role },
@@ -72,15 +65,8 @@ export class InterventionWorkflowController {
   // dropdowns in the apps offer exactly these (P1-01).
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.WORKFLOW_NEXT_STATUSES)
   @Get(':id/workflow/next-statuses')
   getNextStatuses(
     @CurrentUser() user: { id: number; role: Role },
@@ -93,8 +79,8 @@ export class InterventionWorkflowController {
   // ADMIN STATUS TRANSITION
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.TICKETS_WORKFLOW)
   @Patch(':id/workflow/status')
   changeStatus(
     @CurrentUser() user: { id: number; role: Role },
@@ -108,8 +94,8 @@ export class InterventionWorkflowController {
   // ADMIN MANUAL TIMELINE EVENT
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT, Role.DISPATCHER)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.TICKETS_WORKFLOW)
   @Post(':id/workflow/events')
   createManualTimelineEvent(
     @CurrentUser() user: { id: number; role: Role },

@@ -32,12 +32,11 @@ import { CollectSignatureDto } from './dto/collect-signature.dto';
 import { ReportProblemDto } from './dto/report-problem.dto';
 import { ContactMessageDto } from './dto/contact-message.dto';
 
-import { Role } from '../../../generated/prisma/client';
-
 import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('artisans')
@@ -90,15 +89,15 @@ export class ArtisansController {
   // 2. ARTISAN PROFILE
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Get('me/profile')
   getMyProfile(@CurrentUser('id') userId: number) {
     return this.artisansService.getMyProfile(userId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Patch('me/profile')
   updateMyProfile(
     @CurrentUser('id') userId: number,
@@ -107,8 +106,8 @@ export class ArtisansController {
     return this.artisansService.updateMyProfile(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Post('me/documents')
   uploadDocument(
     @CurrentUser('id') userId: number,
@@ -117,8 +116,8 @@ export class ArtisansController {
     return this.artisansService.uploadDocument(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Post('me/service-zones')
   addServiceZone(
     @CurrentUser('id') userId: number,
@@ -127,8 +126,8 @@ export class ArtisansController {
     return this.artisansService.addServiceZone(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Delete('me/service-zones/:zoneId')
   removeServiceZone(
     @CurrentUser('id') userId: number,
@@ -137,8 +136,8 @@ export class ArtisansController {
     return this.artisansService.removeServiceZone(userId, zoneId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Patch('me/availability')
   updateAvailability(
     @CurrentUser('id') userId: number,
@@ -147,8 +146,8 @@ export class ArtisansController {
     return this.artisansService.updateAvailability(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PROFILE)
   @Patch('me/bank-details')
   updateBankDetails(
     @CurrentUser('id') userId: number,
@@ -161,8 +160,8 @@ export class ArtisansController {
   // 3. LOCATION / ONLINE OFFLINE
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PRESENCE)
   @Patch('me/location')
   updateLocation(
     @CurrentUser('id') userId: number,
@@ -171,15 +170,15 @@ export class ArtisansController {
     return this.artisansService.updateLocation(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PRESENCE)
   @Patch('me/online')
   setOnline(@CurrentUser('id') userId: number) {
     return this.artisansService.setOnline(userId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.ARTISAN_PRESENCE)
   @Patch('me/offline')
   setOffline(@CurrentUser('id') userId: number) {
     return this.artisansService.setOffline(userId);
@@ -189,15 +188,15 @@ export class ArtisansController {
   // 4. MISSION BOARD
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Get('me/missions')
   getMissionBoard(@CurrentUser('id') userId: number) {
     return this.artisansService.getMissionBoard(userId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Get('me/missions/:interventionId')
   getMissionDetails(
     @CurrentUser('id') userId: number,
@@ -210,8 +209,8 @@ export class ArtisansController {
   // 5. MISSION ACTIONS
   // ==========================================================
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/accept')
   acceptMission(
     @CurrentUser('id') userId: number,
@@ -220,8 +219,8 @@ export class ArtisansController {
     return this.artisansService.acceptMission(userId, interventionId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/reject')
   rejectMission(
     @CurrentUser('id') userId: number,
@@ -231,8 +230,8 @@ export class ArtisansController {
     return this.artisansService.rejectMission(userId, interventionId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/on-the-way')
   markOnTheWay(
     @CurrentUser('id') userId: number,
@@ -241,8 +240,8 @@ export class ArtisansController {
     return this.artisansService.markOnTheWay(userId, interventionId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/arrived')
   markArrived(
     @CurrentUser('id') userId: number,
@@ -251,8 +250,8 @@ export class ArtisansController {
     return this.artisansService.markArrived(userId, interventionId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/start')
   startIntervention(
     @CurrentUser('id') userId: number,
@@ -261,8 +260,8 @@ export class ArtisansController {
     return this.artisansService.startIntervention(userId, interventionId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/diagnostic')
   addDiagnostic(
     @CurrentUser('id') userId: number,
@@ -272,8 +271,8 @@ export class ArtisansController {
     return this.artisansService.addDiagnostic(userId, interventionId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/materials')
   addMaterialUsed(
     @CurrentUser('id') userId: number,
@@ -283,8 +282,8 @@ export class ArtisansController {
     return this.artisansService.addMaterialUsed(userId, interventionId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/extra-quote')
   requestExtraQuote(
     @CurrentUser('id') userId: number,
@@ -298,8 +297,8 @@ export class ArtisansController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/signature')
   collectClientSignature(
     @CurrentUser('id') userId: number,
@@ -313,8 +312,8 @@ export class ArtisansController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Patch('me/missions/:interventionId/complete')
   completeIntervention(
     @CurrentUser('id') userId: number,
@@ -323,8 +322,8 @@ export class ArtisansController {
     return this.artisansService.completeIntervention(userId, interventionId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/problem')
   reportProblem(
     @CurrentUser('id') userId: number,
@@ -334,8 +333,8 @@ export class ArtisansController {
     return this.artisansService.reportProblem(userId, interventionId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/contact-client')
   contactClient(
     @CurrentUser('id') userId: number,
@@ -345,8 +344,8 @@ export class ArtisansController {
     return this.artisansService.contactClient(userId, interventionId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ARTISAN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.MISSIONS_WORK)
   @Post('me/missions/:interventionId/contact-admin')
   contactAdmin(
     @CurrentUser('id') userId: number,

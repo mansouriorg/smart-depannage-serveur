@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { Permission, rolesWith } from '../../common/auth/permissions';
 import { World, emptyWorld } from '../../common/testing/world';
 import { FakePaymentGateway } from '../../common/testing/fake-payment-gateway';
 import { resetLocale } from '../../common/locale/locale';
@@ -1842,10 +1843,10 @@ describe('the wiring of the webhook (P2-10)', () => {
     const payments = read('payments.controller.ts');
 
     expect(hooks).not.toContain('JwtAuthGuard');
-    expect(hooks).not.toContain('@Roles');
+    expect(hooks).not.toContain('@RequirePermission');
     expect(hooks.match(/@UseGuards\(RateLimitGuard\)/g)?.length).toBe(2);
     expect(hooks).toContain("@Controller('payments/webhooks')");
-    expect(payments).toContain('@UseGuards(JwtAuthGuard, RolesGuard)');
+    expect(payments).toContain('@UseGuards(JwtAuthGuard, PermissionsGuard)');
   });
 
   it('the timer is a provider of the module, and the gateway is exported for the tracking link', () => {
@@ -1896,10 +1897,10 @@ describe('the wiring of the webhook (P2-10)', () => {
 
   it('the check of a card payment is open to the customer and to every role of the back office but the artisan', () => {
     const text = read('payments.controller.ts');
-    const roles = /@Roles\(([^)]*)\)\s*@Post\(':paymentId\/check'\)/.exec(text);
+    const named = /@RequirePermission\(Permission\.(\w+)\)\s*@Post\(':paymentId\/check'\)/.exec(text);
 
-    expect(roles).not.toBeNull();
-    expect((roles![1].match(/Role\.(\w+)/g) ?? []).map((role) => role.slice(5)).sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'CLIENT', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
+    expect(named).not.toBeNull();
+    expect([...rolesWith(Permission[named![1] as keyof typeof Permission])].sort()).toEqual(['ACCOUNTANT', 'ADMIN', 'CLIENT', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
   });
 
   it('the webhook is limited per address to 600 a minute, never cached, and answers 200 to a POST', () => {
@@ -2141,7 +2142,7 @@ describe('what the first reading of the card payments changed (P2-10)', () => {
   it('the check of a card payment by a signed-in person is limited per address (each call asks the provider)', () => {
     const text = read('payments.controller.ts');
 
-    expect(text).toMatch(/@UseGuards\(RateLimitGuard\)\s+@RateLimit\(\{ name: 'payment-check', limit: 360, windowMs: 60 \* 60_000 \}\)\s+@Roles\(([^)]*)\)\s+@Post\(':paymentId\/check'\)/);
+    expect(text).toMatch(/@UseGuards\(RateLimitGuard\)\s+@RateLimit\(\{ name: 'payment-check', limit: 360, windowMs: 60 \* 60_000 \}\)\s+@RequirePermission\(([^)]*)\)\s+@Post\(':paymentId\/check'\)/);
   });
 
   it('the columns only the back office reads are in the list that no other reader gets, whatever route they come through', () => {

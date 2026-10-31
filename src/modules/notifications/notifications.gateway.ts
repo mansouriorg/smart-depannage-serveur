@@ -12,6 +12,7 @@ import { Server, Socket } from 'socket.io';
 
 import { Role } from '../../../generated/prisma/client';
 import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
+import { Permission, can } from '../../common/auth/permissions';
 
 type SocketUser = {
   sub: number;
@@ -50,15 +51,7 @@ export class NotificationsGateway
   }
 
   private isAdminRole(role: Role): boolean {
-    const adminRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return adminRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   async handleConnection(client: Socket) {

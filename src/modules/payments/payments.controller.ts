@@ -16,8 +16,9 @@ import { CreateManualPaymentDto } from './dto/create-manual-payment.dto';
 import { CancelPaymentDto, ConfirmPaymentDto, FailPaymentDto, RefundPaymentDto } from './dto/payment.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 
@@ -28,7 +29,7 @@ import {
 } from '../../../generated/prisma/client';
 
 @Controller('payments')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class PaymentsController {
   constructor(private readonly service: PaymentsService) {}
 
@@ -42,7 +43,7 @@ export class PaymentsController {
    *
    * POST /payments/interventions/:interventionId
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.PAYMENTS_PAY)
   @Post('interventions/:interventionId')
   createClientPaymentRequest(
     @CurrentUser('id') userId: number,
@@ -69,13 +70,7 @@ export class PaymentsController {
    *
    * POST /payments/admin/interventions/:interventionId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Post('admin/interventions/:interventionId')
   createAdminManualPayment(
     @CurrentUser('id') adminId: number,
@@ -98,7 +93,7 @@ export class PaymentsController {
    *
    * GET /payments/interventions/:interventionId
    */
-  @Roles(Role.CLIENT)
+  @RequirePermission(Permission.PAYMENTS_PAY)
   @Get('interventions/:interventionId')
   findForClient(
     @CurrentUser('id') userId: number,
@@ -120,13 +115,7 @@ export class PaymentsController {
    * GET /payments/admin/all?method=CASH
    * GET /payments/admin/all?interventionId=12
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Get('admin/all')
   findAllAdmin(
     @Query('status') status?: PaymentStatus,
@@ -149,13 +138,7 @@ export class PaymentsController {
    *
    * PATCH /payments/:paymentId/confirm
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Patch(':paymentId/confirm')
   confirm(
     @CurrentUser('id') adminId: number,
@@ -174,13 +157,7 @@ export class PaymentsController {
    *
    * PATCH /payments/:paymentId/fail
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Patch(':paymentId/fail')
   fail(
     @CurrentUser('id') adminId: number,
@@ -199,13 +176,7 @@ export class PaymentsController {
    *
    * PATCH /payments/:paymentId/cancel
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Patch(':paymentId/cancel')
   cancel(
     @CurrentUser('id') adminId: number,
@@ -237,7 +208,7 @@ export class PaymentsController {
    *
    * No amount refunds what is left of the payment.
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.PAYMENTS_REFUND)
   @Patch(':paymentId/refund')
   refund(
     @CurrentUser('id') adminId: number,
@@ -264,14 +235,7 @@ export class PaymentsController {
    */
   @UseGuards(RateLimitGuard)
   @RateLimit({ name: 'payment-check', limit: 360, windowMs: 60 * 60_000 })
-  @Roles(
-    Role.CLIENT,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_CHECK)
   @Post(':paymentId/check')
   check(
     @CurrentUser() user: { id: number; role: Role },
@@ -290,15 +254,7 @@ export class PaymentsController {
    *
    * GET /payments/:paymentId/receipt
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_RECEIPT)
   @Get(':paymentId/receipt')
   generateReceipt(
     @CurrentUser() user: { id: number; role: Role },
@@ -321,7 +277,7 @@ export class PaymentsController {
    *   "receiptUrl": "/uploads/receipts/receipt-1.pdf"
    * }
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.PAYMENTS_EDIT)
   @Patch(':paymentId/receipt-url')
   setReceiptUrl(
     @Param('paymentId', ParseIntPipe) paymentId: number,
@@ -339,7 +295,7 @@ export class PaymentsController {
    *
    * PATCH /payments/:paymentId/invoice/:invoiceId
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.PAYMENTS_EDIT)
   @Patch(':paymentId/invoice/:invoiceId')
   linkToInvoice(
     @Param('paymentId', ParseIntPipe) paymentId: number,
@@ -358,13 +314,7 @@ export class PaymentsController {
    *
    * GET /payments/:paymentId
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.PAYMENTS_HANDLE)
   @Get(':paymentId')
   findOne(@Param('paymentId', ParseIntPipe) paymentId: number) {
     return this.service.findOne(paymentId);

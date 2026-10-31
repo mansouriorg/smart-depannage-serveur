@@ -23,6 +23,7 @@ import {
 } from './dto/review.dto';
 import { withoutNul } from '../../common/search/staff-search';
 import { REVIEW_STATUSES, moderationReasonProblem, reviewBaseWhere, reviewPaging, reviewQueueOrder, reviewQueueWhere } from './review-queue';
+import { Permission, can } from '../../common/auth/permissions';
 
 @Injectable()
 export class ReviewsService {
@@ -33,15 +34,7 @@ export class ReviewsService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    const staffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return staffRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private assertStaff(role: Role) {

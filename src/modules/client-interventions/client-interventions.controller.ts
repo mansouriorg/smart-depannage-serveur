@@ -12,10 +12,10 @@ import {
 import { ClientInterventionsService } from './client-interventions.service';
 import { CreateClientInterventionDto } from './dto/create-client-intervention.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Role } from '../../../generated/prisma/client';
 import {
   RateLimit,
   RateLimitGuard,
@@ -26,9 +26,9 @@ export class ClientInterventionsController {
   constructor(private readonly service: ClientInterventionsService) {}
 
   // Every request alerts the whole back office (P1-04): not unlimited.
-  @UseGuards(JwtAuthGuard, RolesGuard, RateLimitGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, RateLimitGuard)
   @RateLimit({ name: 'client-create', limit: 60, windowMs: 60 * 60_000 })
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.CLIENT_REQUESTS)
   @Post('client/interventions')
   create(
     @CurrentUser('id') userId: number,
@@ -37,15 +37,15 @@ export class ClientInterventionsController {
     return this.service.create(userId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.CLIENT_REQUESTS)
   @Get('client/interventions')
   findMine(@CurrentUser('id') userId: number) {
     return this.service.findMine(userId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.CLIENT_REQUESTS)
   @Get('client/interventions/:id')
   findOneMine(
     @CurrentUser('id') userId: number,
@@ -54,8 +54,8 @@ export class ClientInterventionsController {
     return this.service.findOneMine(userId, id);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.CLIENT_REQUESTS)
   @Get('client/interventions/:id/tracking')
   tracking(
     @CurrentUser('id') userId: number,
@@ -72,8 +72,8 @@ export class ClientInterventionsController {
     return this.service.publicTracking(id, token);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.CLIENT, Role.ADMIN, Role.SUPER_ADMIN)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.CLIENT_REQUESTS)
   @Patch('client/interventions/:id/cancel')
   cancel(
     @CurrentUser('id') userId: number,

@@ -3,7 +3,7 @@ import * as path from 'path';
 
 import { Role } from '../../../generated/prisma/client';
 import { BACK_OFFICE_ROLES, TICKET_STAFF_ROLES } from '../auth/role-policy';
-import { RolesGuard } from '../guards/roles.guard';
+import { PermissionsGuard } from '../guards/permissions.guard';
 import { ACCESS_MANIFEST, GATEWAY_MANIFEST } from './access-manifest';
 import { LINK_SCENARIOS, SCENARIOS, SELF_SCENARIOS } from './access/all';
 import { handlerOf } from './route-invoker';
@@ -80,11 +80,11 @@ describe('every route has a wrong-user test (P1-17)', () => {
 
   it('would fail for a new endpoint that nobody wrote a test for, whoever may call it', () => {
     const [sample] = scanController(
-      `@Controller('things')\n@UseGuards(JwtAuthGuard)\nexport class ThingsController {\n  @Get(':id')\n  one(@Param('id') id: string) {\n    return this.things.one(id);\n  }\n\n  @Delete(':id')\n  @UseGuards(RolesGuard)\n  @Roles(Role.CLIENT)\n  remove(@Param('id') id: string) {\n    return this.things.remove(id);\n  }\n}\n`,
+      `@Controller('things')\n@UseGuards(JwtAuthGuard)\nexport class ThingsController {\n  @Get(':id')\n  one(@Param('id') id: string) {\n    return this.things.one(id);\n  }\n\n  @Delete(':id')\n  @UseGuards(PermissionsGuard)\n  @RequirePermission(Permission.QUOTES_RESPOND)\n  remove(@Param('id') id: string) {\n    return this.things.remove(id);\n  }\n}\n`,
       TICKET_STAFF_ROLES,
     ).map((route): Found => ({ ...route, key: routeKey(route.method, route.path), file: 'things.controller.ts' }));
     const roleBound = scanController(
-      `@Controller('things')\n@UseGuards(JwtAuthGuard, RolesGuard)\n@Roles(Role.CLIENT, Role.ADMIN)\nexport class ThingsController {\n  @Get()\n  all() {\n    return [];\n  }\n}\n`,
+      `@Controller('things')\n@UseGuards(JwtAuthGuard, PermissionsGuard)\n@RequirePermission(Permission.CLIENT_REQUESTS)\nexport class ThingsController {\n  @Get()\n  all() {\n    return [];\n  }\n}\n`,
       TICKET_STAFF_ROLES,
     ).map((route): Found => ({ ...route, key: routeKey(route.method, route.path), file: 'things.controller.ts' }));
 
@@ -172,17 +172,17 @@ describe('who may reach a route at all (P1-17)', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('every route behind roles lets in exactly the roles that its @Roles names, for each of the seven roles, and nobody who is not signed in', () => {
+  it('every route behind roles lets in exactly the roles that hold the permission it names, for each of the seven roles, and nobody who is not signed in', () => {
     const roles = Object.values(Role) as string[];
-    const decided = ROUTES.filter((route) => (route.how === 'roles' || route.how === 'class-roles') && route.rolesEnforced && route.roles);
+    const decided = ROUTES.filter((route) => (route.how === 'roles' || route.how === 'class-roles') && route.rolesEnforced && route.roles && route.permission);
     const wrong: string[] = [];
 
     expect(roles).toHaveLength(7);
     expect(decided.length).toBeGreaterThan(100);
 
-    /** What the application's own RolesGuard does: it lets the caller in, refuses with a 403, or breaks (which is not an answer). */
-    const asks = (list: string[], user: { id: number; role: string } | undefined): 'in' | 403 | 'broke' => {
-      const guard = new RolesGuard({ getAllAndOverride: () => list } as any);
+    /** What the application's own PermissionsGuard does: it lets the caller in, refuses with a 403, or breaks (which is not an answer). */
+    const asks = (permission: string, user: { id: number; role: string } | undefined): 'in' | 403 | 'broke' => {
+      const guard = new PermissionsGuard({ getAllAndOverride: () => permission } as any);
 
       try {
         return guard.canActivate({
@@ -199,14 +199,14 @@ describe('who may reach a route at all (P1-17)', () => {
 
     for (const route of decided) {
       for (const role of roles) {
-        const answer = asks(route.roles!, { id: 1, role });
+        const answer = asks(route.permission!, { id: 1, role });
 
         if (answer === 'broke') wrong.push(`${route.key}: ${role} gets no answer from the guard`);
-        else if ((answer === 'in') !== route.roles!.includes(role)) wrong.push(`${route.key}: ${role} ${answer === 'in' ? 'is let in' : 'is kept out'} against its @Roles`);
+        else if ((answer === 'in') !== route.roles!.includes(role)) wrong.push(`${route.key}: ${role} ${answer === 'in' ? 'is let in' : 'is kept out'} against its permission`);
       }
 
       // somebody who is not signed in is refused with a 403 of the guard, not by a crash that happens to stop them
-      if (asks(route.roles!, undefined) !== 403) wrong.push(`${route.key}: somebody who is not signed in is not refused with a 403`);
+      if (asks(route.permission!, undefined) !== 403) wrong.push(`${route.key}: somebody who is not signed in is not refused with a 403`);
     }
 
     expect(wrong).toEqual([]);

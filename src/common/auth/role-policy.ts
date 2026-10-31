@@ -1,31 +1,28 @@
 import { Role } from '../../../generated/prisma/client';
 
+import { Permission, can, rolesWith } from './permissions';
+
 /**
  * Role rules shared by controllers, services and gateways (P0-05, P0-08).
- * Keep every "who is allowed" decision here instead of repeating
- * `role === 'ADMIN'` in each controller.
+ * Which roles may do what is the matrix of `permissions.ts` (P3-02); this file keeps what is not a
+ * permission: the hierarchy (who may act on whom).
  */
 
-/** Staff who work on tickets: see every ticket, assign artisans, change status. */
-export const TICKET_STAFF_ROLES: Role[] = [
-  Role.ADMIN,
-  Role.SUPER_ADMIN,
-  Role.SUPPORT,
-  Role.DISPATCHER,
-];
+/**
+ * Staff who work on tickets: see every ticket, assign artisans, change status. Not a list of its own: the roles
+ * that hold `tickets.read` in the matrix (`permissions.ts`).
+ */
+export const TICKET_STAFF_ROLES: Role[] = rolesWith(Permission.TICKETS_READ);
 
-/** Every role that belongs to the back office. */
-export const BACK_OFFICE_ROLES: Role[] = [
-  ...TICKET_STAFF_ROLES,
-  Role.ACCOUNTANT,
-];
+/** Every role that belongs to the back office: the roles that hold `back-office.access`. */
+export const BACK_OFFICE_ROLES: Role[] = rolesWith(Permission.BACK_OFFICE_ACCESS);
 
 export function isTicketStaff(role: Role | string | undefined | null): boolean {
-  return TICKET_STAFF_ROLES.includes(role as Role);
+  return can(role, Permission.TICKETS_READ);
 }
 
 export function isBackOffice(role: Role | string | undefined | null): boolean {
-  return BACK_OFFICE_ROLES.includes(role as Role);
+  return can(role, Permission.BACK_OFFICE_ACCESS);
 }
 
 /**

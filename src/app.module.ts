@@ -16,6 +16,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { StripStaffFieldsInterceptor } from './common/interceptors/strip-staff-fields.interceptor';
 import { MoneyNumbersInterceptor } from './common/money/money-numbers.interceptor';
+import { AuditInterceptor } from './modules/audit/audit.interceptor';
 
 // ==========================================================
 // 2. EXISTING FEATURE MODULES
@@ -58,6 +59,7 @@ import { BusinessModule } from './modules/business/business.module';
 import { ProofsModule } from './modules/proofs/proofs.module';
 import { CashLedgerModule } from './modules/cash-ledger/cash-ledger.module';
 import { FinanceModule } from './modules/finance/finance.module';
+import { AuditModule } from './modules/audit/audit.module';
 
 // Uploaded files are user content: the browser must use the declared type and
 // never guess one (a file that "looks like" HTML would then run).
@@ -153,6 +155,7 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     ProofsModule,
     CashLedgerModule,
     FinanceModule,
+    AuditModule,
 
     // ======================================================
     // G. GUEST CLIENT FEATURES
@@ -167,6 +170,9 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
 
   providers: [
     AppService,
+    // Every write by a person of the back office leaves a row in the audit log (P3-02). First, so it is the outermost:
+    // it closes the row after the others have shaped the answer, and writes nothing when a guard has refused.
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     // Responses to non-staff callers never carry staff-only columns
     // (internal notes, tracking token hash).
     { provide: APP_INTERCEPTOR, useClass: StripStaffFieldsInterceptor },

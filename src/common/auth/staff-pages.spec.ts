@@ -4,6 +4,7 @@ import * as path from 'path';
 import { Role } from '../../../generated/prisma/client';
 import { ScannedRoute, routeKey, scanController } from '../testing/route-roles';
 import { BACK_OFFICE_ROLES, TICKET_STAFF_ROLES } from './role-policy';
+import { Permission, rolesWith } from './permissions';
 import {
   ApiCall,
   DASHBOARD_PAGES,
@@ -76,10 +77,10 @@ function routeOf(call: ApiCall): ScannedRoute {
 }
 
 /**
- * The calls of the pages that no `@Roles` restricts: the code of the route (or of its service)
+ * The calls of the pages that no `@RequirePermission` restricts: the code of the route (or of its service)
  * decides who gets what the page shows. For each, who is served, why, and a pattern that the route's
  * own source must still contain, so that a change to the check is seen here, not assumed away.
- * A page call to a route with no @Roles that is not in this list fails below.
+ * A page call to a route with no @RequirePermission that is not in this list fails below.
  */
 const MODULE_SOURCE = (file: string) => fs.readFileSync(path.join(MODULES, file), 'utf8');
 
@@ -143,7 +144,7 @@ const SERVED: Record<string, { roles: readonly string[]; because: string; eviden
     evidence: /this\.service\.cancelPayout\(/,
     service: { file: 'business/business.service.ts', evidence: /async cancelPayout\([^)]*\) \{\s*this\.assertStaff\(role\);/ },
   },
-  // The complaints and the reviews (P2-09): the routes carry no @Roles, and the service refuses a customer or an artisan.
+  // The complaints and the reviews (P2-09): the routes carry no @RequirePermission, and the service refuses a customer or an artisan.
   'PATCH /complaints/admin/:/assign': {
     roles: STAFF_ROLES,
     because: 'giving a complaint to an agent: every staff role may (the service checks the role is a staff role)',
@@ -199,7 +200,7 @@ function servedRoles(call: ApiCall): readonly string[] {
   const served = SERVED[routeKey(call.method, call.path)];
 
   if (!served) {
-    throw new Error(`${call.method} ${call.path} has no @Roles (${route.how}): say in SERVED who it serves, and the evidence`);
+    throw new Error(`${call.method} ${call.path} has no @RequirePermission (${route.how}): say in SERVED who it serves, and the evidence`);
   }
 
   return served.roles;
@@ -368,14 +369,14 @@ describe('the table against the routes of the API', () => {
     expect(API.get(routeKey('GET', '/interventions/dashboard/stats'))?.how).toBe('ticket-staff');
   });
 
-  it('every route of the five controllers that names roles is backed by RolesGuard (@Roles alone enforces nothing)', () => {
+  it('every route of the five controllers that names roles is backed by PermissionsGuard (@RequirePermission alone enforces nothing)', () => {
     const unenforced = [...API.entries()].filter(([, route]) => !route.rolesEnforced).map(([key, route]) => `${key} (${route.guards.join(', ') || 'no guard'})`);
 
     expect(unenforced).toEqual([]);
   });
 
   for (const [key, served] of Object.entries(SERVED)) {
-    it(`${key}: no @Roles, and the route (or its service) still shows the check that serves ${served.roles.length} roles (${served.because})`, () => {
+    it(`${key}: no @RequirePermission, and the route (or its service) still shows the check that serves ${served.roles.length} roles (${served.because})`, () => {
       const route = API.get(key);
 
       expect(route).toBeDefined();
@@ -547,7 +548,7 @@ describe('the table against the routes of the API', () => {
   });
 });
 
-describe('every controller of the server: @Roles is only worth something with RolesGuard', () => {
+describe('every controller of the server: @RequirePermission is only worth something with PermissionsGuard', () => {
   const controllers: string[] = [];
   const walk = (dir: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -562,7 +563,7 @@ describe('every controller of the server: @Roles is only worth something with Ro
     expect(controllers.length).toBeGreaterThan(15);
   });
 
-  it('no route names roles without a RolesGuard on the class or on the method', () => {
+  it('no route names a permission without a PermissionsGuard on the class or on the method', () => {
     const unenforced: string[] = [];
 
     for (const file of controllers) {
@@ -648,7 +649,9 @@ describe('the finance console in the table (P2-08)', () => {
   it('the payout routes serve every staff role (the service accepts any of the five): a fact the table states, not a choice it makes', () => {
     const service = MODULE_SOURCE('business/business.service.ts');
 
-    expect(/private isStaff\(role: Role\): boolean \{\s*const staffRoles: Role\[\] = \[\s*Role\.ADMIN,\s*Role\.SUPER_ADMIN,\s*Role\.SUPPORT,\s*Role\.DISPATCHER,\s*Role\.ACCOUNTANT,\s*\];/.test(service)).toBe(true);
+    // the service asks the matrix for the back office as a whole, and that is the five staff roles
+    expect(/private isStaff\(role: Role\): boolean \{\s*return can\(role, Permission\.BACK_OFFICE_ACCESS\);\s*\}/.test(service)).toBe(true);
+    expect(sorted(rolesWith(Permission.BACK_OFFICE_ACCESS))).toEqual(sorted(['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER', 'ACCOUNTANT']));
   });
 });
 

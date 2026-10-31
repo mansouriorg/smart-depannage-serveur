@@ -14,6 +14,7 @@ import { COLLECT_CASH_IN, COLLECT_CASH_WORDS, CashPositionView, LedgerEntryView,
 import { describeAmount, paymentsInTheWayOfCash, supersede } from '../payments/open-payment';
 import { cashPositionOf } from './cash-position';
 import { TypeSums, commissionRateFor, jobIsInPaidPayout, ledgerTotals, paymentPosition, totalsOfSums, viewOfEntry } from './cash-ledger-ops';
+import { Permission, rolesWith } from '../../common/auth/permissions';
 
 const MAX_ROW_ID = 2_147_483_647;
 const isRowId = (value: unknown): value is number => Number.isInteger(value) && (value as number) > 0 && (value as number) <= MAX_ROW_ID;
@@ -21,8 +22,9 @@ const isRowId = (value: unknown): value is number => Number.isInteger(value) && 
 const DEFAULT_PAGE = 50;
 const MAX_PAGE = 200;
 
-/** The back office people who handle money: they see every ledger and write to it. */
-const FINANCE_ROLES: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT];
+/** The back office people who see every ledger (the roles of `cash.read`), and those who write to it (the roles of `cash.write`). */
+const CASH_READERS: Role[] = rolesWith(Permission.CASH_READ);
+const CASH_WRITERS: Role[] = rolesWith(Permission.CASH_WRITE);
 
 /** A prisma error that says a unique value is already taken. */
 const isUniqueViolation = (error: unknown) => (error as { code?: string } | null)?.code === 'P2002';
@@ -60,7 +62,11 @@ export class CashLedgerService {
   }
 
   private assertFinance(role: Role) {
-    if (!FINANCE_ROLES.includes(role)) throw new ForbiddenException('Réservé à la comptabilité et aux administrateurs.');
+    if (!CASH_READERS.includes(role)) throw new ForbiddenException('Réservé à la comptabilité et aux administrateurs.');
+  }
+
+  private assertCashWriter(role: Role) {
+    if (!CASH_WRITERS.includes(role)) throw new ForbiddenException('Réservé à la comptabilité et aux administrateurs.');
   }
 
   /** The artisan's profile must be approved, as for every other thing an artisan does on a mission. */
@@ -352,7 +358,7 @@ export class CashLedgerService {
 
   /** The artisan hands commission over to the platform. It cannot be more than they owe. */
   async recordRemittance(userId: number, role: Role, artisanId: number, dto: RecordRemittanceDto) {
-    this.assertFinance(role);
+    this.assertCashWriter(role);
 
     const amount = this.positive(dto?.amount, 'Montant');
     const requestKey = cleanText(dto?.requestKey);
@@ -409,7 +415,7 @@ export class CashLedgerService {
 
   /** The back office puts a figure of a ledger right, with the reason; the amounts are signed. */
   async recordAdjustment(userId: number, role: Role, artisanId: number, dto: RecordAdjustmentDto) {
-    this.assertFinance(role);
+    this.assertCashWriter(role);
 
     const commission = this.signed(dto?.commissionAmount, 'Commission');
     const cash = this.signed(dto?.cashAmount, 'Espèces');

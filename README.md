@@ -159,3 +159,63 @@ nothing else, so the artisan's hour stayed booked, no reminder was dropped and t
 held. Saying `CANCELLED` again of a job that is cancelled already is let through.
 
 Reminders go out at most once: a crash between taking a reminder and sending it loses that reminder rather than sending it twice.
+
+
+## Who may do what, and the audit log (P3-02)
+
+**One matrix says who may do what.** `src/common/auth/permissions.ts` is the only place that names roles against actions: 70
+permissions (`users.manage`, `payments.refund`, `audit.read`...), each with the roles that hold it. A route says which one it needs with
+`@RequirePermission(Permission.X)` and the guard `PermissionsGuard`; a service that has to decide in code asks `can(role, Permission.X)`
+or `rolesWith(Permission.X)`. `@Roles` and `RolesGuard` are gone. To give a role a right, change one line of the matrix and nothing else;
+`permissions.spec.ts` fails if a route names a permission nobody holds, if a role list comes back anywhere else, or if a route has a
+permission but not the guard that checks it. The guard fails closed: a route that has `PermissionsGuard` and names no permission is
+refused for everybody. `route-access.spec.ts` compares every route with a table written out in `route-access.golden.ts` (the roles of
+each of the 330 routes), so a line of the matrix that widens or narrows a route shows up as a change of that file; the two are changed
+together, on purpose. Two files that are copied into the shared package, and so import nothing (`staff-pages.ts`,
+`intervention-status.ts`), keep their own copy of a role list: `permissions.spec.ts` fails when one differs from the matrix row it stands
+for (the seven lists of `staff-pages.ts` and the staff list of the status rules).
+The hierarchy (who may act on whom: `canManage`) is not a permission and stays in `role-policy.ts`.
+
+What changed for somebody: the admin route that assigns a complaint (`PATCH /admin/complaints/:id/assign`) now accepts the same people as
+the complaints module, which is support, dispatchers and admins (it refused dispatchers before), and it now refuses an assignee whose
+account is switched off or deleted ('Agent support invalide.'). `PATCH /interventions/:id` answers 400 to an id that is not a whole
+number (it used to turn it into `NaN`). Everything else keeps exactly the roles it had: the table in `route-access.golden.ts` was made from,
+and checked against, the routes as they were before this step. To change who may call something, change the matrix **and** that table in
+the same commit.
+
+**Every write of the back office leaves a row in the audit log** (`AuditLog`): who (account and role), what (`clients.deactivate`), on what
+(a type and an id), when (start and end), how it went. Only the back office is logged (a customer or a technician who calls the same
+route leaves nothing), and only what gets past the guards: a refused call is not an action.
+
+- The row is written **before** the action runs (`STARTED`) and closed after it (`SUCCEEDED`, or `FAILED` with the status of the error). If
+  the row cannot be written, the action does **not** run: the answer is 503. If it cannot be closed, the action has happened and the
+  answer is left alone; the row stays `STARTED`, like the row of an action that never came back (a crash). A closed row is never rewritten.
+- The log keeps the **names** of the fields that were sent, and the **value** of a few that the action allows
+  (`src/modules/audit/audit-actions.ts`: a status, a role, an amount, never a text typed by a person except a reason, cut at 200
+  characters). A field that looks like a secret is never kept, whatever the list says. No address, no body, no token.
+- `audit-actions.ts` lists every write route a back-office account can reach, with its action name and its target, and the 14 routes that
+  are left out on purpose with the reason (read marks, push tokens, chat messages, position pings...). `audit-actions.spec.ts` reads the
+  controllers: a new write route that is in neither list fails the build. A route that slips past anyway is logged as `unlisted`.
+- `GET /api/admin/audit-log` (permission `audit.read`: admin and super admin) reads it, newest first:
+  `?actorId=3&action=payments.&targetType=Payment&targetId=42&outcome=FAILED&from=2026-10-01&to=2026-10-31&limit=50&before=1200`.
+  `action` is a name or an area ending with a dot; `before` is the `nextBefore` of the previous page. A day without an hour (`to=2026-10-31`)
+  is the whole day in UTC; a date with an hour needs its zone; a day that does not exist, or a name the query does not know, is a 400.
+  No screen reads it yet.
+- Each database call of the interceptor is given 5 seconds (`interceptor.timeouts`). If the first row does not come in time, the action does
+  not run (503; the row may still appear later as `STARTED`, with no action behind it). If closing the row takes longer, the answer goes out
+  and the row stays `STARTED`. An id is a whole number written without leading zeros (`/users/0000042` is 42); a route that is given anything else (`0x2A`, `1e1`) leaves the target empty rather than wrong. The target types are one per id space: a technician's
+  profile is `ArtisanProfile`, an account (a customer, or a technician seen from the cash ledger) is `User`.
+- Not logged: reads, websocket events, calls refused by a guard, and a write by a customer or a technician. Also not logged, because nobody is
+  signed in: the public routes that change an account (log in, `POST /auth/reset-password`, the email check, `POST /users/email-change/confirm`).
+  The websocket event `artisan.location.update` lets a staff account write another technician's position; it was always so and is not logged
+  (a position every few seconds would bury the log).
+- There is no purge: the table grows with the work of the back office. Decide on a retention (and an archive) before it matters. Every
+  call a back-office account makes to a write route is logged, also one that fails validation (400): one insert and one update each, with at
+  most 50 field names. Reading a period (`from`/`to`) of a very large table sorts by id; if it gets slow, read by `before` pages, or add an
+  index on `(createdAt, id)`.
+- `outcome` is text (not a database enum) so the contract shared with the apps does not change in this step; make it an enum when a
+  screen reads the log.
+
+Order of the update: take a backup, `npx prisma generate && npx prisma db push` (a new table `AuditLog`; nothing else changes), then deploy
+the new code right away. The new code writes to `AuditLog` before every back-office write, so a deploy on a database that has not had
+`db push` refuses those writes (503) until it has.

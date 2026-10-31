@@ -2317,3 +2317,51 @@ model ArtisanApplication {
   @@index([status])
   @@index([createdAt])
 }
+
+// ==========================================================
+// Audit log of the back office (P3-02)
+//
+// One row for every write made by a person of the back office: who, what, on what, when. The row is
+// written BEFORE the action runs (outcome STARTED) and closed after it (SUCCEEDED or FAILED), so an
+// action that never came back leaves a STARTED row. A closed row is never changed again.
+//
+// No relations on purpose, like the outbox: an audit trail that outlives the accounts and the jobs it
+// speaks about. No address and no body is kept: the names of the fields that were sent, and the values
+// of the few that the list of actions allows (`src/modules/audit/audit-actions.ts`).
+//
+// `outcome` is text, not a database enum, on purpose: the shared package (and the three apps) are generated
+// from every enum of this file, and no app reads the log yet. The three values are `AuditOutcome` in
+// `src/modules/audit/audit-outcome.ts`. When a screen reads the log, make it an enum and regenerate the contract.
+// ==========================================================
+
+model AuditLog {
+  id Int @id @default(autoincrement())
+
+  // Who.
+  actorId   Int
+  actorRole Role
+
+  // What: the name of the action ("clients.deactivate") and the route that did it ("PATCH /admin/clients/:/deactivate").
+  action   String
+  routeKey String
+
+  // On what. The id is text: some targets are not numbers.
+  targetType String?
+  targetId   String?
+
+  // How it went.
+  outcome       String   @default("STARTED")
+  statusCode    Int?
+  changedFields String[] @default([])
+  details       Json?
+
+  // `createdAt` is the time of the action; `finishedAt` the time it came back.
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+  @@index([outcome, createdAt])
+}

@@ -5,7 +5,7 @@
  *
  *  - a scenario (the person is somebody else's customer or artisan, or a link that is not theirs),
  *    in `access/all.ts`;
- *  - the back office alone, by `@Roles` that the application's own `RolesGuard` enforces (checked
+ *  - the back office alone, by `@RequirePermission` that the application's own `PermissionsGuard` enforces (checked
  *    for every role in the same spec);
  *  - this file.
  *

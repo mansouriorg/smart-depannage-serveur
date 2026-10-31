@@ -26,6 +26,7 @@ import {
   Role,
   StorageProvider,
 } from '../../../generated/prisma/client';
+import { Permission, can } from '../../common/auth/permissions';
 
 type AuthenticatedUser = {
   id: number;
@@ -138,15 +139,7 @@ export class FilesService {
   // ==========================================================
 
   private isAdminRole(role: Role): boolean {
-    const adminRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return adminRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   /**
@@ -159,9 +152,7 @@ export class FilesService {
   }
 
   private isVerifier(role: Role): boolean {
-    const verifiers: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.SUPPORT];
-
-    return verifiers.includes(role);
+    return can(role, Permission.ARTISANS_REVIEW);
   }
 
   /**

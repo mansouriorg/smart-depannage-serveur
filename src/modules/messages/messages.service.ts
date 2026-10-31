@@ -20,6 +20,7 @@ import {
   Prisma,
   Role,
 } from '../../../generated/prisma/client';
+import { Permission, can } from '../../common/auth/permissions';
 
 type AdminInternalNoteDto = {
   content: string;
@@ -40,15 +41,7 @@ export class MessagesService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    const staffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return staffRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   /**

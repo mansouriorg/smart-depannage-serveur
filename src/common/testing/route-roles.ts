@@ -1,13 +1,16 @@
+import { Permission, isPermission, rolesWith } from '../auth/permissions';
+
 /**
- * Reads a controller's source and says, for each route, which roles may call it (P1-12).
+ * Reads a controller's source and says, for each route, which roles may call it (P1-12, P3-02).
  *
  * A unit test does not go through Nest's decorators, so the roles of a route cannot be read from
  * metadata there. This reads the lines that decide it instead, the way `artisans.apply-route.spec.ts`
  * reads the upload limits. It knows the ways this server restricts a route:
  *
- *  - `@Roles(Role.A, Role.B)` on the method, or on the class when the method has none. It only
- *    holds when `RolesGuard` is in a `@UseGuards(...)` of the class or the method: the roles of a
- *    route without it are not enforced (`rolesEnforced: false`), and the specs fail on that;
+ *  - `@RequirePermission(Permission.NAME)` on the method, or on the class when the method has none; the
+ *    roles are the ones the matrix (`common/auth/permissions.ts`) gives that permission. It only holds when
+ *    `PermissionsGuard` is in a `@UseGuards(...)` of the class or the method: the permission of a route
+ *    without it is not enforced (`rolesEnforced: false`), and the specs fail on that;
  *  - a gate in the body, `if (!isTicketStaff(...)) throw ...` (the older ticket routes decide in code);
  *  - any other use of `isTicketStaff(` in the body: the route lets every signed-in account in and
  *    answers differently by role (`in-code`), so its roles are NOT known here and the spec has to
@@ -15,7 +18,8 @@
  *  - nothing: every signed-in account (`signed-in`; the service of the route may still decide), or
  *    anybody at all when no `JwtAuthGuard` is applied (`public`).
  *
- * It does not guess. A `@Roles(...)` argument that is not `Role.NAME`, a route decorator whose path
+ * It does not guess. A `@RequirePermission(...)` argument that is not `Permission.NAME` of a permission the matrix
+ * has, a route decorator whose path
  * is not a plain string, or a member with two routes makes it throw, so that a controller written
  * in a way it does not understand fails the specs instead of being under-read.
  *
@@ -29,10 +33,12 @@ export interface ScannedRoute {
   path: string;
   /** The roles that may call it; null when every signed-in account may (or anybody, see `how`), or when the code decides. */
   roles: string[] | null;
+  /** The permission the route names (its roles are the ones of the matrix); null for the other ways. */
+  permission: string | null;
   how: 'roles' | 'class-roles' | 'ticket-staff' | 'in-code' | 'signed-in' | 'public';
   /** The guards that apply to it, from the class and the method (`AuthGuard('jwt')` is read as `JwtAuthGuard`). */
   guards: string[];
-  /** False when the roles come from `@Roles` but `RolesGuard` is not applied: nothing enforces them. */
+  /** False when the roles come from `@RequirePermission` but `PermissionsGuard` is not applied: nothing enforces them. */
   rolesEnforced: boolean;
   /** The text of the member (its decorators and its body, comments removed): what a spec may look into as evidence. */
   source: string;
@@ -100,27 +106,36 @@ export function splitArguments(args: string): string[] {
   return parts;
 }
 
-/** The roles named in the first `@Roles(...)` of a text, or null when it has none. Throws on an argument it cannot read. */
-export function rolesIn(text: string): string[] | null {
-  const at = text.indexOf('@Roles(');
+/** The permission named in the first `@RequirePermission(...)` of a text, or null when it has none. Throws on an argument it cannot read. */
+export function permissionIn(text: string): Permission | null {
+  const at = text.indexOf('@RequirePermission(');
 
   if (at < 0) return null;
 
-  const args = balancedArguments(text, at + '@Roles'.length);
+  const args = balancedArguments(text, at + '@RequirePermission'.length);
 
-  if (args === null) throw new Error('@Roles( is not closed');
+  if (args === null) throw new Error('@RequirePermission( is not closed');
 
   const parts = splitArguments(args);
 
-  if (!parts.length) throw new Error('@Roles() names no role');
+  if (parts.length !== 1) throw new Error(`@RequirePermission( names ${parts.length} permissions instead of one`);
 
-  return parts.map((part) => {
-    const match = /^Role\.([A-Z_]+)$/.exec(part);
+  const match = /^Permission\.([A-Z_]+)$/.exec(parts[0]);
 
-    if (!match) throw new Error(`@Roles( has an argument that is not Role.NAME: ${part}`);
+  if (!match) throw new Error(`@RequirePermission( has an argument that is not Permission.NAME: ${parts[0]}`);
 
-    return match[1];
-  });
+  const value = (Permission as Record<string, string>)[match[1]];
+
+  if (!isPermission(value)) throw new Error(`@RequirePermission( names a permission the matrix does not have: ${match[1]}`);
+
+  return value;
+}
+
+/** The roles of the permission named in the first `@RequirePermission(...)` of a text, or null when it has none. */
+export function rolesIn(text: string): string[] | null {
+  const permission = permissionIn(text);
+
+  return permission === null ? null : rolesWith(permission);
 }
 
 /** The guards of every `@UseGuards(...)` in a text (`AuthGuard('jwt')` is `JwtAuthGuard`). */
@@ -248,7 +263,7 @@ export function scanController(rawSource: string, ticketStaff: readonly string[]
   if (open < 0) throw new Error('the class has no body');
 
   const header = source.slice(controller.index, classStart);
-  const classRoles = rolesIn(header);
+  const classPermission = permissionIn(header);
   const classGuards = guardsIn(header);
   const routes: ScannedRoute[] = [];
 
@@ -264,16 +279,19 @@ export function scanController(rawSource: string, ticketStaff: readonly string[]
 
     if (args === null) throw new Error(`a route decorator is not closed: ${member.trim().slice(0, 80)}`);
 
-    const own = rolesIn(member);
+    const own = permissionIn(member);
     const guards = [...classGuards, ...guardsIn(member)];
     let roles: string[] | null;
+    let permission: string | null = null;
     let how: ScannedRoute['how'];
 
     if (own) {
-      roles = own;
+      permission = own;
+      roles = rolesWith(own);
       how = 'roles';
-    } else if (classRoles) {
-      roles = classRoles;
+    } else if (classPermission) {
+      permission = classPermission;
+      roles = rolesWith(classPermission);
       how = 'class-roles';
     } else if (GATE.test(member)) {
       roles = [...ticketStaff];
@@ -290,9 +308,10 @@ export function scanController(rawSource: string, ticketStaff: readonly string[]
       method: decorator[1].toUpperCase() as ScannedRoute['method'],
       path: joinPath(prefix, routePath(args, member)),
       roles,
+      permission,
       how,
       guards,
-      rolesEnforced: how === 'roles' || how === 'class-roles' ? guards.includes('RolesGuard') : true,
+      rolesEnforced: how === 'roles' || how === 'class-roles' ? guards.includes('PermissionsGuard') : true,
       source: member,
     });
   }

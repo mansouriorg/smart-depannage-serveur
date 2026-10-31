@@ -4,9 +4,10 @@ import type { Response } from 'express';
 
 import { Role } from '../../../generated/prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { FinanceInvoicesQueryDto, FinancePaymentsExportQueryDto, FinancePaymentsQueryDto, FinancePeriodQueryDto } from './dto/finance.dto';
 import { FinanceService } from './finance.service';
 
@@ -15,7 +16,7 @@ import { FinanceService } from './finance.service';
  * business and cash-ledger routes.
  */
 @Controller('finance')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class FinanceController {
   constructor(private readonly service: FinanceService) {}
 
@@ -24,7 +25,7 @@ export class FinanceController {
    *
    * GET /finance/summary?from=2026-10-19&to=2026-10-25
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.FINANCE_READ)
   @Get('summary')
   summary(@CurrentUser('role') role: Role, @Query() query: FinancePeriodQueryDto) {
     return this.service.summary(role, query);
@@ -35,7 +36,7 @@ export class FinanceController {
    *
    * GET /finance/payments?view=awaiting&method=CASH&search=Ben
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.FINANCE_READ)
   @Get('payments')
   payments(@CurrentUser('role') role: Role, @Query() query: FinancePaymentsQueryDto) {
     return this.service.listPayments(role, query);
@@ -46,7 +47,7 @@ export class FinanceController {
    *
    * GET /finance/payments/export?view=received&from=2026-10-19&to=2026-10-25
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.FINANCE_READ)
   @Get('payments/export')
   async exportPayments(@CurrentUser('role') role: Role, @Query() query: FinancePaymentsExportQueryDto, @Res() res: Response) {
     const file = await this.service.exportPayments(role, query);
@@ -61,7 +62,7 @@ export class FinanceController {
    *
    * GET /finance/invoices?view=unpaid
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.FINANCE_READ)
   @Get('invoices')
   invoices(@CurrentUser('role') role: Role, @Query() query: FinanceInvoicesQueryDto) {
     return this.service.listInvoices(role, query);
@@ -72,7 +73,7 @@ export class FinanceController {
    *
    * GET /finance/refunds-due
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ACCOUNTANT)
+  @RequirePermission(Permission.FINANCE_READ)
   @Get('refunds-due')
   refundsDue(@CurrentUser('role') role: Role) {
     return this.service.refundsDue(role);

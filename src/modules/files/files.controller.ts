@@ -25,8 +25,9 @@ import {
 } from './dto/file.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import {
@@ -46,7 +47,7 @@ type AuthenticatedUser = {
 type PrivateFileVisibility = 'PRIVATE';
 
 @Controller('files')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
@@ -72,13 +73,7 @@ export class FilesController {
    * FormData:
    * file: image
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
+  @RequirePermission(Permission.FILES_DAMAGE_PHOTO)
   @Post('interventions/:interventionId/damage-photo')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -124,7 +119,7 @@ export class FilesController {
    * PUBLIC visibility can still be handled later via:
    * PATCH /files/:fileId/visibility
    */
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.FILES_ARTISAN_DOCS)
   @Post('artisan/documents')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -155,7 +150,7 @@ export class FilesController {
    * FormData:
    * file: pdf/image
    */
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.FILES_ARTISAN_DOCS)
   @Post('artisan/identity')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -185,7 +180,7 @@ export class FilesController {
    * FormData:
    * file: pdf/image
    */
-  @Roles(Role.ARTISAN, Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.FILES_ARTISAN_DOCS)
   @Post('artisan/insurance')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -219,13 +214,7 @@ export class FilesController {
    * FormData:
    * file: pdf
    */
-  @Roles(
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
+  @RequirePermission(Permission.FILES_QUOTE_PDF)
   @Post('quotes/:quoteId/pdf')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -255,13 +244,7 @@ export class FilesController {
    * FormData:
    * file: pdf
    */
-  @Roles(
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_INVOICE_PDF)
   @Post('invoices/:invoiceId/pdf')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -291,14 +274,7 @@ export class FilesController {
    * FormData:
    * file: pdf/image
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-  )
+  @RequirePermission(Permission.FILES_COMPLAINT_ATTACHMENT)
   @Post('complaints/:complaintId/attachment')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -334,15 +310,7 @@ export class FilesController {
    * GET /files/entity/COMPLAINT/3
    * GET /files/entity/ARTISAN_PROFILE/2
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_USE)
   @Get('entity/:entityType/:entityId')
   findByEntity(
     @CurrentUser() user: AuthenticatedUser,
@@ -362,15 +330,7 @@ export class FilesController {
    *
    * GET /files/:fileId/download
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_USE)
   @Get(':fileId/download')
   async download(
     @CurrentUser() user: AuthenticatedUser,
@@ -400,15 +360,7 @@ export class FilesController {
    *
    * GET /files/:fileId
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_USE)
   @Get(':fileId')
   findOne(
     @CurrentUser() user: AuthenticatedUser,
@@ -429,15 +381,7 @@ export class FilesController {
    * FormData:
    * file: new file
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_USE)
   @Patch(':fileId/replace')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -469,7 +413,7 @@ export class FilesController {
    *   "visibility": "PUBLIC"
    * }
    */
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequirePermission(Permission.FILES_VISIBILITY)
   @Patch(':fileId/visibility')
   setVisibility(
     @CurrentUser() user: AuthenticatedUser,
@@ -492,15 +436,7 @@ export class FilesController {
    *
    * DELETE /files/:fileId
    */
-  @Roles(
-    Role.CLIENT,
-    Role.ARTISAN,
-    Role.ADMIN,
-    Role.SUPER_ADMIN,
-    Role.SUPPORT,
-    Role.DISPATCHER,
-    Role.ACCOUNTANT,
-  )
+  @RequirePermission(Permission.FILES_USE)
   @Delete(':fileId')
   deleteFile(
     @CurrentUser() user: AuthenticatedUser,

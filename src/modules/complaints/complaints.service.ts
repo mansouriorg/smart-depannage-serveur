@@ -31,6 +31,7 @@ import {
   ResolveComplaintDto,
   UpdateComplaintStatusDto,
 } from './dto/complaint.dto';
+import { Permission, can, rolesWith } from '../../common/auth/permissions';
 
 export { REFUND_NOT_ANSWERED };
 
@@ -60,15 +61,7 @@ export class ComplaintsService {
   // ==========================================================
 
   private isStaff(role: Role): boolean {
-    const staffRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return staffRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private isApprovedRefundDecision(
@@ -252,14 +245,7 @@ export class ComplaintsService {
         id: userId,
         isActive: true,
         deletedAt: null,
-        role: {
-          in: [
-            Role.ADMIN,
-            Role.SUPER_ADMIN,
-            Role.SUPPORT,
-            Role.DISPATCHER,
-          ],
-        },
+        role: { in: rolesWith(Permission.COMPLAINTS_ASSIGNEE) },
       },
     });
 

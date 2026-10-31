@@ -28,6 +28,7 @@ import {
   Status,
 } from '../../../generated/prisma/client';
 import { isTicketStaff } from '../../common/auth/role-policy';
+import { Permission, can } from '../../common/auth/permissions';
 
 type SocketUser = {
   id: number;
@@ -80,15 +81,7 @@ export class RealtimeGateway
   }
 
   private isAdminRole(role: Role): boolean {
-    const adminRoles: Role[] = [
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-      Role.SUPPORT,
-      Role.DISPATCHER,
-      Role.ACCOUNTANT,
-    ];
-
-    return adminRoles.includes(role);
+    return can(role, Permission.BACK_OFFICE_ACCESS);
   }
 
   private getUser(client: Socket): SocketUser {

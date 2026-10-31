@@ -107,6 +107,7 @@ import {
   Role,
   Status,
 } from '../../../generated/prisma/client';
+import { Permission, can } from '../../common/auth/permissions';
 
 /** The last page the list can be asked for: with 100 rows a page, the offset stays far below what the database holds. */
 const MAX_PAGE = 1_000_000;
@@ -146,13 +147,7 @@ export class AdminService {
   }
 
   private isAssignableSupportRole(role: Role): boolean {
-    const allowedRoles: Role[] = [
-      Role.SUPPORT,
-      Role.ADMIN,
-      Role.SUPER_ADMIN,
-    ];
-
-    return allowedRoles.includes(role);
+    return can(role, Permission.COMPLAINTS_ASSIGNEE);
   }
 
   private getPagination(page?: string | number, limit?: string | number) {
@@ -1829,6 +1824,8 @@ export class AdminService {
 
     if (
       !supportAgent ||
+      !supportAgent.isActive ||
+      supportAgent.deletedAt ||
       !this.isAssignableSupportRole(supportAgent.role)
     ) {
       throw new BadRequestException('Agent support invalide.');
