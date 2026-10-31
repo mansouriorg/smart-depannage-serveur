@@ -104,6 +104,16 @@ describe('guest profiles and phone numbers', () => {
     expect(guest.phoneKey).toBe(null);
   });
 
+  it('a deleted account whose number is only text (no key) does not stand in the way: the guest gets the number', async () => {
+    const w = await makeWorld();
+    w.users.insert({ email: 'gone@mail.tn', password: w.password, isActive: false, deletedAt: new Date(), phone: '55 111 222', phoneKey: null });
+
+    const guest = await (w.service as any).findOrCreateGuestProfile(request('55 111 222'));
+
+    expect(guest.isGuest).toBe(true);
+    expect(guest.phoneKey).toBe('+21655111222');
+  });
+
   it('two requests at the same moment end up on one guest profile', async () => {
     const w = await makeWorld();
     const realFindMany = w.users.findMany;
@@ -124,6 +134,64 @@ describe('guest profiles and phone numbers', () => {
 
     expect(guest.email).toBe('winner@guest.smart-depannage.local');
     expect(w.users.rows.length).toBe(1);
+  });
+
+  // The first lookup sees nobody; before this request inserts, another one takes the number. The database's unique key is what stops
+  // the second one, and the retry looks again (the first two came from the spec of the deleted public route, P3-03; the third is new).
+  function raceAgainst(w: Awaited<ReturnType<typeof makeWorld>>, winner: { email: string; isGuest: boolean }) {
+    const realFindMany = w.users.findMany.bind(w.users);
+    let looked = false;
+
+    w.users.findMany = async (args: any) => {
+      if (!looked) {
+        looked = true;
+        w.users.insert({ email: winner.email, password: w.password, isGuest: winner.isGuest, phone: '55 111 222', phoneKey: '+21655111222' });
+        return [];
+      }
+
+      return realFindMany(args);
+    };
+  }
+
+  it('a race against a REAL account is a 409, not a request attached to somebody else', async () => {
+    const w = await makeWorld();
+    raceAgainst(w, { email: 'real@mail.tn', isGuest: false });
+
+    expect((await failure((w.service as any).findOrCreateGuestProfile(request('55 111 222')))).status).toBe(409);
+    expect(w.users.rows.length).toBe(1);
+    expect(w.users.rows[0].isGuest).toBe(false);
+  });
+
+  it('a race against a guest that has a mailbox of its own ends with a profile of its own, without the number', async () => {
+    const w = await makeWorld();
+    raceAgainst(w, { email: 'attacker@mail.tn', isGuest: true });
+
+    const guest = await (w.service as any).findOrCreateGuestProfile(request('55 111 222'));
+
+    expect(w.users.rows.length).toBe(2);
+    expect(guest.id).not.toBe(w.users.rows[0].id);
+    expect(guest.isGuest).toBe(true);
+    expect(guest.phone).toBe(null);
+    expect(guest.phoneKey).toBe(null);
+  });
+
+  it('a race that is lost three times in a row is the 409 of the contact, not an error of the database', async () => {
+    const w = await makeWorld();
+    const realCreate = w.users.create.bind(w.users);
+    let tries = 0;
+
+    // every insert meets the unique key, as if another request took the number each time
+    w.users.create = async (args: any) => {
+      tries += 1;
+      w.users.insert({ email: `winner${tries}@mail.tn`, password: w.password, isGuest: false, phone: `99 000 00${tries}`, phoneKey: `+2169900000${tries}` });
+
+      return realCreate({ ...args, data: { ...args.data, phoneKey: '+21699000001' } });
+    };
+
+    const error = await failure((w.service as any).findOrCreateGuestProfile(request('55 111 222')));
+
+    expect(error.status).toBe(409);
+    expect(tries).toBeLessThanOrEqual(3);
   });
 
   it('a number that cannot be one is a 400', async () => {

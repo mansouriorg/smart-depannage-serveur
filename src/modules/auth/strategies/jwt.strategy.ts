@@ -43,9 +43,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     return {
       id: user.id,
-      // COMPATIBILITY SHIM: the legacy interventions controllers still read
-      // `req.user.userId`. Remove together with the legacy routes (P3-03).
-      userId: user.id,
       email: user.email,
       name: user.name,
       role: user.role,

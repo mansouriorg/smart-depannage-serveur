@@ -212,7 +212,6 @@ describe('the one assignment path is wired (P1-05)', () => {
     'modules/admin/admin.module.ts',
     'modules/matching/matching.module.ts',
     'modules/scheduling/scheduling.module.ts',
-    'modules/interventions/interventions.module.ts',
   ])('%s imports the module that exports AssignmentService', (rel) => {
     expect(listedIn([read(rel)], 'imports', 'AssignmentModule')).toBe(true);
   });

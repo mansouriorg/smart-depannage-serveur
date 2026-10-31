@@ -2,7 +2,6 @@ import { createHash } from 'crypto';
 import { NotFoundException } from '@nestjs/common';
 
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
-import { ClientInterventionsService } from '../client-interventions/client-interventions.service';
 import { GuestService } from './guest.service';
 
 /**
@@ -45,22 +44,5 @@ describe('a guest route called with no link (P1-17)', () => {
     const { service } = guestWorld();
 
     await expect(service.acceptQuote(1, 2, undefined as any, {} as any)).rejects.toBeInstanceOf(NotFoundException);
-  });
-
-  it('the page of the link of a signed-in customer\'s tracking: not found', async () => {
-    const looked: any[] = [];
-    const prisma: any = {
-      intervention: {
-        findFirst: async ({ where }: any) => {
-          looked.push(where);
-
-          return null;
-        },
-      },
-    };
-    const service = new ClientInterventionsService(prisma, {} as any, {} as any);
-
-    await expect(service.publicTracking(1, undefined as any)).rejects.toBeInstanceOf(NotFoundException);
-    expect(looked[0].trackingToken).toBe(EMPTY_HASH);
   });
 });

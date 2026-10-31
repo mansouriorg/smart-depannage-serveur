@@ -96,7 +96,7 @@ describe('the texts that nobody must see are texts that exist (controls)', () =>
 });
 
 describe('the runners fail when a scenario is wrong (controls)', () => {
-  const owner = SCENARIOS.find((scenario) => scenario.route === 'GET /interventions/:' && scenario.allowed.includes('client') && !scenario.prepare) as Scenario;
+  const owner = SCENARIOS.find((scenario) => scenario.route === 'GET /client/interventions/:' && scenario.allowed.includes('client') && !scenario.prepare) as Scenario;
 
   it('the control scenario is a real one', async () => {
     expect(owner).toBeDefined();
@@ -111,10 +111,11 @@ describe('the runners fail when a scenario is wrong (controls)', () => {
   });
 
   it('a person who should be served and is refused is caught', async () => {
-    const problems = await runScenario({ ...owner, allowed: [...owner.allowed, 'accountant'] });
+    // the two administrators pass the guard of the customer's routes and are refused by the service (the accountant is kept out by the guard, so the runner never tries one)
+    const problems = await runScenario({ ...owner, allowed: [...owner.allowed, 'admins'] });
 
     expect(problems.length).toBeGreaterThan(0);
-    expect(problems.join('\n')).toContain('ACCOUNTANT');
+    expect(problems.join('\n')).toContain('(ADMIN)');
   });
 
   it('a mark that the reader is not to see, and does see, is caught', async () => {

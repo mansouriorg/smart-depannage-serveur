@@ -14,7 +14,7 @@ import {
  * and the availability of an artisan is read by ONE rule.
  *
  * It reads the source. The admin route, the matching, the scheduling and the
- * general update of an intervention each used to carry their own copy of the
+ * general update of an intervention (deleted in P3-03) each used to carry their own copy of the
  * checks (one looked at the approval only, one at the time only, one at nothing);
  * this fails if a copy comes back. A text scan, not a type check: it stops
  * mistakes, not someone determined.
@@ -33,8 +33,6 @@ const REVIEWED_DATA_VARIABLES = new Set([
   'modules/intervention-workflow/transition-status.ts',
   // changeStatus passes { note } only; applyTransition callers pass literals (scanned below)
   'modules/intervention-workflow/intervention-workflow.service.ts',
-  // update(): the artisan was taken out of the DTO and handled by the assignment first
-  'modules/interventions/interventions.service.ts',
 ]);
 
 const WRITE_CALLS =
@@ -142,7 +140,6 @@ describe('an artisan is put on a job in one place', () => {
     'modules/admin/admin.service.ts',
     'modules/matching/matching.service.ts',
     'modules/scheduling/scheduling.service.ts',
-    'modules/interventions/interventions.service.ts',
   ])('%s gives a job to an artisan through AssignmentService.assign, and has no copy of it', (rel) => {
     const text = stripComments(readSource(rel));
 
@@ -152,14 +149,11 @@ describe('an artisan is put on a job in one place', () => {
     expect(/\bassignedAt\b/.test(text)).toBe(false);
   });
 
-  it('the general update goes to the assignment before it builds the columns to write', () => {
+  it('the interventions service has no way left to give a job to an artisan: the general update that did it was deleted (P3-03)', () => {
     const text = stripComments(readSource('modules/interventions/interventions.service.ts'));
-    const marker = 'const { artisanId, status, ...rest } = updateInterventionDto;';
-    const assign = text.indexOf('this.assignment.assign(');
-    const columns = text.indexOf('const data: Record<string, unknown> = { ...rest };');
 
-    expect(readSource('modules/interventions/interventions.service.ts').includes(marker)).toBe(true);
-    expect(assign > 0 && columns > 0 && assign < columns).toBe(true);
+    expect(/\bAssignmentService\b|this\.assignment\b/.test(text)).toBe(false);
+    expect(/\bscheduledById\b|\bassignedAt\b/.test(text)).toBe(false);
   });
 
   describe('the scanner catches the ways of writing an artisan', () => {

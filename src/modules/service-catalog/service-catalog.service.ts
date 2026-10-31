@@ -469,10 +469,6 @@ export class ServiceCatalogService {
     });
   }
 
-  async removeSubService(id: number) {
-    return this.deactivateSubService(id);
-  }
-
   async deleteSubService(id: number) {
     await this.findSubServiceAdmin(id);
 

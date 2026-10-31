@@ -61,16 +61,6 @@ export const complaintScenarios: Scenario[] = [
     request: (h, w) => ({ params: { complaintId: complaint(h, w) }, body: { status: 'IN_REVIEW', note: 'Pris en charge' } }),
   },
   {
-    route: 'PATCH /complaints/admin/:/decision',
-    allowed: ['backOffice'],
-    request: (h, w) => ({ params: { complaintId: complaint(h, w) }, body: { decision: 'NO_REFUND', note: 'Rien à rembourser' } }),
-  },
-  {
-    route: 'PATCH /complaints/admin/:/refund',
-    allowed: ['backOffice'],
-    request: (h, w) => ({ params: { complaintId: complaint(h, w) }, body: { decision: 'REJECTED', note: 'Refusé' } }),
-  },
-  {
     route: 'PATCH /complaints/admin/:/resolve',
     allowed: ['backOffice'],
     request: (h, w) => ({ params: { complaintId: complaint(h, w) }, body: { resolutionNotes: 'Réglé' } }),
@@ -79,6 +69,4 @@ export const complaintScenarios: Scenario[] = [
 
 export const complaintSelfScenarios: SelfScenario[] = [
   { route: 'GET /complaints/me', reads: true, backOfficeSeesAll: true, request: () => ({}), hidden: hiddenFromParties },
-  { route: 'GET /complaints/admin', servedRoles: ['BACK_OFFICE'], backOfficeSeesAll: true, request: () => ({}) },
-  { route: 'GET /complaints/admin/dashboard', servedRoles: ['BACK_OFFICE'], backOfficeSeesAll: true, request: () => ({}) },
 ];

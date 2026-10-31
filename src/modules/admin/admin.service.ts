@@ -695,7 +695,7 @@ export class AdminService {
   /**
    * What the others hear once the back office has moved a job (P1-13): the live event (the other
    * dispatchers' lists, the customer's and the technician's screens), the texts the customer got from
-   * the older route (the technician accepted; the job is done) and, for a cancellation, the notice to
+   * the deleted route (P3-03: the technician accepted; the job is done) and, for a cancellation, the notice to
    * the technician. The status is written already: each message is attempted alone, and one that
    * fails is logged (its kind only, a phone number or an address could be in the details) and does not
    * undo or hide the change.

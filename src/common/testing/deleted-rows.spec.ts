@@ -4,12 +4,13 @@ import { buildWorld, HOUSEHOLDS, marksOf } from './world';
 
 /**
  * A thing that was deleted is gone for everybody (P1-17): its owner, the other household and the back office. The
- * message, the internal note, the notification and the file are marked as deleted in the database, and each route that
- * reaches one of them by its number must answer that it is not there, say nothing of what it held, and change nothing.
+ * message, the notification and the file are marked as deleted in the database, and each route that
+ * reaches one of them by its number must answer that it is not there, say nothing of what it held, and change nothing. (The internal
+ * note was here too while the API could delete one, P3-03; the notes that were deleted before stay out of the case file and the complaint centre, and those
+ * two specs plant one.)
  */
 const DELETED: Array<{ what: string; table: string; field: string; value: unknown; routes: string[] }> = [
   { what: 'a message', table: 'message', field: 'deletedAt', value: new Date(), routes: ['GET /messages/:', 'PATCH /messages/:/read', 'DELETE /messages/:'] },
-  { what: 'an internal note', table: 'adminInternalNote', field: 'deletedAt', value: new Date(), routes: ['DELETE /messages/admin-notes/:'] },
   { what: 'a notification', table: 'notification', field: 'deletedAt', value: new Date(), routes: ['GET /notifications/:', 'PATCH /notifications/:/read', 'DELETE /notifications/:'] },
   { what: 'a file', table: 'fileAsset', field: 'isDeleted', value: true, routes: ['GET /files/:', 'GET /files/:/download', 'DELETE /files/:', 'PATCH /files/:/replace'] },
 ];

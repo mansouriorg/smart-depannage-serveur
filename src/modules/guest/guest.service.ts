@@ -734,7 +734,7 @@ export class GuestService {
       intervention.id,
       { title, description },
       // The complaint thread keeps the details. The request's own notes (a review the
-      // customer wrote, the log of reports on the older route) are not replaced by
+      // customer wrote, the log of earlier reports) are not replaced by
       // the title of an anonymous report.
       { keepFeedbackNotes: true },
     );

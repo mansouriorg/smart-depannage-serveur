@@ -6,7 +6,6 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ClientInterventionsService } from './client-interventions.service';
@@ -62,14 +61,6 @@ export class ClientInterventionsController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return this.service.tracking(userId, id);
-  }
-
-  @Get('public/tracking/:id')
-  publicTracking(
-    @Param('id', ParseIntPipe) id: number,
-    @Query('token') token: string,
-  ) {
-    return this.service.publicTracking(id, token);
   }
 
   @UseGuards(JwtAuthGuard, PermissionsGuard)

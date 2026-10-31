@@ -1,19 +1,11 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { complaintForClient, complaintMessageForParties } from '../../common/views/views';
 import { NotificationsService } from '../notifications/notifications.service';
-import { REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS } from '../payments/financials-ops';
 import { REFUND_NOT_ANSWERED, closeComplaintIfRefundAnswered, endsComplaint } from './complaint-closing';
 
 import {
-  ComplaintDecision,
   ComplaintRefundDecision,
   ComplaintStatus,
   Prisma,
@@ -22,12 +14,9 @@ import {
 
 import {
   AddComplaintMessageDto,
-  AdminComplaintDecisionDto,
   ArtisanResponseDto,
   AssignComplaintDto,
-  ComplaintQueryDto,
   CreateComplaintDto,
-  RefundDecisionDto,
   ResolveComplaintDto,
   UpdateComplaintStatusDto,
 } from './dto/complaint.dto';
@@ -62,18 +51,6 @@ export class ComplaintsService {
 
   private isStaff(role: Role): boolean {
     return can(role, Permission.BACK_OFFICE_ACCESS);
-  }
-
-  private isApprovedRefundDecision(
-    decision: ComplaintRefundDecision,
-  ): boolean {
-    const approvedDecisions: ComplaintRefundDecision[] = [
-      ComplaintRefundDecision.APPROVED,
-      ComplaintRefundDecision.PARTIAL_REFUND,
-      ComplaintRefundDecision.REFUNDED,
-    ];
-
-    return approvedDecisions.includes(decision);
   }
 
   private assertStaff(role: Role) {
@@ -401,7 +378,7 @@ export class ComplaintsService {
 
   async findMyComplaints(userId: number, role: Role) {
     if (this.isStaff(role)) {
-      return this.adminFindAll(userId, role, {});
+      return this.newestForStaff(role);
     }
 
     const where: Prisma.ComplaintWhereInput =
@@ -589,27 +566,17 @@ export class ComplaintsService {
   // Admin / Support
   // ==========================================================
 
-  async adminFindAll(userId: number, role: Role, query: ComplaintQueryDto) {
+  // What a back-office account sees on GET /complaints/me: the fifty newest. (The route with filters and pages, GET /complaints/admin, was
+  // deleted in P3-03; the dashboard reads the list from GET /admin/complaints.)
+  private async newestForStaff(role: Role) {
     this.assertStaff(role);
 
-    const where: Prisma.ComplaintWhereInput = {
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.interventionId ? { interventionId: query.interventionId } : {}),
-      ...(query.userId ? { userId: query.userId } : {}),
-      ...(query.assignedToId ? { assignedToId: query.assignedToId } : {}),
-      ...(query.refundRequested !== undefined
-        ? {
-            refundRequested: query.refundRequested,
-          }
-        : {}),
-    };
-
-    const take = Math.min(query.take || 50, 100);
-    const skip = query.skip || 0;
+    const take = 50;
+    const skip = 0;
 
     const [items, total] = await Promise.all([
       this.prisma.complaint.findMany({
-        where,
+        where: {},
         include: this.complaintInclude(),
         orderBy: {
           createdAt: 'desc',
@@ -618,7 +585,7 @@ export class ComplaintsService {
         take,
       }),
       this.prisma.complaint.count({
-        where,
+        where: {},
       }),
     ]);
 
@@ -627,94 +594,6 @@ export class ComplaintsService {
       skip,
       take,
       items,
-    };
-  }
-
-  async adminDashboard(userId: number, role: Role) {
-    this.assertStaff(role);
-
-    const [
-      total,
-      open,
-      inReview,
-      waitingClient,
-      waitingArtisan,
-      resolved,
-      rejected,
-      refunded,
-      refundRequested,
-      unassigned,
-      latest,
-    ] = await Promise.all([
-      this.prisma.complaint.count(),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.OPEN,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.IN_REVIEW,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.WAITING_CLIENT,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.WAITING_ARTISAN,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.RESOLVED,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.REJECTED,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          status: ComplaintStatus.REFUNDED,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          refundRequested: true,
-        },
-      }),
-      this.prisma.complaint.count({
-        where: {
-          assignedToId: null,
-        },
-      }),
-      this.prisma.complaint.findMany({
-        take: 10,
-        orderBy: {
-          createdAt: 'desc',
-        },
-        include: this.complaintInclude(),
-      }),
-    ]);
-
-    return {
-      totals: {
-        total,
-        open,
-        inReview,
-        waitingClient,
-        waitingArtisan,
-        resolved,
-        rejected,
-        refunded,
-        refundRequested,
-        unassigned,
-      },
-      latest,
     };
   }
 
@@ -778,115 +657,6 @@ export class ComplaintsService {
 
     const updated = await this.prisma.complaint.findUnique({
       where: { id: complaintId },
-      include: this.complaintInclude(),
-    });
-
-    await this.tellComplainant(updated, userId);
-
-    return updated;
-  }
-
-  async adminDecision(
-    userId: number,
-    role: Role,
-    complaintId: number,
-    dto: AdminComplaintDecisionDto,
-  ) {
-    this.assertStaff(role);
-
-    const before = await this.getComplaintOrFail(complaintId);
-
-    const refundRequested =
-      dto.decision === ComplaintDecision.PARTIAL_REFUND ||
-      dto.decision === ComplaintDecision.FULL_REFUND;
-
-    // A refund that was made stays what the complaint says: it is not asked for again, and a decision that asks for none does
-    // not erase it.
-    const refundMade = REFUND_MADE_DECISIONS.includes(String(before.refundDecision));
-
-    if (refundMade && refundRequested) throw new ConflictException(REFUND_ALREADY_MADE);
-
-    const claimed = await this.prisma.complaint.updateMany({
-      // Written only if no refund was made in the meantime (the refund of a payment settles the complaint under the job's lock).
-      where: refundMade ? { id: complaintId } : { id: complaintId, refundDecision: { notIn: [...REFUND_MADE_DECISIONS] } },
-      data: {
-        adminDecision: dto.decision,
-        adminDecisionNote: dto.note?.trim() || null,
-        adminDecisionById: userId,
-        adminDecisionAt: new Date(),
-        ...(refundMade
-          ? {}
-          : {
-              refundRequested,
-              refundDecision: refundRequested
-                ? ComplaintRefundDecision.PENDING
-                : ComplaintRefundDecision.NOT_REQUESTED,
-              // The refund starts from nothing: an earlier answer (a refusal, an approval, its amount) is void.
-              refundApproved: false,
-              refundAmount: null,
-              refundDecidedById: null,
-              refundDecidedAt: null,
-            }),
-        status: refundRequested
-          ? ComplaintStatus.IN_REVIEW
-          : ComplaintStatus.RESOLVED,
-        ...(refundRequested
-          ? {}
-          : {
-              resolvedAt: new Date(),
-              closedAt: new Date(),
-            }),
-      },
-    });
-
-    if (claimed.count !== 1) throw new ConflictException(REFUND_ALREADY_MADE);
-
-    const updated = await this.prisma.complaint.findUnique({
-      where: { id: complaintId },
-      include: this.complaintInclude(),
-    });
-
-    await this.tellComplainant(updated, userId);
-
-    return updated;
-  }
-
-  async refundDecision(
-    userId: number,
-    role: Role,
-    complaintId: number,
-    dto: RefundDecisionDto,
-  ) {
-    this.assertStaff(role);
-
-    await this.getComplaintOrFail(complaintId);
-
-    const refundApproved = this.isApprovedRefundDecision(dto.decision);
-    const refundDecided = dto.decision !== ComplaintRefundDecision.PENDING && dto.decision !== ComplaintRefundDecision.NOT_REQUESTED;
-
-    const status =
-      dto.decision === ComplaintRefundDecision.REJECTED
-        ? ComplaintStatus.RESOLVED
-        : refundApproved
-          ? ComplaintStatus.REFUNDED
-          : ComplaintStatus.IN_REVIEW;
-
-    const updated = await this.prisma.complaint.update({
-      where: {
-        id: complaintId,
-      },
-      data: {
-        refundDecision: dto.decision,
-        refundApproved,
-        refundAmount: dto.refundAmount,
-        // Putting a refund back to "pending" (or "not requested") decides nothing: nobody and no date is written, so that a
-        // refund made later settles it (a decision with a date and a refusal is the one that a refund leaves alone).
-        refundDecidedById: refundDecided ? userId : null,
-        refundDecidedAt: refundDecided ? new Date() : null,
-        adminNotes: dto.note?.trim() || undefined,
-        status,
-        ...this.statusDateFields(status),
-      },
       include: this.complaintInclude(),
     });
 

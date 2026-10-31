@@ -15,7 +15,7 @@ import { balancedArguments, scanController, ScannedRoute, splitArguments, routeK
  */
 
 export interface FakeRequest {
-  user?: { id: number; userId?: number; email?: string; name?: string | null; role: string } | null;
+  user?: { id: number; email?: string; name?: string | null; role: string } | null;
   params?: Record<string, unknown>;
   query?: Record<string, unknown>;
   body?: unknown;

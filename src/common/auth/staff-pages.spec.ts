@@ -85,25 +85,6 @@ function routeOf(call: ApiCall): ScannedRoute {
 const MODULE_SOURCE = (file: string) => fs.readFileSync(path.join(MODULES, file), 'utf8');
 
 const SERVED: Record<string, { roles: readonly string[]; because: string; evidence: RegExp; service?: { file: string; evidence: RegExp } }> = {
-  'GET /interventions': {
-    roles: TICKET_STAFF_ROLES,
-    because: 'staff get the full list, an artisan the open jobs, anybody else only their own',
-    evidence: /if \(isTicketStaff\(req\.user\.role\)\) \{\s*return this\.interventionsService\.findAll\(\);/,
-  },
-  'GET /interventions/:': {
-    roles: TICKET_STAFF_ROLES,
-    because: 'the service gives a ticket to staff, to its customer and to its artisan, and a 404 to anybody else',
-    evidence: /findOneForActor\(/,
-    service: {
-      file: 'interventions/interventions.service.ts',
-      evidence: /async findOneForActor\([\s\S]*?if \(isTicketStaff\(actor\.role\)\) \{\s*return intervention;[\s\S]*?throw new NotFoundException/,
-    },
-  },
-  'PATCH /interventions/:': {
-    roles: TICKET_STAFF_ROLES,
-    because: 'staff update any ticket, an artisan their own mission, everybody else is refused (no button of the dashboard uses it since P1-13; support can still call it by hand)',
-    evidence: /if \(isTicketStaff\(req\.user\.role\)\) \{\s*return this\.interventionsService\.update\([\s\S]*?throw new ForbiddenException/,
-  },
   'GET /users/profile': {
     roles: STAFF_ROLES,
     because: 'the signed-in person\'s own profile, read from the token',
@@ -364,8 +345,8 @@ describe('the table against the routes of the API', () => {
     expect(API.size).toBeGreaterThan(40);
     expect(API.get(routeKey('PATCH', '/admin/artisans/:profileId/approve'))?.roles).toEqual(['ADMIN', 'SUPER_ADMIN']);
     expect(API.get(routeKey('GET', '/users/profile'))?.roles).toBeNull();
-    // The route that answers differently by role is not "ticket staff only": it lets everybody in.
-    expect(API.get(routeKey('GET', '/interventions'))?.how).toBe('in-code');
+    // A route that names no permission and has no gate in its body lets every signed-in account in (the older route of the phone app's list).
+    expect(API.get(routeKey('GET', '/interventions/assigned'))?.how).toBe('signed-in');
     expect(API.get(routeKey('GET', '/interventions/dashboard/stats'))?.how).toBe('ticket-staff');
   });
 
@@ -497,7 +478,7 @@ describe('the table against the routes of the API', () => {
     expect(sorted(API.get(routeKey('GET', '/admin/interventions'))?.roles ?? [])).toEqual(['ADMIN', 'DISPATCHER', 'SUPER_ADMIN', 'SUPPORT']);
   });
 
-  it('the interventions page reads a job from the case file route, not from the older route that returns the raw row (P1-14)', () => {
+  it('the interventions page reads a job from the case file route (the older route that returned the raw row, GET /interventions/:id, was deleted in P3-03)', () => {
     const calls = DASHBOARD_PAGES.find((page) => page.id === 'interventions')?.calls.map((call) => `${call.method} ${call.path}`) ?? [];
 
     expect(calls).toContain('GET /admin/interventions/:id');
@@ -516,7 +497,7 @@ describe('the table against the routes of the API', () => {
     }
   });
 
-  it('the status and cancel routes the buttons call are the dispatcher\'s, not support\'s (the older PATCH /interventions/:id is the one that lets support in)', () => {
+  it('the status, cancel and assign routes the buttons call are the dispatcher\'s, not support\'s (the older PATCH /interventions/:id that let support in was deleted in P3-03)', () => {
     for (const path of ['/admin/interventions/:id/status', '/admin/interventions/:id/cancel', '/admin/interventions/:id/assign-artisan']) {
       expect(sorted(API.get(routeKey(path.endsWith('assign-artisan') ? 'POST' : 'PATCH', path))?.roles ?? [])).toEqual(['ADMIN', 'DISPATCHER', 'SUPER_ADMIN']);
     }

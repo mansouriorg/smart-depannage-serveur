@@ -28,7 +28,7 @@ function makeWorld(result: Partial<{ completed: boolean; throws: Error }> = {}) 
   };
   const gateway: any = { sendInterventionStatus: (payload: any) => sockets.push(payload) };
   const notifications: any = { sendSms: async (to: string, text: string) => texts.push([to, text]) };
-  const service = new InterventionsService({} as any, gateway, notifications, {} as any, {} as any, {} as any, proofs);
+  const service = new InterventionsService({} as any, gateway, notifications, {} as any, proofs);
 
   return { service, submitted, sockets, texts };
 }

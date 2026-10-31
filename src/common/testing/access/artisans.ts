@@ -16,6 +16,26 @@ const hiddenOnMission = (h: Household, person: { role: string }) =>
       )
     : [];
 
+/**
+ * An open job on the board: what an artisan who is not on it reads is the board's copy, with no way to reach the customer. The rows of
+ * the board carry three more keys than the copy of the deleted GET /interventions did (rating, isOnTime, cancelledAt: empty on a job
+ * nobody finished); they are the only columns left out of this check (see the README, P3-03).
+ */
+const EMPTY_KEYS_ON_THE_BOARD = ['rating', 'isOnTime', 'cancelledAt'];
+
+const hiddenOnBoard = (h: Household, person: { role: string }) =>
+  person.role === 'ARTISAN'
+    ? [
+        ...withheldColumns(
+          h,
+          'Intervention',
+          Object.keys(INTERVENTION_COLUMNS).filter((column) => !interventionColumnsFor('board').includes(column) && !EMPTY_KEYS_ON_THE_BOARD.includes(column)),
+        ),
+        mark(h, 'client email'),
+        mark(h, 'client phone'),
+      ]
+    : [];
+
 const at = (status: string) => (w: World) => w.set('intervention', { status, latitude: 36.8008, longitude: 10.1815 });
 
 /** A mission that is the artisan's alone: every action on it is theirs, and nobody else's, whatever the job's id. */
@@ -29,6 +49,15 @@ const mine = (route: string, status: string, body?: Record<string, unknown>, not
 });
 
 export const artisanScenarios: Scenario[] = [
+  {
+    route: 'GET /artisans/me/missions',
+    note: 'the board: an open job is read by every artisan through the board’s copy, which has no way to reach the customer (until P3-03 the older GET /interventions was checked for this)',
+    allowed: ['artisans'],
+    reads: true,
+    prepare: (w) => w.set('intervention', { status: 'CREATED', artisanId: null }),
+    request: () => ({}),
+    hidden: hiddenOnBoard,
+  },
   {
     route: 'GET /artisans/me/missions/:',
     note: 'the details of a mission are the artisan’s who has it (an open job is read by the artisans it is for)',

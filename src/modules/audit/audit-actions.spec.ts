@@ -148,7 +148,6 @@ describe('the audit log covers every write of the back office (P3-02)', () => {
       const types = [...new Set(entries.map(([, entry]) => entry.targetType))].sort();
 
       expect(types).toEqual([
-        'AdminInternalNote',
         'Appointment',
         'AppointmentRequest',
         'ArtisanDocument',
@@ -323,7 +322,6 @@ describe('the audit log covers every write of the back office (P3-02)', () => {
           'DELETE /notifications/push-tokens/:',
           'PATCH /messages/:/read',
           'PATCH /messages/interventions/:/read',
-          'PATCH /notification-preferences/me',
           'PATCH /notifications/:/read',
           'PATCH /notifications/preferences/me',
           'PATCH /notifications/read-all',
@@ -345,7 +343,6 @@ describe('the audit log covers every write of the back office (P3-02)', () => {
       const allowedPermissions = new Set<string>([Permission.NOTIFICATIONS_OWN, Permission.LOCATION_REPORT]);
       // The routes any signed-in account may call and that are left out, named one by one: a new one must be added here on purpose.
       const allowedSignedIn = new Set<string>([
-        'PATCH /notification-preferences/me',
         'POST /auth/email/send-verification',
         'POST /auth/phone/send-code',
         'PATCH /messages/interventions/:/read',
@@ -410,7 +407,8 @@ describe('the audit log covers every write of the back office (P3-02)', () => {
       const missing = WRITES.filter((route) => route.permission !== null && MUST.has(route.permission) && !AUDITED_ROUTES[route.key]).map((route) => route.key);
       const checked = WRITES.filter((route) => route.permission !== null && MUST.has(route.permission));
 
-      expect(checked.length).toBeGreaterThan(80);
+      // 82 before P3-03 deleted four of these routes (the floor stays one below what there is)
+      expect(checked.length).toBeGreaterThan(76);
       expect(missing).toEqual([]);
     });
 
@@ -419,7 +417,7 @@ describe('the audit log covers every write of the back office (P3-02)', () => {
         'POST /business/payouts',
         'PATCH /business/payouts/:/paid',
         'PATCH /business/payouts/:/cancel',
-        'PATCH /complaints/admin/:/refund',
+        'PATCH /admin/complaints/:/refund',
         'PATCH /reviews/admin/:/moderate',
         'POST /scheduling/admin/interventions/:/schedule',
         'PATCH /scheduling/admin/requests/:/review',

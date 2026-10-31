@@ -120,35 +120,4 @@ export const linkScenarios: LinkScenario[] = [
     route: 'POST /guest/interventions/:/problems',
     request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token), body: { title: 'Fuite', description: 'Ça fuit encore' } }),
   },
-  {
-    route: 'GET /public/tracking/:',
-    reads: true,
-    hidden: hiddenFromVisitor,
-    request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token) }),
-  },
-  {
-    route: 'GET /interventions/track/:',
-    reads: true,
-    hidden: hiddenFromVisitor,
-    request: (h, token, w) => ({ params: { id: String(job(h, w)) }, query: withLink(token) }),
-  },
-  {
-    route: 'PATCH /interventions/track/:/feedback',
-    prepare: (w) => {
-      w.set('intervention', { status: 'PAID' });
-      w.clear('review');
-    },
-    request: (h, token, w) => ({ params: { id: String(job(h, w)) }, query: withLink(token), body: { rating: 5, isOnTime: true } }),
-  },
-  {
-    route: 'POST /interventions/track/:/issue',
-    prepare: (w) => w.set('intervention', { status: 'IN_PROGRESS' }),
-    request: (h, token, w) => ({ params: { id: String(job(h, w)) }, query: withLink(token), body: { issueDescription: 'Ça fuit encore' } }),
-  },
-  {
-    route: 'GET /interventions/public/:/timeline',
-    reads: true,
-    hidden: hiddenFromVisitor,
-    request: (h, token, w) => ({ params: { id: job(h, w) }, query: withLink(token) }),
-  },
 ];

@@ -15,16 +15,11 @@ import { CreateMessageDto } from './dto/create-message.dto';
 import { messageForParties } from '../../common/views/views';
 
 import {
-  AdminNoteTargetType,
   MessageAudience,
   Prisma,
   Role,
 } from '../../../generated/prisma/client';
 import { Permission, can } from '../../common/auth/permissions';
-
-type AdminInternalNoteDto = {
-  content: string;
-};
 
 @Injectable()
 export class MessagesService {
@@ -654,91 +649,5 @@ export class MessagesService {
 
   async deleteMessage(userId: number, role: Role, messageId: number) {
     return this.remove(userId, role, messageId);
-  }
-
-  // ==========================================================
-  // 9. ADMIN INTERNAL NOTES
-  // Separate from public chat
-  // Never visible in public message routes
-  // ==========================================================
-
-  async createInternalNote(
-    userId: number,
-    role: Role,
-    interventionId: number,
-    dto: AdminInternalNoteDto,
-  ) {
-    if (!this.isStaff(role)) {
-      throw new ForbiddenException(
-        'Seule l’administration peut créer une note interne.',
-      );
-    }
-
-    await this.getInterventionOrFail(interventionId);
-
-    if (!dto.content?.trim()) {
-      throw new BadRequestException('La note interne ne peut pas être vide.');
-    }
-
-    return this.prisma.adminInternalNote.create({
-      data: {
-        targetType: AdminNoteTargetType.INTERVENTION,
-        targetId: interventionId,
-        authorId: userId,
-        content: dto.content.trim(),
-      },
-    });
-  }
-
-  async findInternalNotesByIntervention(
-    userId: number,
-    role: Role,
-    interventionId: number,
-  ) {
-    if (!this.isStaff(role)) {
-      throw new ForbiddenException(
-        'Seule l’administration peut consulter les notes internes.',
-      );
-    }
-
-    await this.getInterventionOrFail(interventionId);
-
-    return this.prisma.adminInternalNote.findMany({
-      where: {
-        targetType: AdminNoteTargetType.INTERVENTION,
-        targetId: interventionId,
-        deletedAt: null,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-  }
-
-  async deleteInternalNote(userId: number, role: Role, noteId: number) {
-    if (!this.isStaff(role)) {
-      throw new ForbiddenException(
-        'Seule l’administration peut supprimer une note interne.',
-      );
-    }
-
-    const note = await this.prisma.adminInternalNote.findUnique({
-      where: {
-        id: noteId,
-      },
-    });
-
-    if (!note || note.deletedAt) {
-      throw new NotFoundException('Note interne introuvable.');
-    }
-
-    return this.prisma.adminInternalNote.update({
-      where: {
-        id: noteId,
-      },
-      data: {
-        deletedAt: new Date(),
-      },
-    });
   }
 }

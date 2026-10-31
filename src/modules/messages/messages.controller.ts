@@ -22,10 +22,6 @@ import {
   Role,
 } from '../../../generated/prisma/client';
 
-type AdminInternalNoteDto = {
-  content: string;
-};
-
 @Controller('messages')
 @UseGuards(JwtAuthGuard)
 export class MessagesController {
@@ -181,68 +177,6 @@ export class MessagesController {
     @Param('messageId', ParseIntPipe) messageId: number,
   ) {
     return this.service.markAsRead(userId, role, messageId);
-  }
-
-  // ==========================================================
-  // 5. ADMIN INTERNAL NOTES
-  // Completely separate from public messages
-  // ==========================================================
-
-  /**
-   * Create internal admin note.
-   *
-   * POST /messages/admin-notes/interventions/:interventionId
-   *
-   * Body:
-   * {
-   *   "content": "Note interne: client prioritaire."
-   * }
-   */
-  @Post('admin-notes/interventions/:interventionId')
-  createInternalNote(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-    @Body() dto: AdminInternalNoteDto,
-  ) {
-    return this.service.createInternalNote(
-      userId,
-      role,
-      interventionId,
-      dto,
-    );
-  }
-
-  /**
-   * Get internal admin notes for intervention.
-   *
-   * GET /messages/admin-notes/interventions/:interventionId
-   */
-  @Get('admin-notes/interventions/:interventionId')
-  findInternalNotesByIntervention(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Param('interventionId', ParseIntPipe) interventionId: number,
-  ) {
-    return this.service.findInternalNotesByIntervention(
-      userId,
-      role,
-      interventionId,
-    );
-  }
-
-  /**
-   * Delete internal admin note.
-   *
-   * DELETE /messages/admin-notes/:noteId
-   */
-  @Delete('admin-notes/:noteId')
-  deleteInternalNote(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Param('noteId', ParseIntPipe) noteId: number,
-  ) {
-    return this.service.deleteInternalNote(userId, role, noteId);
   }
 
   // ==========================================================

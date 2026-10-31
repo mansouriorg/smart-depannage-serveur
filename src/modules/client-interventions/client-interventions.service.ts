@@ -13,7 +13,7 @@ import { buildTrackingUrl } from '../../common/links/tracking-url';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
 import { checkRequestedService } from '../service-catalog/catalog-check';
-import { chatsOf, interventionForClient, interventionForTracking } from '../../common/views/views';
+import { chatsOf, interventionForClient } from '../../common/views/views';
 import { INVOICES_OF_JOB, INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import { cancelVisit } from '../assignment/appointment-release';
@@ -228,51 +228,6 @@ export class ClientInterventionsService {
 
   async tracking(clientId: number, id: number) {
     return this.findOneMine(clientId, id);
-  }
-
-  async publicTracking(id: number, rawToken: string) {
-    const intervention = await this.prisma.intervention.findFirst({
-      where: {
-        id,
-        trackingToken: this.hashToken(rawToken),
-      },
-      include: {
-        subService: true,
-        artisan: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            latitude: true,
-            longitude: true,
-          },
-        },
-        events: {
-          orderBy: { createdAt: 'asc' },
-        },
-        quotes: {
-          where: {
-            status: {
-              in: ['SENT', 'ACCEPTED', 'MODIFICATION_REQUESTED'],
-            },
-          },
-          include: { items: true },
-        },
-        payments: {
-          orderBy: { createdAt: 'desc' },
-        },
-        invoices: INVOICES_OF_JOB_WITH_LINES,
-        review: true,
-      },
-    });
-
-    if (!intervention) {
-      throw new NotFoundException('Lien de suivi invalide.');
-    }
-
-    // The visitor with the link is the customer without an account: the same copy as the customer's
-    // minus every id, and the artisan's position only while they are on the way.
-    return interventionForTracking(intervention);
   }
 
   async cancel(clientId: number, id: number) {

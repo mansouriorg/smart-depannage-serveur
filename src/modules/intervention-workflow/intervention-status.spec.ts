@@ -334,11 +334,16 @@ describe('the statuses in which a visitor may report a problem (P1-09)', () => {
     }
   });
 
-  it('is one list: the service reads it, it is not written out a second time', () => {
-    const service = fs.readFileSync(path.join(__dirname, '..', 'interventions', 'interventions.service.ts'), 'utf8');
+  it('is one list, the website\'s: no service writes it out a second time', () => {
+    // The route that refused a report outside these statuses (POST /interventions/track/:id/issue) was deleted in P3-03. No server code reads
+    // the list now: the website hides its button with its copy of this file (the shared package), and POST /guest/interventions/:id/problems
+    // does not look at the status. The list stays here as the rule the website follows; whether the server must enforce it is open (README, P3-03).
+    for (const file of ['interventions/interventions.service.ts', 'guest/guest.service.ts']) {
+      const service = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 
-    expect(service).toContain('withAliases(VISITOR_MAY_REPORT_ISSUE_IN)');
-    expect(service).not.toMatch(/withAliases\(\[[^\]]*ARTISAN_ARRIVED/);
+      expect(service).not.toMatch(/withAliases\(\[[^\]]*ARTISAN_ARRIVED/);
+    }
+
     expect([...VISITOR_MAY_REPORT_ISSUE_IN]).toEqual(['ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'ARTISAN_ARRIVED', 'IN_PROGRESS']);
   });
 });

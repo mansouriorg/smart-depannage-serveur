@@ -6,7 +6,6 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 
@@ -14,7 +13,6 @@ import { InterventionWorkflowService } from './intervention-workflow.service';
 
 import { ChangeWorkflowStatusDto } from './dto/change-workflow-status.dto';
 import { CreateTimelineEventDto } from './dto/create-timeline-event.dto';
-import { PublicTimelineQueryDto } from './dto/public-timeline-query.dto';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
@@ -43,20 +41,6 @@ export class InterventionWorkflowController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return this.workflowService.getTimeline(user, id);
-  }
-
-  // ==========================================================
-  // PUBLIC TRACKING TIMELINE
-  // For guest / public tracking page
-  // GET /interventions/public/:id/timeline?token=RAW_TOKEN
-  // ==========================================================
-
-  @Get('public/:id/timeline')
-  getPublicTimeline(
-    @Param('id', ParseIntPipe) id: number,
-    @Query() query: PublicTimelineQueryDto,
-  ) {
-    return this.workflowService.getPublicTimeline(id, query.token);
   }
 
   // ==========================================================

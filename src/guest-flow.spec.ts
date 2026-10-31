@@ -111,10 +111,8 @@ describe('every text a visitor can send to the guest routes has a ceiling', () =
     }
   });
 
-  it('the older public routes and the signed-in request route have a ceiling too', () => {
+  it('the dashboard\'s create-a-ticket form and the signed-in request route have a ceiling too (the older public routes and their forms were deleted in P3-03)', () => {
     for (const file of [
-      'modules/interventions/dto/submit-feedback.dto.ts',
-      'modules/interventions/dto/report-issue.dto.ts',
       'modules/interventions/dto/create-intervention.dto.ts',
       'modules/client-interventions/dto/create-client-intervention.dto.ts',
     ]) {
@@ -207,7 +205,7 @@ describe('every way of making a request alerts the back office', () => {
   });
 });
 
-describe('the older public routes and the request route are limited too (P1-04 review)', () => {
+describe('the request routes of a signed-in account are limited too (P1-04 review)', () => {
   const routeBlock = (rel: string, route: string) => {
     const text = read(rel);
     const at = text.indexOf(route);
@@ -215,17 +213,12 @@ describe('the older public routes and the request route are limited too (P1-04 r
     return { at, before: text.slice(Math.max(0, at - 400), at + 120) };
   };
 
-  it('feedback and issue on the older tracking link: per visitor address', () => {
-    for (const [route, name] of [
-      ["@Patch('track/:id/feedback')", "'track-feedback'"],
-      ["@Post('track/:id/issue')", "'track-issue'"],
-    ]) {
-      const { at, before } = routeBlock('modules/interventions/interventions.controller.ts', route);
+  it('the dashboard\'s create-a-ticket route is limited per account', () => {
+    const { at, before } = routeBlock('modules/interventions/interventions.controller.ts', "@Post('secure')");
 
-      expect(at > 0).toBe(true);
-      expect(before.includes('RateLimitGuard')).toBe(true);
-      expect(before.includes(`name: ${name}`)).toBe(true);
-    }
+    expect(at > 0).toBe(true);
+    expect(before.includes('RateLimitGuard')).toBe(true);
+    expect(before.includes("name: 'secure-create'")).toBe(true);
   });
 
   it('a signed-in client making a request is limited, as every request now alerts the whole back office', () => {
@@ -234,12 +227,6 @@ describe('the older public routes and the request route are limited too (P1-04 r
     expect(at > 0).toBe(true);
     expect(before.includes('RateLimitGuard')).toBe(true);
     expect(before.includes("name: 'client-create'")).toBe(true);
-  });
-
-  it('the public route of the older API ignores photos typed by a visitor', () => {
-    const text = read('modules/interventions/interventions.service.ts');
-
-    expect(text.includes('const photos = userId ? sentPhotos : undefined;')).toBe(true);
   });
 });
 

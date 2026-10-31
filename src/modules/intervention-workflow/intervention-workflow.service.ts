@@ -5,8 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import * as crypto from 'crypto';
-
 import { PrismaService } from '../../prisma/prisma.service';
 
 import { ChangeWorkflowStatusDto } from './dto/change-workflow-status.dto';
@@ -43,11 +41,6 @@ export class InterventionWorkflowService {
   // ==========================================================
   // 1. HELPERS
   // ==========================================================
-
-  private hashToken(token: string): string {
-    // A link that was not sent at all hashes like an empty one, which no job has: "not found", not a crash (P1-17).
-    return crypto.createHash('sha256').update(String(token ?? '')).digest('hex');
-  }
 
   private isAdminRole(role: Role): boolean {
     return can(role, Permission.BACK_OFFICE_ACCESS);
@@ -342,57 +335,6 @@ export class InterventionWorkflowService {
         updatedAt: intervention.updatedAt,
       },
       timeline: enrichedEvents,
-    };
-  }
-
-  // ==========================================================
-  // 3. PUBLIC TRACKING TIMELINE
-  // Visible to public page with secure tracking token
-  // ==========================================================
-
-  async getPublicTimeline(interventionId: number, rawToken: string) {
-    const intervention = await this.prisma.intervention.findUnique({
-      where: {
-        id: interventionId,
-      },
-      select: {
-        id: true,
-        status: true,
-        serviceType: true,
-        subServiceId: true,
-        address: true,
-        trackingToken: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    // A job that does not exist and a link that is wrong get the same answer, word for word: the route must not tell
-    // a visitor which job numbers are in use (P1-17).
-    if (!intervention || !intervention.trackingToken || intervention.trackingToken !== this.hashToken(rawToken)) {
-      throw new NotFoundException('Lien de suivi invalide ou expiré.');
-    }
-
-    const events = await this.prisma.interventionEvent.findMany({
-      where: {
-        interventionId,
-      },
-      orderBy: {
-        createdAt: 'asc',
-      },
-    });
-
-    return {
-      intervention: {
-        id: intervention.id,
-        status: intervention.status,
-        serviceType: intervention.serviceType,
-        subServiceId: intervention.subServiceId,
-        address: intervention.address,
-        createdAt: intervention.createdAt,
-        updatedAt: intervention.updatedAt,
-      },
-      timeline: eventsForParties(events),
     };
   }
 

@@ -6,15 +6,10 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
-import { IsMoney } from '../../../common/money/money-validation';
 
 import { Transform, Type } from 'class-transformer';
 
-import {
-  ComplaintDecision,
-  ComplaintRefundDecision,
-  ComplaintStatus,
-} from '../../../../generated/prisma/client';
+import { ComplaintStatus } from '../../../../generated/prisma/client';
 
 function toBoolean(value: unknown): boolean | undefined {
   if (value === undefined || value === null || value === '') {
@@ -95,66 +90,7 @@ export class UpdateComplaintStatusDto {
   note?: string;
 }
 
-export class AdminComplaintDecisionDto {
-  @IsEnum(ComplaintDecision)
-  decision: ComplaintDecision;
-
-  @IsOptional()
-  @IsString()
-  note?: string;
-}
-
-export class RefundDecisionDto {
-  @IsEnum(ComplaintRefundDecision)
-  decision: ComplaintRefundDecision;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsMoney()
-  refundAmount?: number;
-
-  @IsOptional()
-  @IsString()
-  note?: string;
-}
-
 export class ResolveComplaintDto {
   @IsString()
   resolutionNotes: string;
-}
-
-export class ComplaintQueryDto {
-  @IsOptional()
-  @IsEnum(ComplaintStatus)
-  status?: ComplaintStatus;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  interventionId?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  userId?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  assignedToId?: number;
-
-  @IsOptional()
-  @Transform(({ value }) => toBoolean(value))
-  @IsBoolean()
-  refundRequested?: boolean;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  skip?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  take?: number;
 }

@@ -158,11 +158,6 @@ export const ACCESS_MANIFEST: Record<string, ManifestEntry> = {
       { file: 'modules/artisans/artisans.apply.spec.ts', mentions: 'a number already on another account is refused whatever the spelling' },
     ],
   },
-  'POST /interventions': {
-    kind: 'proved',
-    why: 'an existing account is never reused: its owner must sign in; only a guest profile is, and a profile with a mailbox of its own is not',
-    proof: [{ file: 'modules/interventions/interventions.guest-phone.spec.ts', mentions: 'a real account with that number is never reused: 409' }],
-  },
   'POST /guest/interventions': {
     kind: 'proved',
     why: 'the answer does not say whose profile the request went to, and a profile seeded by somebody else is not joined',

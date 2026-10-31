@@ -1,26 +1,19 @@
-import { 
-  Controller, 
-  Get, 
-  Post, 
-  Body, 
-  Patch, 
-  Param, 
-  UseGuards, 
-  Request, 
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  UseGuards,
+  Request,
   ForbiddenException,
-  UploadedFile, 
-  UseInterceptors, 
-  BadRequestException,
-  ParseIntPipe,
-  Query 
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
 import { InterventionsService } from './interventions.service';
 import { CreateInterventionDto } from './dto/create-intervention.dto';
-import { UpdateInterventionDto } from './dto/update-intervention.dto';
-import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
-import { ReportIssueDto } from './dto/report-issue.dto'; 
 import { AuthGuard } from '@nestjs/passport';
 import { isTicketStaff } from '../../common/auth/role-policy';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -28,31 +21,28 @@ import { Permission } from '../../common/auth/permissions';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { PROOF_UPLOAD } from '../proofs/proof-upload';
 import { AddProofDto } from '../proofs/dto/proofs.dto';
-import {
-  RateLimit,
-  RateLimitGuard,
-} from '../../common/rate-limit/rate-limit.guard';
-import { BotCheckGuard } from '../../common/bot-check/bot-check.guard';
+import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
 
+/**
+ * The four routes of the first version of the interventions API that a screen still calls (P3-03). Everything else this controller
+ * used to answer (the public request form, the list, one job, the update, the three tracking-link routes) was deleted when no screen
+ * called it any more: the website uses `/guest/...`, a customer `/client/interventions`, the technician `/artisans/me/missions/...`
+ * and the back office `/admin/interventions/...`.
+ *
+ * `legacy-routes.spec.ts` keeps the list of what remains and which screen calls it. Delete a route here only after that screen has
+ * moved off it:
+ *
+ *   POST /interventions/secure             dashboard, "create a ticket"            no replacement for the back office yet
+ *   GET  /interventions/assigned           phone app, home and missions tabs       GET /artisans/me/missions (another answer)
+ *   GET  /interventions/dashboard/stats    dashboard home                          GET /admin/dashboard/kpis (another answer)
+ *   POST /interventions/:id/complete-work  phone app, finish the job with a photo  POST /interventions/:id/proofs/after, then
+ *                                                                                  PATCH /artisans/me/missions/:id/complete (two calls)
+ */
 @Controller('interventions')
 export class InterventionsController {
   constructor(private readonly interventionsService: InterventionsService) {}
 
-  // ==========================================================
-  // 1. PUBLIC ROUTE: Create Request (GUESTS)
-  // ==========================================================
-  @Post()
-  // The same check as POST /guest/interventions (P1-16): this route made the same kind of request, and
-  // left open it would be the way round the check.
-  @UseGuards(RateLimitGuard, BotCheckGuard)
-  @RateLimit({ name: 'legacy-guest-create', limit: 10, windowMs: 60 * 60_000 })
-  create(@Request() req, @Body() createInterventionDto: CreateInterventionDto) {
-    return this.interventionsService.create(null, createInterventionDto);
-  }
-
-  // ==========================================================
-  // 2. SECURE ROUTE: Create Request (LOGGED IN USERS)
-  // ==========================================================
+  // Creates a request for the signed-in account (the dashboard's "create a ticket" sends it).
   @Post('secure')
   @UseGuards(AuthGuard('jwt'), RateLimitGuard)
   @RateLimit({ name: 'secure-create', limit: 60, windowMs: 60 * 60_000 })
@@ -60,42 +50,15 @@ export class InterventionsController {
     return this.interventionsService.create(req.user.id, createInterventionDto, req.user.role);
   }
 
-  // ==========================================================
-  // 3. NEW ROUTE: My Assigned Missions (For Artisans) 👷‍♂️
-  // ==========================================================
-  // ✅ MUST be placed BEFORE @Get(':id') to avoid conflicts
+  // The jobs of the signed-in artisan, newest first (the phone app's lists).
   @Get('assigned')
-  @UseGuards(AuthGuard('jwt')) 
+  @UseGuards(AuthGuard('jwt'))
   findAssigned(@Request() req) {
     // Only Artisans should call this, but the query handles it safely
     return this.interventionsService.findByArtisan(req.user.id);
   }
 
-  // ==========================================================
-  // 4. GENERAL ROUTES: Reading (Marketplace / Admin / History)
-  // ==========================================================
-
-  // GET /interventions
-  @Get()
-  @UseGuards(AuthGuard('jwt'))
-  findAll(@Request() req) {
-    // Logic: back-office staff see everything (ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER)
-    if (isTicketStaff(req.user.role)) {
-      return this.interventionsService.findAll();
-    }
-    // Artisans see "Pending" jobs (Marketplace)
-    if (req.user.role === 'ARTISAN') {
-      return this.interventionsService.findAllPending(req.user.id);
-    }
-    
-    // Clients see only their own history
-    return this.interventionsService.findByUser(req.user.id);
-  }
-
-  // ==========================================================
-  // 5. 📊 NEW ROUTE: Dashboard Stats (ADMIN)
-  // ==========================================================
-  // ⚠️ MUST be placed BEFORE @Get(':id') to avoid routing conflicts
+  // The numbers of the dashboard's home page.
   @Get('dashboard/stats')
   @UseGuards(AuthGuard('jwt'))
   getDashboardStats(@Request() req) {
@@ -105,49 +68,8 @@ export class InterventionsController {
     return this.interventionsService.getDashboardStats();
   }
 
-  // GET /interventions/:id (Get details)
-  @Get(':id')
-  @UseGuards(AuthGuard('jwt'))
-  findOne(@Request() req, @Param('id') id: string) {
-    // P0-16: the service checks that this user may see this ticket.
-    return this.interventionsService.findOneForActor(+id, {
-      id: req.user.id,
-      role: req.user.role,
-    });
-  }
-
   // ==========================================================
-  // 6. UPDATE ROUTE: (Assign Artisan / Change Status)
-  // ==========================================================
-  @Patch(':id')
-  @UseGuards(AuthGuard('jwt'))
-  update(
-    @Request() req, 
-    @Param('id', ParseIntPipe) id: number, 
-    @Body() updateInterventionDto: UpdateInterventionDto
-  ) {
-    // P0-16: staff manage tickets; an artisan may only advance their own
-    // mission (en route / on site / in progress); everybody else is refused.
-    if (isTicketStaff(req.user.role)) {
-      return this.interventionsService.update(id, updateInterventionDto, {
-        kind: 'staff',
-        userId: req.user.id,
-      });
-    }
-
-    if (req.user.role === 'ARTISAN') {
-      return this.interventionsService.updateAsArtisan(
-        id,
-        req.user.id,
-        updateInterventionDto,
-      );
-    }
-
-    throw new ForbiddenException('Vous ne pouvez pas modifier cette intervention.');
-  }
-
-  // ==========================================================
-  // 7. 📸 SECURE ROUTE: Tamper-Proof Proof of Work Upload
+  // Tamper-proof proof of work: the artisan closes the job with the "after" photo.
   // ==========================================================
   // multipart: photo, latitude, longitude, accuracy (metres), mocked (true/false), timestamp.
   // The photo is received in memory (never in a folder the web server could serve) and judged by
@@ -171,55 +93,5 @@ export class InterventionsController {
         capture: { ...body, capturedAt: body?.capturedAt ?? body?.timestamp },
       },
     );
-  }
-
-  // ==========================================================
-  // 8. 🔐 PUBLIC SECURE TRACKING: Read Status
-  // ==========================================================
-  // No @UseGuards here! The token provides the security.
-  @Get('track/:id')
-  async trackIntervention(
-    @Param('id') id: string,
-    @Query('token') token: string
-  ) {
-    if (!token) {
-      throw new BadRequestException("Le token de suivi est obligatoire.");
-    }
-    return this.interventionsService.findByTrackingToken(+id, token);
-  }
-
-  // ==========================================================
-  // 9. ⭐ PUBLIC SECURE TRACKING: Submit Feedback
-  // ==========================================================
-  // No @UseGuards here! The token provides the security.
-  @Patch('track/:id/feedback')
-  @UseGuards(RateLimitGuard)
-  @RateLimit({ name: 'track-feedback', limit: 20, windowMs: 60 * 60_000 })
-  async submitFeedback(
-    @Param('id') id: string,
-    @Query('token') token: string,
-    @Body() submitFeedbackDto: SubmitFeedbackDto
-  ) {
-    if (!token) {
-      throw new BadRequestException("Le token de suivi est obligatoire.");
-    }
-    return this.interventionsService.submitFeedback(+id, token, submitFeedbackDto);
-  }
-
-  // ==========================================================
-  // 10. 🚨 PUBLIC SECURE TRACKING: Report an active issue
-  // ==========================================================
-  @Post('track/:id/issue')
-  @UseGuards(RateLimitGuard)
-  @RateLimit({ name: 'track-issue', limit: 10, windowMs: 60 * 60_000 })
-  async reportActiveIssue(
-    @Param('id') id: string,
-    @Query('token') token: string,
-    @Body() reportIssueDto: ReportIssueDto
-  ) {
-    if (!token) {
-      throw new BadRequestException("Le token de suivi est obligatoire.");
-    }
-    return this.interventionsService.reportActiveIssue(+id, token, reportIssueDto.issueDescription);
   }
 }

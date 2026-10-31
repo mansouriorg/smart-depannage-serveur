@@ -6,7 +6,6 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 
@@ -19,12 +18,9 @@ import { Role } from '../../../generated/prisma/client';
 
 import {
   AddComplaintMessageDto,
-  AdminComplaintDecisionDto,
   ArtisanResponseDto,
   AssignComplaintDto,
-  ComplaintQueryDto,
   CreateComplaintDto,
-  RefundDecisionDto,
   ResolveComplaintDto,
   UpdateComplaintStatusDto,
 } from './dto/complaint.dto';
@@ -92,32 +88,9 @@ export class ComplaintsController {
   }
 
   // ==========================================================
-  // Admin routes
-  // Must stay before GET /complaints/:complaintId
+  // Admin routes still called by the dashboard (assign, status, resolve). The list, the counters, the decision and the refund
+  // routes that stood here were deleted in P3-03: the dashboard reads and decides through /admin/complaints.
   // ==========================================================
-
-  /**
-   * GET /complaints/admin
-   */
-  @Get('admin')
-  adminFindAll(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Query() query: ComplaintQueryDto,
-  ) {
-    return this.service.adminFindAll(userId, role, query);
-  }
-
-  /**
-   * GET /complaints/admin/dashboard
-   */
-  @Get('admin/dashboard')
-  adminDashboard(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-  ) {
-    return this.service.adminDashboard(userId, role);
-  }
 
   /**
    * PATCH /complaints/admin/:complaintId/assign
@@ -148,42 +121,6 @@ export class ComplaintsController {
     @Body() dto: UpdateComplaintStatusDto,
   ) {
     return this.service.updateStatus(
-      userId,
-      role,
-      complaintId,
-      dto,
-    );
-  }
-
-  /**
-   * PATCH /complaints/admin/:complaintId/decision
-   */
-  @Patch('admin/:complaintId/decision')
-  adminDecision(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Param('complaintId', ParseIntPipe) complaintId: number,
-    @Body() dto: AdminComplaintDecisionDto,
-  ) {
-    return this.service.adminDecision(
-      userId,
-      role,
-      complaintId,
-      dto,
-    );
-  }
-
-  /**
-   * PATCH /complaints/admin/:complaintId/refund
-   */
-  @Patch('admin/:complaintId/refund')
-  refundDecision(
-    @CurrentUser('id') userId: number,
-    @CurrentUser('role') role: Role,
-    @Param('complaintId', ParseIntPipe) complaintId: number,
-    @Body() dto: RefundDecisionDto,
-  ) {
-    return this.service.refundDecision(
       userId,
       role,
       complaintId,

@@ -1,5 +1,6 @@
 import { Scenario, SelfScenario } from '../access-matrix';
 import { Household, World, mark } from '../world';
+import { hiddenOnJob } from './jobs';
 
 const address = (h: Household, w: World) => w.ids[h].address;
 const job = (h: Household, w: World) => w.ids[h].intervention;
@@ -33,9 +34,11 @@ export const clientScenarios: Scenario[] = [
   },
   {
     route: 'GET /client/interventions/:',
+    note: 'a customer reads their own job (the control scenario of the runners: no set-up, one kind of reader)',
     allowed: ['client'],
     reads: true,
     request: (h, w) => ({ params: { id: job(h, w) } }),
+    hidden: hiddenOnJob,
   },
   {
     route: 'GET /client/interventions/:/tracking',

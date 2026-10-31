@@ -21,11 +21,6 @@ export class SendMessageDto {
   attachments?: string[];
 }
 
-export class CreateAdminInternalNoteDto {
-  @IsString()
-  content: string;
-}
-
 export class MessageQueryDto {
   @IsOptional()
   @IsEnum(MessageAudience)

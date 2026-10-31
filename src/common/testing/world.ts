@@ -37,8 +37,6 @@ import { MatchingService } from '../../modules/matching/matching.service';
 import { MessagesController } from '../../modules/messages/messages.controller';
 import { MessagesService } from '../../modules/messages/messages.service';
 import { MissionActionsService } from '../../modules/mission-actions/mission-actions.service';
-import { NotificationPreferencesController } from '../../modules/notification-preferences/notification-preferences.controller';
-import { NotificationPreferencesService } from '../../modules/notification-preferences/notification-preferences.service';
 import { NotificationsController } from '../../modules/notifications/notifications.controller';
 import { NotificationsService } from '../../modules/notifications/notifications.service';
 import { PaymentsController } from '../../modules/payments/payments.controller';
@@ -90,7 +88,7 @@ export interface Person {
   role: string;
   household: Household | null;
   /** What the JWT strategy hands the controllers. */
-  user: { id: number; userId: number; email: string; name: string | null; role: string };
+  user: { id: number; email: string; name: string | null; role: string };
 }
 
 /** Everything that exists in one household, by its id. */
@@ -198,7 +196,7 @@ export class World {
     svc.contactChange = new ContactChangeService(prisma, svc.told, svc.rateLimit);
     svc.users = new UsersService(prisma, svc.told, svc.contactChange);
     svc.proofs = new ProofsService(prisma, svc.files, svc.events, svc.told);
-    svc.interventions = new InterventionsService(prisma, svc.gateway, svc.told, svc.staffAlerts, svc.assignment, svc.missionActions, svc.proofs);
+    svc.interventions = new InterventionsService(prisma, svc.gateway, svc.told, svc.staffAlerts, svc.proofs);
     svc.clientInterventions = new ClientInterventionsService(prisma, svc.events, svc.staffAlerts);
     svc.clientAddresses = new ClientAddressesService(prisma);
     svc.quotes = new QuotesService(prisma, svc.events, svc.told);
@@ -213,7 +211,6 @@ export class World {
     svc.business = new BusinessService(prisma);
     svc.cashLedger = new CashLedgerService(prisma, svc.events);
     svc.finance = new FinanceService(prisma);
-    svc.preferences = new NotificationPreferencesService(prisma);
     svc.matching = new MatchingService(prisma, svc.assignment);
     svc.admin = new AdminService(prisma, svc.told, svc.events, svc.contactChange, svc.assignment, svc.realtime);
     svc.catalog = new ServiceCatalogService(prisma);
@@ -237,7 +234,6 @@ export class World {
         ['invoices/invoices', new InvoicesController(svc.invoices)],
         ['matching/matching', new MatchingController(svc.matching)],
         ['messages/messages', new MessagesController(svc.messages)],
-        ['notification-preferences/notification-preferences', new NotificationPreferencesController(svc.preferences)],
         ['notifications/notifications', new NotificationsController(svc.notifications)],
         ['payments/payments', new PaymentsController(svc.payments)],
         ['proofs/proofs', new ProofsController(svc.proofs)],
@@ -281,7 +277,7 @@ export class World {
       id: row.id,
       role: row.role,
       household,
-      user: { id: row.id, userId: row.id, email: row.email, name: row.name ?? null, role: row.role },
+      user: { id: row.id, email: row.email, name: row.name ?? null, role: row.role },
     };
 
     this.people[key] = person;

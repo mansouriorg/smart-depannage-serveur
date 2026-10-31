@@ -80,23 +80,6 @@ export const messageScenarios: Scenario[] = [
       request: (h, w) => ({ params: { messageId: w.ids[h][chat.id] } }),
     }),
   ),
-  {
-    route: 'POST /messages/admin-notes/interventions/:',
-    note: 'internal notes belong to the back office',
-    allowed: ['backOffice'],
-    request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { content: 'À vérifier' } }),
-  },
-  {
-    route: 'GET /messages/admin-notes/interventions/:',
-    allowed: ['backOffice'],
-    reads: true,
-    request: (h, w) => ({ params: { interventionId: job(h, w) } }),
-  },
-  {
-    route: 'DELETE /messages/admin-notes/:',
-    allowed: ['backOffice'],
-    request: (h, w) => ({ params: { noteId: w.ids[h].adminNote } }),
-  },
 ];
 
 export const messageSelfScenarios: SelfScenario[] = [

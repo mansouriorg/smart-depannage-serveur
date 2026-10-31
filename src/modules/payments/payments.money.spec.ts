@@ -1216,6 +1216,9 @@ describe('paid counts and revenue follow the payments (P2-03)', () => {
   });
 });
 
+// Six tests of this block went with the two routes they tried (PATCH /complaints/admin/:id/decision and /refund, deleted in P3-03): "a refund asked for
+// again after a decision", "a decision that loses to a refund made in between" and "putting a refund back to pending". The refund decision of the back
+// office is AdminService.decideRefund (PATCH /admin/complaints/:id/refund), which the rest of this block still tries.
 describe('what a person decided on a complaint stays, and the refund is read from the whole job (P2-03, after the review)', () => {
   beforeEach(() => resetLocale());
 
@@ -1353,46 +1356,6 @@ describe('what a person decided on a complaint stays, and the refund is read fro
     expect(payment(d.world, id).status).toBe('PARTIALLY_REFUNDED');
   });
 
-  it('a refund refused and then asked for again starts from nothing: the refund that follows settles it', async () => {
-    const d = desk({ invoice: 120 });
-    const id = await pay(d, 120);
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-
-    await d.world.svc.admin.decideRefund(d.admin.id, asked.id, { approved: false } as any);
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).refundApproved]).toEqual(['REJECTED', false]);
-
-    await d.world.svc.complaints.adminDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'FULL_REFUND' } as any);
-
-    const again = complaintRow(d, asked.id);
-
-    expect([again.refundDecision, again.refundApproved, again.refundDecidedById ?? null, again.refundDecidedAt ?? null, again.status]).toEqual(['PENDING', false, null, null, 'IN_REVIEW']);
-
-    await d.world.svc.payments.refund(id, d.admin.id, { amount: 120 });
-
-    const settled = complaintRow(d, asked.id);
-
-    expect([settled.refundDecision, settled.refundApproved, num(settled.refundAmount), settled.status, settled.refundDecidedById]).toEqual(['REFUNDED', true, 120, 'REFUNDED', d.admin.id]);
-  });
-
-  it('a refund approved and then asked for again is no longer approved for the old amount', async () => {
-    const d = desk({ invoice: 120 });
-    const id = await pay(d, 120);
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-
-    await d.world.svc.admin.decideRefund(d.admin.id, asked.id, { approved: true, amount: 100 } as any);
-    await d.world.svc.complaints.adminDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'PARTIAL_REFUND' } as any);
-
-    // the answer given to the first request is void: no approval, no amount, nobody who decided
-    const again = complaintRow(d, asked.id);
-
-    expect([again.refundDecision, again.refundApproved, again.refundAmount ?? null, again.refundDecidedById ?? null, again.refundDecidedAt ?? null]).toEqual(['PENDING', false, null, null, null]);
-
-    await d.world.svc.payments.refund(id, d.admin.id, { amount: 30 });
-
-    // nobody approved an amount for the new request: what went back is the answer
-    expect([complaintRow(d, asked.id).refundDecision, num(complaintRow(d, asked.id).refundAmount)]).toEqual(['PARTIAL_REFUND', 30]);
-  });
-
   it('a refund that was made settles the complaint for good: the back office cannot refuse or approve another amount afterwards', async () => {
     const d = desk({ invoice: 120 });
     const id = await pay(d, 120);
@@ -1516,54 +1479,6 @@ describe('what a person decided on a complaint stays, and the refund is read fro
     expect([complaintRow(d, big.id).refundDecision, num(complaintRow(d, big.id).refundAmount)]).toEqual(['PARTIAL_REFUND', 100]);
   });
 
-  it('a refund that was made is not asked for again from the decision of the complaint; a decision that asks for none leaves what the complaint says about the refund', async () => {
-    const d = desk({ invoice: 120 });
-    const id = await pay(d, 120);
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-
-    await d.world.svc.payments.refund(id, d.admin.id, { amount: 120 });
-
-    const again = await refusal(() => d.world.svc.complaints.adminDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'FULL_REFUND' } as any));
-
-    expect(again).toEqual({ status: 409, message: 'Le remboursement de cette réclamation est déjà effectué.' });
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).refundApproved, num(complaintRow(d, asked.id).refundAmount), complaintRow(d, asked.id).status]).toEqual(['REFUNDED', true, 120, 'REFUNDED']);
-
-    await d.world.svc.complaints.adminDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'CLIENT_FAVOR', note: 'Le client avait raison' } as any);
-
-    const closed = complaintRow(d, asked.id);
-
-    expect([closed.adminDecision, closed.refundDecision, closed.refundApproved, num(closed.refundAmount), closed.refundDecidedById, closed.status]).toEqual(['CLIENT_FAVOR', 'REFUNDED', true, 120, d.admin.id, 'RESOLVED']);
-  });
-
-  it('a decision of the complaint that loses to a refund made in between is turned away and writes nothing', async () => {
-    const d = desk({ invoice: 120 });
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-    const service = d.world.svc.complaints as any;
-    const real = service.prisma;
-
-    // the refund settles the complaint after the decision was read, before it is written
-    service.prisma = new Proxy(real, {
-      get: (target, key) =>
-        key === 'complaint'
-          ? {
-              findUnique: (args: any) => target.complaint.findUnique(args),
-              updateMany: async (args: any) => {
-                complaintRow(d, asked.id).refundDecision = 'REFUNDED';
-                complaintRow(d, asked.id).refundApproved = true;
-
-                return target.complaint.updateMany(args);
-              },
-            }
-          : Reflect.get(target, key),
-    });
-
-    const late = await refusal(() => service.adminDecision(d.admin.id, 'ADMIN', asked.id, { decision: 'NO_REFUND' }));
-
-    service.prisma = real;
-    expect(late).toEqual({ status: 409, message: 'Le remboursement de cette réclamation est déjà effectué.' });
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).adminDecision ?? null, complaintRow(d, asked.id).status]).toEqual(['REFUNDED', null, 'OPEN']);
-  });
-
   it('a refund decision that loses to a decision written without the lock of the job is turned away and writes nothing', async () => {
     const d = desk({ invoice: 120 });
     const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
@@ -1604,32 +1519,6 @@ describe('what a person decided on a complaint stays, and the refund is read fro
     expect(events(d).filter((row) => row.title === 'Décision remboursement').length).toBe(0);
   });
 
-  it('a decision with no refund after a refund was approved voids the approval: nothing is approved, nothing is shown to the customer', async () => {
-    const d = desk({ invoice: 120 });
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-
-    await d.world.svc.admin.decideRefund(d.admin.id, asked.id, { approved: true, amount: 80 } as any);
-    await d.world.svc.complaints.adminDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'NO_REFUND' } as any);
-
-    const row = complaintRow(d, asked.id);
-
-    expect([row.refundRequested, row.refundDecision, row.refundApproved, row.refundAmount ?? null, row.refundDecidedById ?? null, row.refundDecidedAt ?? null, row.status]).toEqual([false, 'NOT_REQUESTED', false, null, null, null, 'RESOLVED']);
-  });
-
-  it('putting a refund back to pending decides nothing: no person and no date, so the refund that follows settles it', async () => {
-    const d = desk({ invoice: 120 });
-    const id = await pay(d, 120);
-    const asked = plantComplaint(d, { refundDecision: 'PENDING', refundRequested: true });
-
-    await d.world.svc.complaints.refundDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'REJECTED' } as any);
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).refundDecidedById, complaintRow(d, asked.id).refundDecidedAt instanceof Date]).toEqual(['REJECTED', d.admin.id, true]);
-
-    await d.world.svc.complaints.refundDecision(d.admin.id, 'ADMIN' as any, asked.id, { decision: 'PENDING' } as any);
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).refundApproved, complaintRow(d, asked.id).refundDecidedById ?? null, complaintRow(d, asked.id).refundDecidedAt ?? null]).toEqual(['PENDING', false, null, null]);
-
-    await d.world.svc.payments.refund(id, d.admin.id, { amount: 120 });
-    expect([complaintRow(d, asked.id).refundDecision, complaintRow(d, asked.id).status]).toEqual(['REFUNDED', 'REFUNDED']);
-  });
 });
 
 describe('asking again carries what is new, and a payment cannot go over what is left to pay (P2-03, after the review)', () => {

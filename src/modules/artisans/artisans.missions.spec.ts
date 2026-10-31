@@ -1,4 +1,5 @@
 import { matchesWhere } from '../../common/testing/fake-tables';
+import { CANONICAL_STATUSES, withAliases } from '../intervention-workflow/intervention-status';
 import { ArtisansService } from './artisans.service';
 
 /**
@@ -87,6 +88,24 @@ describe('the board of missions', () => {
 
     expect(open.where.missionRejections).toEqual({ none: { artisanProfileId: 7 } });
     expect(open.where.serviceType).toEqual({ in: ['PLOMBIER'] }); // the other conditions stay
+  });
+
+  // The jobs offered are the ones nobody has taken and that are ready to be taken. (The older `GET /interventions`, which also listed open
+  // jobs to an artisan, was deleted in P3-03; its specs went with it and this board is the list now.)
+  it('offers only the jobs that nobody has taken and that are ready: created, waiting for the review, quote accepted', async () => {
+    const w = makeService();
+
+    await w.service.getMissionBoard(4);
+
+    const open = w.queries.find((q) => q.where.artisanId === null);
+    const offered = new Set<string>(open.where.status.in);
+    const ready = ['CREATED', 'WAITING_ADMIN_REVIEW', 'QUOTE_ACCEPTED'];
+
+    for (const status of ready) expect([status, withAliases([status]).every((spelling) => offered.has(spelling))]).toEqual([status, true]);
+
+    for (const status of CANONICAL_STATUSES.filter((status) => !ready.includes(status))) {
+      expect([status, withAliases([status]).filter((spelling) => offered.has(spelling))]).toEqual([status, []]);
+    }
   });
 
   // P1-10: the words of the profile used to be handed to the database as service types, so a profile

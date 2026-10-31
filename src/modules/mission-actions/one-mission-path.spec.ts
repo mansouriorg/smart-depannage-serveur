@@ -264,17 +264,16 @@ describe('the artisan\'s mission actions are made in one place (P1-06)', () => {
     expect(/missionRejections/.test(stripComments(readSource('modules/assignment/assignment.service.ts')))).toBe(false);
   });
 
-  it('the routes an artisan used before hand the steps to the mission service', () => {
+  it('the route an artisan used before hands the step to the mission service, and the update that did the other steps is gone (P3-03)', () => {
     const scheduling = stripComments(readSource('modules/scheduling/scheduling.service.ts'));
     const interventions = stripComments(readSource('modules/interventions/interventions.service.ts'));
 
     expect(/this\.missionActions\.accept\(/.test(bodyOf(scheduling, 'async acceptScheduledMission'))).toBe(true);
 
-    const updateAsArtisan = bodyOf(interventions, 'async updateAsArtisan');
-
-    expect(/this\.missionActions\.onTheWay\(/.test(updateAsArtisan)).toBe(true);
-    expect(/this\.missionActions\.arrived\(/.test(updateAsArtisan)).toBe(true);
-    expect(/withoutStaffFields\(/.test(updateAsArtisan)).toBe(true);
+    // PATCH /interventions/:id (the artisan's "on the way" and "arrived") was deleted: the phone app uses /artisans/me/missions/... now,
+    // and the interventions service neither holds the mission service nor writes a step of the road to the job.
+    expect(/\bupdateAsArtisan\b/.test(interventions)).toBe(false);
+    expect(/\bmissionActions\b|\bMissionActionsService\b/.test(interventions)).toBe(false);
   });
 
   it('only the mission service (an artisan) and the staff workflow write the dates of the road to the job', () => {

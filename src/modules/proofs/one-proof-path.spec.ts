@@ -67,8 +67,9 @@ describe('the proof columns of an intervention have one writer (P1-07)', () => {
     expect(lines.every((line) => /^\s*if \(!intervention\.afterPhotoUrl\) \{\s*$/.test(line))).toBe(true);
   });
 
-  it('the update DTO of a job no longer accepts them', () => {
-    expect(COLUMN.test(code('modules/interventions/dto/update-intervention.dto.ts'))).toBe(false);
+  it('no form of the interventions module accepts them: the update DTO that once did was deleted (P3-03), the create form never did', () => {
+    expect(listSourceFiles()).not.toContain('modules/interventions/dto/update-intervention.dto.ts');
+    expect(COLUMN.test(code('modules/interventions/dto/create-intervention.dto.ts'))).toBe(false);
   });
 
   it('nothing but the proof service stores a proof photo or its row', () => {

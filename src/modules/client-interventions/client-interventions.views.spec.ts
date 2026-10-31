@@ -117,27 +117,6 @@ describe('what the customer\'s routes answer (P1-08)', () => {
     await expect(w.service.findOneMine(99, 1)).rejects.toBeDefined();
   });
 
-  it('the page of the link: the visitor\'s copy, with no account and no id of anybody', async () => {
-    const w = makeWorld();
-    const answer: any = await w.service.publicTracking(1, 'raw-token');
-
-    expect(leakedTo(answer, 'tracking')).toEqual([]);
-    expect(answer).not.toHaveProperty('client');
-    expect(answer).not.toHaveProperty('clientId');
-    expect(answer).not.toHaveProperty('artisanId');
-    expect(answer).not.toHaveProperty('trackingToken');
-    expect(answer).not.toHaveProperty('messages');
-    expect(answer.artisan).toEqual({ name: 'Ali', phone: '+21621111111' });
-  });
-
-  it('the page of the link shows the artisan\'s position while they are on the way, not before', async () => {
-    const onTheWay: any = await makeWorld({ status: 'ARTISAN_ON_THE_WAY' }).service.publicTracking(1, 't');
-    const working: any = await makeWorld({ status: 'IN_PROGRESS' }).service.publicTracking(1, 't');
-
-    expect(onTheWay.artisan.latitude).toBe(36.81);
-    expect(working.artisan).toEqual({ name: 'Ali', phone: '+21621111111' });
-  });
-
   it('cancelling: the customer\'s copy', async () => {
     const w = makeWorld();
     const answer: any = await w.service.cancel(10, 1);

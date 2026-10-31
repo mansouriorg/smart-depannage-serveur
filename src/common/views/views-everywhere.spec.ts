@@ -95,7 +95,7 @@ describe('the routes of the customer and of the visitor with the link answer wit
   it('ClientInterventionsService', () => {
     const source = code('modules/client-interventions/client-interventions.service.ts');
 
-    for (const name of ['create', 'findMine', 'findOneMine', 'publicTracking', 'cancel']) {
+    for (const name of ['create', 'findMine', 'findOneMine', 'cancel']) {
       const returns = returnsOf(methodOf(source, name));
 
       expect(returns.length).toBeGreaterThan(0);
@@ -122,23 +122,18 @@ describe('the routes of the customer and of the visitor with the link answer wit
     expect(methodOf(source, 'findForLink')).toContain('return intervention;');
   });
 
-  it('InterventionsService: the routes of a customer, a visitor with the link and an artisan', () => {
+  it('InterventionsService: the list of the artisan\'s missions', () => {
     const source = code('modules/interventions/interventions.service.ts');
+    const returns = returnsOf(methodOf(source, 'findByArtisan'));
 
-    for (const name of ['findByUser', 'findAllPending', 'findByArtisan', 'findByTrackingToken', 'submitFeedback', 'reportActiveIssue']) {
-      const returns = returnsOf(methodOf(source, name));
+    expect(returns.length).toBeGreaterThan(0);
+    expect(returns.filter((statement) => !VIEW.test(statement))).toEqual([]);
 
-      expect(returns.length).toBeGreaterThan(0);
-      expect(returns.filter((statement) => !VIEW.test(statement))).toEqual([]);
+    // The finders that gave the row to staff, the customer and the visitor (findOneForActor, findByUser, findByTrackingToken...) were deleted
+    // in P3-03: no method of this service may bring them back without a view.
+    for (const name of ['findOneForActor', 'findByUser', 'findAllPending', 'findByTrackingToken', 'submitFeedback', 'reportActiveIssue', 'findOne', 'findAll', 'update', 'updateAsArtisan']) {
+      expect(source).not.toMatch(new RegExp(`\\basync ${name}\\(`));
     }
-
-    // the one route for every role: staff read the row, the three others each have a view
-    const actor = methodOf(source, 'findOneForActor');
-    const returns = returnsOf(actor);
-
-    expect(returns.filter((statement) => !VIEW.test(statement))).toEqual(['return intervention']);
-    expect(actor.indexOf('return intervention;')).toBeLessThan(actor.indexOf('Role.CLIENT'));
-    expect(actor).toMatch(/isTicketStaff\(actor\.role\)\) \{\s*return intervention;/);
   });
 
   it('MessagesService: every message that leaves goes through forReader', () => {
@@ -156,7 +151,7 @@ describe('the routes of the customer and of the visitor with the link answer wit
     const source = code('modules/intervention-workflow/intervention-workflow.service.ts');
 
     expect(methodOf(source, 'getTimeline')).toMatch(/isAdminRole\(user\.role\)[\s\S]*eventsForParties\(events\)/);
-    expect(methodOf(source, 'getPublicTimeline')).toContain('timeline: eventsForParties(events)');
+    expect(source).not.toMatch(/\bgetPublicTimeline\b/);
   });
 
   it('the conversation is asked of the database for the reader\'s chats, and no deleted message', () => {

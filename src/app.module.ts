@@ -33,7 +33,6 @@ import { InterventionsModule } from './modules/interventions/interventions.modul
 // ==========================================================
 
 import { ClientAddressesModule } from './modules/client-addresses/client-addresses.module';
-import { NotificationPreferencesModule } from './modules/notification-preferences/notification-preferences.module';
 import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
 import { ServiceZonesModule } from './modules/service-zones/service-zones.module';
 import { InterventionEventsModule } from './modules/intervention-events/intervention-events.module';
@@ -137,7 +136,6 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     // ======================================================
 
     ClientAddressesModule,
-    NotificationPreferencesModule,
     ServiceCatalogModule,
     ServiceZonesModule,
     InterventionEventsModule,

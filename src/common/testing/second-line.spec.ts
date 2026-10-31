@@ -80,7 +80,7 @@ describe('the second line is really tried (controls)', () => {
   });
 
   it('with the door open, a scenario that names too few people is caught', async () => {
-    const shared = TRIED.find(({ scenario }) => scenario.route === 'GET /interventions/:' && !scenario.prepare)!.scenario;
+    const shared = TRIED.find(({ scenario }) => scenario.route === 'GET /client/interventions/:' && !scenario.prepare)!.scenario;
     const problems = await runScenario({ ...shared, allowed: ['ticketStaff'] }, { doorOpen: true });
 
     expect(problems.join('\n')).toContain('clientA');

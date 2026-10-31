@@ -209,11 +209,10 @@ describe('which routes are checked (P1-16)', () => {
     expect(route).toContain("@RateLimit({ name: 'guest-create'");
   });
 
-  it('the older POST /interventions (no account): the same two guards', () => {
-    const route = decoratorsOf(legacy, '  @Post()\n');
-
-    expect(route).toContain('@UseGuards(RateLimitGuard, BotCheckGuard)');
-    expect(route).toContain("@RateLimit({ name: 'legacy-guest-create'");
+  it('the interventions controller takes no bot check: the public POST /interventions that did was deleted (P3-03), /guest/interventions is the one public form', () => {
+    expect(legacy).not.toContain('BotCheckGuard');
+    expect(legacy).not.toContain("@Post()\n");
+    expect(read('interventions/interventions.module.ts')).not.toContain('BotCheckModule');
   });
 
   it('the signed-in route has no bot check (a person with an account is known)', () => {
@@ -240,15 +239,7 @@ describe('which routes are checked (P1-16)', () => {
     expect(guest).toContain('  Header,\n');
   });
 
-  it('a staff update does not take the three fields (they are not columns of the job)', () => {
-    const update = read('interventions/dto/update-intervention.dto.ts');
-
-    expect(update).toContain("OmitType(CreateInterventionDto, ['botChallenge', 'botSolution', 'website'] as const)");
-    expect(update).toContain("import { OmitType, PartialType } from '@nestjs/mapped-types';");
-    expect(update).toContain('extends PartialType(');
-  });
-
-  it('the two request forms accept the three fields, and the older route does not store them', () => {
+  it('the two request forms accept the three fields, and the create of the dashboard (POST /interventions/secure) does not store them', () => {
     expect(read('guest/dto/create-guest-intervention.dto.ts')).toContain('export class CreateGuestInterventionDto extends BotCheckFields');
     expect(read('interventions/dto/create-intervention.dto.ts')).toContain('export class CreateInterventionDto extends BotCheckFields');
 

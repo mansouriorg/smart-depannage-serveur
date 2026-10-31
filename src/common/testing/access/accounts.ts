@@ -70,6 +70,4 @@ export const accountSelfScenarios: SelfScenario[] = [
   { route: 'GET /users/profile', reads: true, ...mine },
   { route: 'PATCH /users/profile', request: () => ({ body: { address: '3 avenue Habib Bourguiba' } }), ...mine },
   { route: 'PATCH /users/location', servedRoles: ['ARTISAN', 'BACK_OFFICE'], request: () => ({ body: { latitude: 36.8, longitude: 10.18 } }) },
-  { route: 'GET /notification-preferences/me', answer: ownPreferences },
-  { route: 'PATCH /notification-preferences/me', request: () => ({ body: { marketingUpdates: true } }) },
 ];

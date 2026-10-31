@@ -6,7 +6,7 @@ import { ServiceType } from '../../../../generated/prisma/client';
 import { TRADE_CODES } from '../../../common/trades/trades';
 import { BotCheckFields } from '../../../common/bot-check/bot-check.dto';
 
-// The three fields of BotCheckFields are read on POST /interventions (no account) and ignored on the secure route (P1-16).
+// The three fields of BotCheckFields were read on the public request route, deleted in P3-03; the secure route ignores them (P1-16).
 export class CreateInterventionDto extends BotCheckFields {
   // 1. Service Type: Must match the Enum in your Schema (PLOMBIER, etc.)
   @IsEnum(ServiceType, {
@@ -28,8 +28,6 @@ export class CreateInterventionDto extends BotCheckFields {
   address: string;
 
   // 4. Photos: Optional array of URLs uploaded by the client.
-  // Only used for a signed-in client: on the public route the service ignores it
-  // (a link typed by a visitor would be shown to staff as a photo).
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(6)
@@ -38,11 +36,11 @@ export class CreateInterventionDto extends BotCheckFields {
   photos?: string[];
 
   // ==========================================================
-  // 5. GUEST CONTACT INFO (Optional)
-  // These are used if the user is NOT logged in, allowing you 
-  // to dynamically create a Client record in your Service layer
+  // 5. CONTACT INFO (Optional)
+  // Accepted so that a form that sends them is not refused; the request is made for the signed-in account and the service
+  // does not store them (they served the public request route, deleted in P3-03).
   // ==========================================================
-  
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

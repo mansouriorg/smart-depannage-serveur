@@ -129,8 +129,8 @@ export function parseAssignmentRange(
  * The admin route, the matching, the scheduling and the general update of an
  * intervention each had their own copy, with their own checks: one looked at the
  * approval only, one at the availability only, the dropdown of the dashboard
- * (PATCH /interventions/:id) at nothing. Now they all call this, and a job is
- * given to an artisan only when:
+ * (PATCH /interventions/:id, deleted in P3-03) at nothing. Now they all call this,
+ * and a job is given to an artisan only when:
  *
  *  - the artisan exists, is active and APPROVED;
  *  - the job is in a status from which it may be assigned (the status table);
