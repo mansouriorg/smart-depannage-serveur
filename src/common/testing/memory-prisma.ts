@@ -16,7 +16,7 @@ import { Decimal, averageDecimals, compareDecimals, isDecimalInput, sumDecimals,
  * count, aggregate, groupBy (by, _count, _sum), create, createMany, update, updateMany, upsert, delete,
  * deleteMany, nested `connect` / `create` / `connectOrCreate` / `disconnect` / `createMany` / `set` /
  * `update` / `delete` on relations, DECIMAL columns (answered as `Decimal` objects, never as numbers: see `decimal-double.ts`), defaults (autoincrement, now, uuid, cuid, literals), `@updatedAt`,
- * unique constraints (`P2002`), not-found updates (`P2025`), `$transaction` with an undo journal and
+ * unique constraints (`P2002`), exclusion constraints a spec registers (`addExclusion`: SQLSTATE 23P01), not-found updates (`P2025`), `$transaction` with an undo journal and
  * `pg_advisory_xact_lock` as a real wait.
  * What it does not: raw SQL (other than that lock), full-text search, database-level cascades,
  * isolation levels (reads see what other open transactions wrote).
@@ -284,6 +284,9 @@ export class MemoryPrisma {
   /** Every call made on a delegate, in order: `"intervention.update"`. A spec may read it to see what a route did. */
   readonly calls: string[] = [];
   private clock: () => Date = () => new Date();
+  /** Exclusion constraints (PostgreSQL `EXCLUDE`): the schema cannot say them, so a spec registers the rule the database has. */
+  private readonly exclusions: Array<{ name: string; model: string; clash: (stored: Row, candidate: Row) => boolean }> = [];
+  private readonly faults: Array<{ model: string; operation: string; skip: number; error: Error }> = [];
 
   constructor(schemaText?: string) {
     const text = schemaText ?? fs.readFileSync(path.resolve(__dirname, '../../../prisma/schema.prisma'), 'utf8');
@@ -294,6 +297,41 @@ export class MemoryPrisma {
     this.enums = parsed.enums;
 
     for (const name of this.models.keys()) this.tables.set(name, []);
+  }
+
+  /**
+   * A constraint of the database that Prisma's schema cannot express: a write that makes `clash(stored, candidate)` true for a row
+   * of the model is refused, as PostgreSQL does (SQLSTATE 23P01, the constraint's name in the message), and a transaction that hit
+   * it is undone like any other that failed.
+   */
+  addExclusion(rule: { name: string; model: string; clash: (stored: Row, candidate: Row) => boolean }): void {
+    if (!this.models.has(rule.model)) throw new Error(`addExclusion: no model ${rule.model}`);
+
+    this.exclusions.push(rule);
+  }
+
+  /**
+   * A write that fails, once: the call of `operation` on `model` that comes after `skip` calls that go through throws `error`
+   * (for a spec about what a transaction leaves behind when its fourth write fails). A transaction that hit it is undone like any other.
+   */
+  failNext(model: string, operation: string, error: Error, skip = 0): void {
+    this.faults.push({ model: this.modelName(model), operation, skip, error });
+  }
+
+  private failIfAsked(model: string, operation: string): void {
+    const at = this.faults.findIndex((fault) => fault.model === model && fault.operation === operation);
+
+    if (at < 0) return;
+
+    if (this.faults[at].skip > 0) {
+      this.faults[at].skip -= 1;
+
+      return;
+    }
+
+    const [fault] = this.faults.splice(at, 1);
+
+    throw fault.error;
   }
 
   /** What `now()` and `@updatedAt` give: a spec that needs a fixed time sets it here. */
@@ -937,6 +975,18 @@ export class MemoryPrisma {
         throw prismaError('P2002', `Unique constraint failed on the fields: (${columns.map((column) => `\`${column}\``).join(',')})`, { target: columns });
       }
     }
+
+    for (const rule of this.exclusions) {
+      if (rule.model !== model) continue;
+
+      const clash = (this.tables.get(model) as Row[]).some((row) => row !== ignore && rule.clash(row, candidate));
+
+      if (clash) {
+        const message = `conflicting key value violates exclusion constraint "${rule.name}"`;
+
+        throw prismaError('P2010', `Raw query failed. Code: \`23P01\`. Message: \`${message}\``, { code: '23P01', message });
+      }
+    }
   }
 
   /** Stores a new row (after its scalar data and the keys of its parents are known). */
@@ -1172,7 +1222,10 @@ export class MemoryPrisma {
 
   private delegate(model: string, tx: any) {
     const self = this;
-    const note = (operation: string) => self.calls.push(`${lowerFirst(model)}.${operation}`);
+    const note = (operation: string) => {
+      self.calls.push(`${lowerFirst(model)}.${operation}`);
+      self.failIfAsked(model, operation);
+    };
     const single = (rows: Row[], args: any) => (rows[0] ? self.project(model, rows[0], args) : null);
     const needOne = (rows: Row[], args: any) => {
       if (!rows[0]) throw prismaError('P2025', 'No record was found for a query.');

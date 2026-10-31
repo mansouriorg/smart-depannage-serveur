@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -15,8 +16,10 @@ import {
   StatusActor,
   actorKindFor,
   allowedNextStatuses,
+  canonicalStatus,
 } from './intervention-status';
 import { transitionStatusDetailed } from './transition-status';
+import { CANCEL_BY_STATUS } from './cancel-by-status';
 import { eventsForParties } from '../../common/views/views';
 import { MoneyInput, formatMoney, money } from '../../common/money/money';
 
@@ -457,6 +460,17 @@ export class InterventionWorkflowService {
   ) {
     await this.checkAdminAccess(user);
 
+    // A status cannot cancel a job (P3-01): the cancellation asks for the reason the customer and the technician read, frees the
+    // technician's booked visit with its reminders, writes who cancelled, and tells the back office about money the job holds. Saying
+    // "cancelled" again of a job that is cancelled already is not a cancellation, and is let through.
+    if (canonicalStatus(dto.status) === 'CANCELLED') {
+      const stored = await this.prisma.intervention.findUnique({ where: { id: interventionId }, select: { status: true } });
+
+      if (stored && canonicalStatus(stored.status) !== 'CANCELLED') {
+        throw new BadRequestException(CANCEL_BY_STATUS);
+      }
+    }
+
     return this.transition(
       interventionId,
       dto.status,
@@ -538,9 +552,10 @@ export class InterventionWorkflowService {
     return {
       interventionId,
       status: intervention.status,
+      // The back office cancels with the cancellation, not with a status (P3-01): it is not offered here.
       allowedNextStatuses: allowedNextStatuses(intervention.status, kind, {
         hasArtisan: intervention.artisanId !== null && intervention.artisanId !== undefined,
-      }),
+      }).filter((status) => kind !== 'staff' || canonicalStatus(status) !== 'CANCELLED'),
     };
   }
 

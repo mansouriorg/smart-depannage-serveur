@@ -42,6 +42,10 @@ function makeWorld(job: Record<string, unknown> = {}) {
       },
     },
     clientAddress: { findUnique: async () => null },
+    // the customer's cancel writes the job and its visit together
+    $transaction: async (work: any) => work(prisma),
+    $executeRaw: async () => 0,
+    appointment: { findUnique: async () => null },
   };
   const events: any = { create: async () => undefined };
   const staffAlerts: any = { newRequest: async () => undefined };

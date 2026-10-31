@@ -93,6 +93,22 @@ export function amountToPay(document: Row): number {
   return sumMoney(amountOfDocument(document), document.stampDuty ?? 0);
 }
 
+/**
+ * What a cancelled job gives back (P3-01): the money it holds (the payments received, less what went back) less what a standing
+ * invoice still asks of the customer. One reading, used by the refunds-due list and by the line and the notice written when a job is
+ * cancelled, so that what the team is told and what the list shows are never two different sums. `invoices` come in the order of their
+ * numbers: the last live one is the standing one. An invoice in another currency cannot be set against the money of the company: then
+ * nothing is worked out (`comparable` is false) and the accountant reads that job by hand.
+ */
+export function moneyDueOnCancelledJob(payments: Row[], invoices: Row[]): { kept: number; owed: number; due: number; comparable: boolean; standing: Row | null } {
+  const { kept } = paymentFigures(payments);
+  const standing = invoices.filter(isLiveInvoice).pop() ?? null;
+  const owed = standing ? amountToPay(standing) : 0;
+  const comparable = !(standing?.currency && String(standing.currency) !== currencyCode());
+
+  return { kept, owed, comparable, standing, due: comparable ? Math.max(subtractMoney(kept, owed), 0) : 0 };
+}
+
 /** What the back office can still decide for itself on the financials of a job. */
 export interface FinancialsOverrides {
   commissionRate?: number;

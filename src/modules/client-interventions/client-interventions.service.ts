@@ -16,6 +16,8 @@ import { checkRequestedService } from '../service-catalog/catalog-check';
 import { chatsOf, interventionForClient, interventionForTracking } from '../../common/views/views';
 import { INVOICES_OF_JOB, INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
+import { cancelVisit } from '../assignment/appointment-release';
+import { lockJob } from '../assignment/artisan-lock';
 import {
   InterventionEventType,
   Status,
@@ -286,14 +288,7 @@ export class ClientInterventionsService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    // Only a job that has not started can be cancelled by the customer
-    // (the table in intervention-status.ts says which statuses those are).
-    const { row, changed } = await transitionStatusDetailed(this.prisma, {
-      id,
-      to: Status.CANCELLED,
-      actor: { kind: 'client', userId: clientId },
-      dataOnChange: { cancelledAt: new Date() },
-    });
+    const { row, changed } = await this.cancelJobAndVisit(clientId, id);
 
     if (changed) {
       await this.events.create({
@@ -306,5 +301,29 @@ export class ClientInterventionsService {
     }
 
     return interventionForClient(row);
+  }
+
+  /**
+   * Only a job that has not started can be cancelled by the customer (the table in intervention-status.ts says which statuses those
+   * are). The job and its visit are cancelled together (P3-01): a visit left standing on a cancelled job kept the artisan's hour taken,
+   * and its reminders waited for the job check alone. The lock of the job comes first: a request about the visit, an answer to one or a
+   * reminder that is being decided waits for this cancellation, and sees the job cancelled when it goes on.
+   */
+  private cancelJobAndVisit(clientId: number, id: number) {
+    return this.prisma.$transaction(async (tx) => {
+      await lockJob(tx, id);
+
+      const result = await transitionStatusDetailed(tx, {
+        id,
+        to: Status.CANCELLED,
+        actor: { kind: 'client', userId: clientId },
+        dataOnChange: { cancelledAt: new Date() },
+      });
+
+      // Also when the job was cancelled already (an earlier cancel that left the visit standing): the visit is freed on the next try.
+      await cancelVisit(tx as any, id, 'La demande a été annulée par le client.');
+
+      return result;
+    });
   }
 }

@@ -230,4 +230,42 @@ describe('InterventionsService.update without an artisan is what it was', () => 
 
     expect(w.sms).toEqual([]);
   });
+
+  it('a cancellation is not made here: it has its own route that frees the visit and tells the back office about the money (P3-01)', async () => {
+    for (const status of ['ASSIGNED', 'ARTISAN_ACCEPTED', 'ARTISAN_ON_THE_WAY', 'IN_PROGRESS', 'WAITING_ADMIN_REVIEW']) {
+      const w = makeWorld();
+      w.row.status = status;
+      w.row.artisanId = 41;
+
+      const error = await failure(w.service.update(8, { status: 'CANCELLED' } as any, staff));
+
+      expect(error instanceof BadRequestException).toBe(true);
+      expect(String(error.message)).toContain('annulation');
+      expect(w.row.status).toBe(status);
+      expect(w.writes).toEqual([]);
+      expect(w.sockets).toEqual([]);
+      expect(w.sms).toEqual([]);
+    }
+  });
+
+  it('a form that sends "cancelled" back with an edit of a job that is cancelled already is not a cancellation: the edit goes through', async () => {
+    const w = makeWorld();
+    w.row.status = 'CANCELLED';
+    w.row.artisanId = 41;
+
+    await w.service.update(8, { status: 'CANCELLED', description: 'Précision du client' } as any, staff);
+
+    expect(w.row.status).toBe('CANCELLED');
+    expect(w.row.description).toBe('Précision du client');
+  });
+
+  it('the other status changes of the dropdown still go through', async () => {
+    const w = makeWorld();
+    w.row.status = 'ASSIGNED';
+    w.row.artisanId = 41;
+
+    await w.service.update(8, { status: 'ARTISAN_ACCEPTED' } as any, staff);
+
+    expect(w.row.status).toBe('ARTISAN_ACCEPTED');
+  });
 });

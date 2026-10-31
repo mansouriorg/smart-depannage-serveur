@@ -618,6 +618,26 @@ describe('MemoryPrisma: for a spec', () => {
     expect(memory.calls).toEqual(['user.create', 'user.findMany', 'user.update']);
   });
 
+  it('failNext makes one call fail after the ones that were let through, once, and the transaction that met it is undone', async () => {
+    const { memory, db } = world();
+
+    memory.failNext('user', 'create', new Error('the disk is full'), 1);
+
+    const outcome = await failure(
+      db.$transaction(async (tx: any) => {
+        await tx.user.create({ data: { email: 'a@x.tn' } });
+        await tx.user.create({ data: { email: 'b@x.tn' } });
+      }),
+    );
+
+    expect(outcome.message).toBe('the disk is full');
+    expect(memory.rows('user')).toHaveLength(0);
+
+    await db.user.create({ data: { email: 'c@x.tn' } });
+
+    expect(memory.rows('user')).toHaveLength(1);
+  });
+
   it('$transaction([a, b]) waits for the operations that were started, and gives their results in order', async () => {
     const { memory, db } = world();
 

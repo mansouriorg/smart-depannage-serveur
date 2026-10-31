@@ -9,11 +9,12 @@ const CLIENT = 2;
 const ARTISAN = 4;
 const STRANGER = 9;
 
-function makeService() {
+function makeService(visit: { status?: string; jobStatus?: string; jobAfterTheCheck?: Record<string, any>; noVisit?: boolean } = {}) {
   const job: any = {
     id: 8,
     clientId: CLIENT,
     artisanId: ARTISAN,
+    status: visit.jobStatus ?? 'ASSIGNED',
     client: { id: CLIENT, name: 'Sami', email: 'sami@example.test', phone: '20 111 111', role: 'CLIENT' },
     artisan: { id: ARTISAN, name: 'Karim', email: 'karim@example.test', phone: '20 222 222', role: 'ARTISAN' },
   };
@@ -22,7 +23,8 @@ function makeService() {
     interventionId: 8,
     clientId: CLIENT,
     artisanId: ARTISAN,
-    status: 'SCHEDULED',
+    // A visit that nobody has planned yet: the customer's wish is all it holds (a planned visit is moved by a request, P3-01).
+    status: visit.status ?? 'REQUESTED',
     adminNote: 'NOTE-OF-THE-BACK-OFFICE',
     scheduledById: 77,
     reminders: [{ id: 1, error: 'REMINDER-ERROR' }],
@@ -31,9 +33,22 @@ function makeService() {
     artisan: job.artisan,
   };
   const writes: any[] = [];
+  const locks: any[] = [];
+  let jobReads = 0;
   const prisma: any = {
+    $transaction: async (work: any) => work(prisma),
+    $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      locks.push([strings.join('?'), ...values]);
+
+      return 1;
+    },
     intervention: {
-      findUnique: async () => ({ ...job }),
+      // The first look is the access check; the next ones are made under the lock. `jobAfterTheCheck` is what changed in between.
+      findUnique: async () => {
+        jobReads += 1;
+
+        return { ...job, ...(jobReads > 1 ? visit.jobAfterTheCheck ?? {} : {}) };
+      },
       update: async (args: any) => {
         writes.push(['intervention', args]);
 
@@ -41,7 +56,7 @@ function makeService() {
       },
     },
     appointment: {
-      findUnique: async () => ({ ...row }),
+      findUnique: async () => (visit.noVisit ? null : { ...row }),
       upsert: async (args: any) => {
         writes.push(['appointment', args]);
 
@@ -50,7 +65,7 @@ function makeService() {
     },
   };
 
-  return { service: new SchedulingService(prisma, {} as any, {} as any, {} as any), writes };
+  return { service: new SchedulingService(prisma, {} as any, {} as any, {} as any), writes, locks };
 }
 
 async function failure(promise: Promise<unknown>): Promise<any> {
@@ -99,6 +114,114 @@ describe('the time of a visit is the customer\'s to give (P1-17)', () => {
 
     expect(writes).toHaveLength(2);
     expect(visit.adminNote).toBe('NOTE-OF-THE-BACK-OFFICE');
+  });
+
+  it('the customer of the job is checked again under the lock: a job that changed hands since the first look is not written (P3-01)', async () => {
+    const { service, writes } = makeService({ jobAfterTheCheck: { clientId: STRANGER } });
+    const error = await failure(service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(403);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('the back office is not a customer: the same change does not stop it', async () => {
+    const { service, writes } = makeService({ jobAfterTheCheck: { clientId: STRANGER } });
+
+    await service.choosePreferredTime(1, 'DISPATCHER' as any, 8, TIME);
+
+    expect(writes).toHaveLength(2);
+  });
+
+  it('a visit made by the back office for the customer is the customer\'s, not the desk\'s (P3-01)', async () => {
+    const { service, writes } = makeService({ noVisit: true });
+
+    await service.choosePreferredTime(1, 'DISPATCHER' as any, 8, TIME);
+
+    const create = writes.find(([table]) => table === 'appointment')?.[1].create;
+
+    expect(create.clientId).toBe(CLIENT);
+    expect(create.artisanId).toBe(ARTISAN);
+    expect(create.status).toBe('REQUESTED');
+  });
+
+  it('a job that is gone under the lock is a 404, and nothing is written (P3-01)', async () => {
+    const { service, writes } = makeService();
+    const original = (service as any).prisma.intervention.findUnique;
+    let reads = 0;
+
+    (service as any).prisma.intervention.findUnique = async (args: any) => {
+      reads += 1;
+
+      return reads > 1 ? null : original(args);
+    };
+
+    const error = await failure(service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(404);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('is written under the lock of the job, the same lock every other write of the visit takes (P3-01)', async () => {
+    const { service, locks } = makeService();
+
+    await service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME);
+
+    expect(locks).toHaveLength(1);
+    expect(locks[0].slice(1)).toContain(8);
+  });
+});
+
+describe('a customer cannot free a planned visit by choosing a time (P3-01)', () => {
+  // "REQUESTED" does not hold the artisan's calendar: the visit used to be put there, and the hour was free for another booking.
+  it.each(['SCHEDULED', 'CONFIRMED', 'RESCHEDULE_REQUESTED', 'CANCEL_REQUESTED'])('a visit that is %s: 409, nothing is written', async (status) => {
+    const { service, writes } = makeService({ status });
+    const error = await failure(service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(409);
+    expect(String(error.message)).toContain('report');
+    expect(writes).toHaveLength(0);
+  });
+
+  it('the back office is held to the same: it moves a planned visit by planning it again, not by this route', async () => {
+    const { service, writes } = makeService({ status: 'CONFIRMED' });
+    const error = await failure(service.choosePreferredTime(1, 'DISPATCHER' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(409);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('a visit that took place is not reopened', async () => {
+    const { service, writes } = makeService({ status: 'COMPLETED' });
+    const error = await failure(service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(409);
+    expect(writes).toHaveLength(0);
+  });
+
+  it.each(['CANCELLED', 'NO_SHOW', 'REQUESTED'])('a visit that is %s can be asked for again: it goes back to "requested"', async (status) => {
+    const { service, writes } = makeService({ status });
+    const visit = await service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME);
+
+    expect(visit.status).toBe('REQUESTED');
+    expect(writes).toHaveLength(2);
+  });
+
+  it.each(['CANCELLED', 'NO_SHOW'])('a visit that is %s and asked for again loses its old hour, its confirmation and the reason it ended (P3-01)', async (status) => {
+    const { service, writes } = makeService({ status });
+
+    await service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME);
+
+    const update = writes.find(([table]) => table === 'appointment')?.[1].update;
+
+    expect(update).toMatchObject({ status: 'REQUESTED', startsAt: null, endsAt: null, confirmedAt: null, cancelledAt: null, cancelReason: null });
+  });
+
+  it.each(['COMPLETED', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT', 'CANCELLED', 'DISPUTED'])('a job that is %s has no time to choose: 409, nothing is written', async (jobStatus) => {
+    const { service, writes } = makeService({ jobStatus });
+    const error = await failure(service.choosePreferredTime(CLIENT, 'CLIENT' as any, 8, TIME));
+
+    expect(error.getStatus()).toBe(409);
+    expect(writes).toHaveLength(0);
   });
 });
 

@@ -239,6 +239,17 @@ describe('approving a request to move an appointment (same rule, reminders made 
     /** The artisan the job has now (default: the one the appointment is in the name of). */
     jobArtisanId?: number | null;
     appointmentStatus?: string;
+    /** The other requests of the appointment that still wait (P3-01), as the lock-held read finds them. */
+    waiting?: any[];
+    /** The payments of the job (P3-01): what it holds when it is cancelled. */
+    payments?: any[];
+    /** The invoices of the job: what still stands against the money it holds when it is cancelled. */
+    invoices?: any[];
+    /** What the visit shows when the request was made: what a refusal puts back (P3-01). */
+    previousStatus?: string | null;
+    confirmedAt?: Date | null;
+    /** The notice to the people who handle money fails (it must not undo the cancellation). */
+    noticeFails?: boolean;
   };
 
   function makeReview(options: ReviewOptions = {}) {
@@ -250,6 +261,8 @@ describe('approving a request to move an appointment (same rule, reminders made 
     const approvals: any[] = [];
     const rejections: any[] = [];
     const siblings: any[] = [];
+    const statusWrites: any[] = []; // writes of the visit's status alone (a refusal puts it back, an approved move leaves it planned)
+    const timeline: any[] = []; // the lines written in the job's timeline
     const events: string[] = []; // the order of what happened, with where it happened
     const request: any = {
       id: 5,
@@ -259,7 +272,15 @@ describe('approving a request to move an appointment (same rule, reminders made 
       appointmentId: 12,
       requestedStartAt: new Date('2099-10-19T08:00:00.000Z'),
       requestedEndAt: new Date('2099-10-19T09:00:00.000Z'),
-      appointment: { id: 12, interventionId: 8, artisanId: 4, clientId: 2, status: options.appointmentStatus ?? 'SCHEDULED' },
+      previousStatus: options.previousStatus === undefined ? 'SCHEDULED' : options.previousStatus,
+      appointment: {
+        id: 12,
+        interventionId: 8,
+        artisanId: 4,
+        clientId: 2,
+        status: options.appointmentStatus ?? 'SCHEDULED',
+        confirmedAt: options.confirmedAt ?? null,
+      },
     };
 
     const locks: any[] = [];
@@ -288,6 +309,12 @@ describe('approving a request to move an appointment (same rule, reminders made 
             events.push(`${where}:cancel-appointment`);
             cancels.push(data);
             return { id: 12 };
+          }
+
+          if (data.startsAt === undefined && data.endsAt === undefined) {
+            events.push(`${where}:visit-status`);
+            statusWrites.push(data);
+            return { id: 12, ...data };
           }
 
           events.push(`${where}:move`);
@@ -321,6 +348,10 @@ describe('approving a request to move an appointment (same rule, reminders made 
             appointment: { ...request.appointment, ...(options.freshAppointment ?? {}) },
           };
         },
+        findMany: async () => {
+          events.push('tx:read-waiting');
+          return options.waiting ?? [];
+        },
         updateMany: async (args: any) => {
           events.push('tx:close-siblings');
           siblings.push(args);
@@ -353,6 +384,19 @@ describe('approving a request to move an appointment (same rule, reminders made 
           return { id: 8, ...data };
         },
       },
+      payment: {
+        findMany: async () => options.payments ?? [],
+      },
+      invoice: {
+        findMany: async () => options.invoices ?? [],
+      },
+      interventionEvent: {
+        create: async ({ data }: any) => {
+          events.push('tx:timeline');
+          timeline.push(data);
+          return { id: timeline.length, ...data };
+        },
+      },
     };
     const outsideAnswers: any[] = [];
     const prisma: any = {
@@ -368,8 +412,21 @@ describe('approving a request to move an appointment (same rule, reminders made 
       },
     };
 
+    const told: any[] = [];
+    const notifications: any = {
+      notifyRefundDueAfterCancellation: async (...args: any[]) => {
+        events.push('notice');
+        told.push(args);
+
+        if (options.noticeFails) throw new Error('the notice could not be sent');
+      },
+    };
+
     return {
-      service: new SchedulingService(prisma, {} as any, {} as any),
+      service: new SchedulingService(prisma, {} as any, notifications),
+      told,
+      statusWrites,
+      timeline,
       deleted,
       created,
       moves,
@@ -402,6 +459,34 @@ describe('approving a request to move an appointment (same rule, reminders made 
     expect(w.created[0].data.every((r: any) => r.appointmentId === 12)).toBe(true);
     expect(w.created[0].data.some((r: any) => r.recipientId === 4)).toBe(true);
     expect(w.created[0].data.some((r: any) => r.recipientId === 2)).toBe(true);
+  });
+
+  it('the visit is at its new time, planned and not confirmed: the artisan confirmed the old time, not this one', async () => {
+    const w = makeReview({ appointmentStatus: 'RESCHEDULE_REQUESTED', previousStatus: 'CONFIRMED', confirmedAt: new Date('2099-10-01T08:00:00Z') });
+
+    await review(w);
+
+    expect(w.moves[0].status).toBe('SCHEDULED');
+    expect(w.moves[0].confirmedAt).toBeNull();
+    // nothing else waits, so the visit shows nothing more: no second write of its status
+    expect(w.statusWrites).toEqual([]);
+  });
+
+  it('a request that still waits is told the visit is now scheduled (a refusal later must not give the new time a confirmation nobody gave)', async () => {
+    const w = makeReview({ appointmentStatus: 'RESCHEDULE_REQUESTED', previousStatus: 'CONFIRMED' });
+
+    await review(w);
+
+    expect(w.siblings).toEqual([{ where: { appointmentId: 12, status: 'PENDING', id: { not: 5 } }, data: { previousStatus: 'SCHEDULED' } }]);
+  });
+
+  it('a cancellation asked meanwhile is still shown on the visit after the move', async () => {
+    const w = makeReview({ appointmentStatus: 'CANCEL_REQUESTED', waiting: [{ id: 6, type: 'CANCEL', status: 'PENDING', previousStatus: 'CONFIRMED' }] });
+
+    await review(w);
+
+    expect(w.statusWrites).toEqual([{ status: 'CANCEL_REQUESTED' }]);
+    expect(w.events.indexOf('tx:visit-status') > w.events.indexOf('tx:move')).toBe(true);
   });
 
   it('refuses a new time outside the weekly hours of the artisan, like the matching and the assignment would', async () => {
@@ -653,6 +738,116 @@ describe('approving a request to move an appointment (same rule, reminders made 
       expect(w.cancels).toEqual([]);
       expect(w.approvals).toEqual([]);
     });
+
+    const PAID_90 = { id: 1, status: 'PAID', amount: '90.000', amountRefunded: '0', currency: 'TND' };
+
+    it('a job that holds money: the line for the back office is written in the same transaction, and the people who handle money are told only once it is written', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée', 'Remboursement à décider']);
+      expect(w.timeline[1].metadata).toEqual({ internal: true, refundDue: 90 });
+      expect(w.timeline[1].createdById).toBe(1);
+      expect(w.jobWrites[0].cancelledById).toBe(1);
+      expect(w.events.indexOf('tx:timeline') < w.events.indexOf('tx:answer-request')).toBe(true);
+      expect(w.told).toEqual([[8, 90, 1]]);
+      expect(w.events.indexOf('notice') > w.events.indexOf('tx:answer-request')).toBe(true);
+      expect(w.events[w.events.length - 1]).toBe('notice');
+    });
+
+    it('a notice that cannot be sent does not undo the cancellation', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90], noticeFails: true });
+
+      await review(w);
+
+      expect(w.told).toHaveLength(1);
+      expect(w.approvals).toHaveLength(1);
+      expect(w.cancels).toHaveLength(1);
+    });
+
+    it('a job that holds nothing: only the cancellation is written, and nobody is told', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée']);
+      expect(w.told).toEqual([]);
+      expect(w.events).not.toContain('notice');
+    });
+
+    it('a payment that went back in full holds nothing either', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [{ ...PAID_90, status: 'REFUNDED', amountRefunded: '90.000' }] });
+
+      await review(w);
+
+      expect(w.timeline).toHaveLength(1);
+      expect(w.told).toEqual([]);
+    });
+
+    it('a standing invoice that asks for all of it leaves nothing to give back: a line about the invoice, no notice', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90], invoices: [{ id: 3, status: 'ISSUED', invoiceNumber: 'F-2026-0007', amountTTC: '90.000', creditedAmount: '0', stampDuty: '0', currency: 'TND' }] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée', 'Facture à annuler ou à créditer']);
+      expect(w.timeline[1].message).toContain('F-2026-0007');
+      expect(w.timeline[1].metadata).toEqual({ internal: true, invoiceStanding: 'F-2026-0007' });
+      expect(w.told).toEqual([]);
+    });
+
+    it('an invoice that asks for less than was paid: what is left is what is told, less the invoice', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90], invoices: [{ id: 3, status: 'ISSUED', invoiceNumber: 'F-2026-0007', amountTTC: '30.000', creditedAmount: '0', stampDuty: '0', currency: 'TND' }] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée', 'Remboursement à décider']);
+      expect(w.timeline[1].metadata).toEqual({ internal: true, refundDue: 60 });
+      expect(w.told).toEqual([[8, 60, 1]]);
+    });
+
+    it('an invoice stands but nothing was paid: there is nothing to say about money', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [], invoices: [{ id: 3, status: 'ISSUED', invoiceNumber: 'F-2026-0007', amountTTC: '90.000', creditedAmount: '0', stampDuty: '0', currency: 'TND' }] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée']);
+      expect(w.told).toEqual([]);
+    });
+
+    it('an invoice that asks for more than was paid leaves nothing to give back: a line about the invoice, no notice', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90], invoices: [{ id: 3, status: 'ISSUED', invoiceNumber: 'F-2026-0007', amountTTC: '150.000', creditedAmount: '0', stampDuty: '0', currency: 'TND' }] });
+
+      await review(w);
+
+      expect(w.timeline.map((line) => line.title)).toEqual(['Annulation approuvée', 'Facture à annuler ou à créditer']);
+      expect(w.told).toEqual([]);
+    });
+
+    it('a cancelled invoice and a draft ask nothing of the customer', async () => {
+      const w = makeReview({
+        type: 'CANCEL',
+        payments: [PAID_90],
+        invoices: [
+          { id: 3, status: 'CANCELLED', invoiceNumber: 'F-1', amountTTC: '90.000', creditedAmount: '0', currency: 'TND' },
+          { id: 4, status: 'DRAFT', invoiceNumber: 'F-2', amountTTC: '90.000', creditedAmount: '0', currency: 'TND' },
+        ],
+      });
+
+      await review(w);
+
+      expect(w.told).toEqual([[8, 90, 1]]);
+    });
+
+    it('a refused cancellation writes no line and tells nobody, whatever the job holds', async () => {
+      const w = makeReview({ type: 'CANCEL', payments: [PAID_90], appointmentStatus: 'CANCEL_REQUESTED' });
+
+      await review(w, false);
+
+      expect(w.timeline).toEqual([]);
+      expect(w.told).toEqual([]);
+      expect(w.jobWrites).toEqual([]);
+    });
   });
 
   describe('refusing a request', () => {
@@ -676,6 +871,55 @@ describe('approving a request to move an appointment (same rule, reminders made 
 
       expect(error instanceof BadRequestException).toBe(true);
       expect(w.rejections).toEqual([]);
+    });
+
+    it('puts the visit back to what it was before the request, in the same transaction as the answer: a confirmed visit stays confirmed', async () => {
+      const w = makeReview({ appointmentStatus: 'RESCHEDULE_REQUESTED', previousStatus: 'CONFIRMED' });
+
+      await review(w, false);
+
+      expect(w.statusWrites).toEqual([{ status: 'CONFIRMED' }]);
+      expect(w.events.indexOf('tx:visit-status') > w.events.indexOf('tx:answer-request')).toBe(true);
+      expect(w.events.indexOf('outside:visit-status')).toBe(-1);
+    });
+
+    it('a visit that was only scheduled goes back to scheduled', async () => {
+      const w = makeReview({ appointmentStatus: 'CANCEL_REQUESTED', type: 'CANCEL', previousStatus: 'SCHEDULED' });
+
+      await review(w, false);
+
+      expect(w.statusWrites).toEqual([{ status: 'SCHEDULED' }]);
+    });
+
+    it('another request still waits: the visit shows that one, and goes back only when none waits', async () => {
+      const w = makeReview({
+        appointmentStatus: 'RESCHEDULE_REQUESTED',
+        previousStatus: 'CONFIRMED',
+        waiting: [{ id: 6, type: 'CANCEL', status: 'PENDING', previousStatus: 'CONFIRMED' }],
+      });
+
+      await review(w, false);
+
+      expect(w.statusWrites).toEqual([{ status: 'CANCEL_REQUESTED' }]);
+    });
+
+    it('a request made before the state was kept (nothing stored): a visit the artisan confirmed goes back to confirmed, the others to scheduled', async () => {
+      const confirmed = makeReview({ appointmentStatus: 'RESCHEDULE_REQUESTED', previousStatus: null, confirmedAt: new Date('2099-10-01T08:00:00Z') });
+      const plain = makeReview({ appointmentStatus: 'RESCHEDULE_REQUESTED', previousStatus: null, confirmedAt: null });
+
+      await review(confirmed, false);
+      await review(plain, false);
+
+      expect(confirmed.statusWrites).toEqual([{ status: 'CONFIRMED' }]);
+      expect(plain.statusWrites).toEqual([{ status: 'SCHEDULED' }]);
+    });
+
+    it('a visit that does not show a request any more is not written again', async () => {
+      const w = makeReview({ appointmentStatus: 'SCHEDULED' });
+
+      await review(w, false);
+
+      expect(w.statusWrites).toEqual([]);
     });
   });
 });

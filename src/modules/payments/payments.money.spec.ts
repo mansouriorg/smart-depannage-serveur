@@ -6,7 +6,7 @@ import { World, emptyWorld } from '../../common/testing/world';
 import { resetLocale } from '../../common/locale/locale';
 import { lockJob } from '../assignment/artisan-lock';
 import { describeOpenPayment, isPlaceholder } from './open-payment';
-import { settleComplaintRefund } from './financials-ops';
+import { moneyDueOnCancelledJob, settleComplaintRefund } from './financials-ops';
 import { PaymentsService } from './payments.service';
 
 /**
@@ -2322,5 +2322,52 @@ describe('asking again moves the job when it can, and confirming uses what is fo
     expect(events(d, 'PAYMENT_CONFIRMED')[0].message).toBe('Le paiement de 30,000 TND a été confirmé.');
     expect(events(d, 'PAYMENT_CONFIRMED')[0].metadata).toMatchObject({ amount: 30, reference: 'REF-NOUVELLE' });
     expect(num(financialsOf(d)[0].totalPrice)).toBe(30);
+  });
+});
+
+describe('what a cancelled job gives back (P3-01)', () => {
+  const paid = (amount: number, extra: Record<string, unknown> = {}) => ({ id: 1, status: 'PAID', amount, amountRefunded: 0, currency: 'TND', ...extra });
+  const invoice = (amountTTC: number, extra: Record<string, unknown> = {}) => ({ id: 1, status: 'ISSUED', invoiceNumber: 'F-1', amountTTC, creditedAmount: 0, stampDuty: 0, currency: 'TND', ...extra });
+
+  it('is what the job holds, less what a standing invoice still asks', () => {
+    expect(moneyDueOnCancelledJob([paid(90)], [])).toMatchObject({ kept: 90, owed: 0, due: 90, comparable: true, standing: null });
+    expect(moneyDueOnCancelledJob([paid(90)], [invoice(30)])).toMatchObject({ kept: 90, owed: 30, due: 60 });
+    expect(moneyDueOnCancelledJob([paid(90, { status: 'PARTIALLY_REFUNDED', amountRefunded: 20 })], [])).toMatchObject({ kept: 70, due: 70 });
+  });
+
+  it('is never below nothing: an invoice that asks for more than was paid leaves nothing to give back', () => {
+    expect(moneyDueOnCancelledJob([paid(50)], [invoice(90)]).due).toBe(0);
+    expect(moneyDueOnCancelledJob([], [invoice(90)])).toMatchObject({ kept: 0, due: 0 });
+  });
+
+  it('a payment that went back in full holds nothing', () => {
+    expect(moneyDueOnCancelledJob([paid(90, { status: 'REFUNDED', amountRefunded: 90 })], []).due).toBe(0);
+    expect(moneyDueOnCancelledJob([paid(90, { status: 'REFUNDED', amountRefunded: 0 })], []).due).toBe(0);
+  });
+
+  it('a payment that was never received holds nothing either', () => {
+    expect(moneyDueOnCancelledJob([paid(90, { status: 'PENDING' }), paid(40, { status: 'FAILED' })], []).kept).toBe(0);
+  });
+
+  it('the standing invoice is the last live one; a cancelled invoice and a draft ask nothing', () => {
+    const invoices = [invoice(10, { id: 1, invoiceNumber: 'F-1' }), invoice(25, { id: 2, invoiceNumber: 'F-2' }), invoice(80, { id: 3, invoiceNumber: 'F-3', status: 'CANCELLED' }), invoice(70, { id: 4, invoiceNumber: 'F-4', status: 'DRAFT' })];
+    const figures = moneyDueOnCancelledJob([paid(90)], invoices);
+
+    expect(figures.standing?.invoiceNumber).toBe('F-2');
+    expect(figures.owed).toBe(25);
+    expect(figures.due).toBe(65);
+  });
+
+  it('the stamp duty is part of what the customer is asked to pay, and a credit note comes off the invoice', () => {
+    expect(moneyDueOnCancelledJob([paid(90)], [invoice(30, { stampDuty: 1 })]).owed).toBe(31);
+    expect(moneyDueOnCancelledJob([paid(90)], [invoice(30, { creditedAmount: 10 })]).owed).toBe(20);
+  });
+
+  it('an invoice in another currency cannot be set against the money of the company: nothing is said to be due', () => {
+    const figures = moneyDueOnCancelledJob([paid(90)], [invoice(30, { currency: 'EUR' })]);
+
+    expect(figures.comparable).toBe(false);
+    expect(figures.due).toBe(0);
+    expect(figures.kept).toBe(90);
   });
 });

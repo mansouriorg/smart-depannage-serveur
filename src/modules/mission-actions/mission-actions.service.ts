@@ -564,7 +564,13 @@ export class MissionActionsService {
 
     // A visit still to come that the artisan had confirmed is not confirmed by anybody now: the
     // next artisan confirms it (or the dispatcher moves it).
-    if (visit.status === AppointmentStatus.CONFIRMED && isCurrentVisit(visit)) {
+    // A confirmed visit with a request to move it waiting shows "reschedule requested"; its confirmation is the artisan's all the same,
+    // and left in place it would show a confirmation with nobody to have given it (P3-01).
+    const confirmed =
+      visit.status === AppointmentStatus.CONFIRMED ||
+      (visit.status === AppointmentStatus.RESCHEDULE_REQUESTED && Boolean(visit.confirmedAt));
+
+    if (confirmed && isCurrentVisit(visit)) {
       await tx.appointment.update({
         where: { interventionId: visit.interventionId },
         data: { status: AppointmentStatus.SCHEDULED, confirmedAt: null },

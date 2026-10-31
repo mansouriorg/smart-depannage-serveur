@@ -1996,3 +1996,226 @@ describe('the refunds that a complaint accepted (P2-09)', () => {
     expect(summary.refundsDue).toEqual({ count: list.total, amount: list.amount });
   });
 });
+
+describe('the money that a cancelled job still holds (P3-01)', () => {
+  beforeEach(() => resetLocale());
+
+  /** A customer, and a job cancelled on 22 October 2026 for "Plus besoin". */
+  function cancelledJob(status = 'CANCELLED') {
+    const world = emptyWorld();
+    const m = world.memory;
+    const client = m.plant('user', { role: 'CLIENT', name: 'Salma', phone: '20999888' });
+    const job = m.plant('intervention', { clientId: client.id, status, serviceType: 'PLOMBIER', cancelledAt: at('2026-10-22T08:00:00Z'), cancelledReason: 'Plus besoin' });
+    const pay = (data: Record<string, any>) =>
+      m.plant('payment', { interventionId: job.id, method: 'BANK_TRANSFER', provider: 'MANUAL', status: 'PAID', amount: 50, amountRefunded: 0, currency: 'TND', confirmedAt: at('2026-10-11T08:00:00Z'), requestedAt: at('2026-10-11T08:00:00Z'), ...data });
+
+    return { world, m, client, job, pay };
+  }
+
+  const rowOf = async (world: World, job: any) => (await world.svc.finance.refundsDue('ACCOUNTANT')).items.find((item: any) => item.interventionId === job.id);
+
+  it('lists a cancelled job that holds money, for all of it, with when and why it was cancelled', async () => {
+    const { world, job, pay } = cancelledJob();
+    const payment = pay({ amount: 80 });
+
+    const row = await rowOf(world, job);
+
+    expect(row).toMatchObject({ kept: 80, fromCreditNotes: 0, fromComplaints: 0, fromCancellation: 80, due: 80 });
+    expect(row.cancelled).toEqual({ at: at('2026-10-22T08:00:00Z'), reason: 'Plus besoin' });
+    expect(row.since).toEqual(at('2026-10-22T08:00:00Z'));
+    expect(row.payments.map((entry: any) => [entry.id, entry.refundable])).toEqual([[payment.id, 80]]);
+  });
+
+  it('counts what already went back: only what the job still holds is owed', async () => {
+    const { world, job, pay } = cancelledJob();
+
+    pay({ amount: 80, amountRefunded: 30, status: 'PARTIALLY_REFUNDED' });
+    pay({ amount: 10, method: 'CASH', provider: 'CASH' });
+
+    expect(await rowOf(world, job)).toMatchObject({ kept: 60, fromCancellation: 60, due: 60 });
+  });
+
+  it('a job whose money all went back, or that took none in, is not listed', async () => {
+    const { world, job, pay } = cancelledJob();
+
+    pay({ amount: 40, amountRefunded: 40, status: 'REFUNDED' });
+    pay({ amount: 25, status: 'PENDING' });
+    pay({ amount: 15, status: 'FAILED' });
+
+    expect(await rowOf(world, job)).toBeUndefined();
+  });
+
+  it('a payment in another currency is not counted with the money of the company', async () => {
+    const { world, job, pay } = cancelledJob();
+
+    pay({ amount: 20, currency: 'EUR' });
+
+    expect(await rowOf(world, job)).toBeUndefined();
+  });
+
+  it('a job that is not cancelled is not listed for being paid', async () => {
+    for (const status of ['ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'PAID', 'DISPUTED']) {
+      const { world, job, pay } = cancelledJob(status);
+
+      pay({ amount: 80 });
+
+      expect(await rowOf(world, job)).toBeUndefined();
+    }
+  });
+
+  it('a cancelled job with an invoice that still asks for money owes only what is held above it', async () => {
+    const { world, m, job, pay } = cancelledJob();
+
+    pay({ amount: 80 });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0300', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'ISSUED', amountTTC: 30, issuedAt: at('2026-10-21T08:00:00Z') });
+
+    expect(await rowOf(world, job)).toMatchObject({ kept: 80, owed: 30, fromCancellation: 50, due: 50 });
+  });
+
+  it('the stamp duty of the invoice is part of what it still asks', async () => {
+    const { world, m, job, pay } = cancelledJob();
+
+    pay({ amount: 80 });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0301', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 1, creditedAmount: 0, status: 'ISSUED', amountTTC: 29, issuedAt: at('2026-10-21T08:00:00Z') });
+
+    expect(await rowOf(world, job)).toMatchObject({ kept: 80, owed: 30, fromCancellation: 50, due: 50 });
+  });
+
+  it('an invoice that asks for all of what is held, or more, leaves nothing to give back: the job is not listed', async () => {
+    for (const asked of [80, 100]) {
+      const { world, m, job, pay } = cancelledJob();
+
+      pay({ amount: 80 });
+      m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0302', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'ISSUED', amountTTC: asked, issuedAt: at('2026-10-21T08:00:00Z') });
+
+      expect(await rowOf(world, job)).toBeUndefined();
+    }
+  });
+
+  it('an invoice that was cancelled, or is only a draft, asks nothing: all that is held is to be given back', async () => {
+    const { world, m, job, pay } = cancelledJob();
+
+    pay({ amount: 80 });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0303', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'CANCELLED', amountTTC: 70, issuedAt: at('2026-10-21T08:00:00Z') });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0304', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'DRAFT', amountTTC: 60 });
+
+    expect(await rowOf(world, job)).toMatchObject({ owed: 0, fromCancellation: 80, due: 80 });
+  });
+
+  it('an invoice in another currency cannot be set against the money of the company: no sum is worked out, the job is not listed', async () => {
+    const { world, m, job, pay } = cancelledJob();
+
+    pay({ amount: 80 });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0305', currency: 'EUR', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'ISSUED', amountTTC: 30, issuedAt: at('2026-10-21T08:00:00Z') });
+
+    expect(await rowOf(world, job)).toBeUndefined();
+  });
+
+  it('a credit note on the job and the cancellation say the same money: it is given back once', async () => {
+    const { world, m, job, pay } = cancelledJob();
+
+    pay({ amount: 200 });
+
+    const invoice = m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0306', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 1, creditedAmount: 100, status: 'ISSUED', amountTTC: 238, issuedAt: at('2026-10-21T08:00:00Z') });
+
+    m.plant('creditNote', { invoiceId: invoice.id, interventionId: job.id, creditNoteNumber: 'AV-2026-0300', numberYear: 2026, sequence: 300, reason: 'Remise', currency: 'TND', amountHT: 0, taxRate: 19, taxAmount: 0, amountTTC: 100, stampDuty: 0, issuedAt: at('2026-10-21T09:00:00Z') });
+
+    const row = await rowOf(world, job);
+
+    expect(row).toMatchObject({ kept: 200, owed: 139, fromCreditNotes: 61, fromCancellation: 61, due: 61 });
+  });
+
+  it('a cancelled job that owes for another reason only carries no cancellation: the standing invoice asks for all it holds, and an accepted refund is what is due', async () => {
+    const { world, m, client, job, pay } = cancelledJob();
+
+    pay({ amount: 100 });
+    m.plant('invoice', { interventionId: job.id, invoiceNumber: 'F-2026-0307', currency: 'TND', amountHT: 0, taxAmount: 0, stampDuty: 0, creditedAmount: 0, status: 'ISSUED', amountTTC: 100, issuedAt: at('2026-10-21T08:00:00Z') });
+    m.plant('complaint', { interventionId: job.id, userId: client.id, title: 'Fuite', description: 'Toujours là', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 50, refundDecidedAt: at('2026-10-20T08:00:00Z') });
+
+    const row = await rowOf(world, job);
+
+    expect(row).toMatchObject({ fromCancellation: 0, fromComplaints: 50, due: 50 });
+    expect(row.cancelled).toBeNull();
+    // the line is as old as the refund, not as the cancellation that adds nothing
+    expect(row.since).toEqual(at('2026-10-20T08:00:00Z'));
+  });
+
+  it('the line is as old as the oldest of the reasons: a refund accepted before the cancellation, or a cancellation before it', async () => {
+    const early = cancelledJob();
+
+    early.pay({ amount: 120 });
+    early.m.plant('complaint', { interventionId: early.job.id, userId: early.client.id, title: 'Fuite', description: 'Toujours là', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 50, refundDecidedAt: at('2026-10-20T08:00:00Z') });
+
+    expect((await rowOf(early.world, early.job)).since).toEqual(at('2026-10-20T08:00:00Z'));
+
+    const late = cancelledJob();
+
+    late.pay({ amount: 120 });
+    late.m.plant('complaint', { interventionId: late.job.id, userId: late.client.id, title: 'Fuite', description: 'Toujours là', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 50, refundDecidedAt: at('2026-10-24T08:00:00Z') });
+
+    expect((await rowOf(late.world, late.job)).since).toEqual(at('2026-10-22T08:00:00Z'));
+  });
+
+  it('the look at the cancelled jobs is capped, and a payment marked as refunded does not bring its job into it (the list does not grow with every job that was ever paid)', async () => {
+    const { world, pay } = cancelledJob();
+    const asked: any[] = [];
+    const watching = new Proxy(world.prisma, {
+      get: (target, key) =>
+        key === 'intervention'
+          ? new Proxy(target.intervention, {
+              get: (jobs, method) => (method === 'findMany' ? async (args: any) => (args?.select?.cancelledAt ? (asked.push(args), jobs.findMany(args)) : jobs.findMany(args)) : jobs[method]),
+            })
+          : target[key],
+    });
+
+    pay({ amount: 40, amountRefunded: 40, status: 'REFUNDED' });
+
+    await new (world.svc.finance.constructor as any)(watching).refundsDue('ACCOUNTANT');
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0].where.payments.some.status.in).toEqual(['PAID', 'PARTIALLY_REFUNDED']);
+    // and the look is capped, one above the limit, so that a list that is too long is told and not loaded
+    expect(asked[0].take).toBe(SUMMARY_LIMIT + 1);
+  });
+
+  it('a cancelled job that also has an accepted refund owes the larger of the two, never the sum', async () => {
+    const { world, m, client, job, pay } = cancelledJob();
+
+    pay({ amount: 120 });
+    m.plant('complaint', { interventionId: job.id, userId: client.id, title: 'Fuite', description: 'Toujours là', status: 'REFUNDED', refundRequested: true, refundDecision: 'APPROVED', refundApproved: true, refundAmount: 50, refundDecidedAt: at('2026-10-23T08:00:00Z') });
+
+    const row = await rowOf(world, job);
+
+    expect(row).toMatchObject({ fromComplaints: 50, fromCancellation: 120, due: 120 });
+  });
+
+  it('is counted in the summary of the finance console, with the others', async () => {
+    const { world, pay } = cancelledJob();
+
+    pay({ amount: 80 });
+
+    const summary = await world.svc.finance.summary('ACCOUNTANT', WEEK, NOW);
+
+    expect(summary.refundsDue).toEqual({ count: 1, amount: 80 });
+  });
+
+  it('refuses to list too many cancelled jobs, like the other reasons, and says it is a matter for the technical team', async () => {
+    const { world } = cancelledJob();
+    // The look at the cancelled jobs finds one more than the limit (planting that many rows one by one takes minutes).
+    const crowded = new Proxy(world.prisma, {
+      get: (target, key) =>
+        key === 'intervention'
+          ? new Proxy(target.intervention, {
+              get: (jobs, method) => (method === 'findMany' ? async (args: any) => (args?.select?.cancelledAt ? Array.from({ length: SUMMARY_LIMIT + 1 }, (_, index) => ({ id: index + 1 })) : jobs.findMany(args)) : jobs[method]),
+            })
+          : target[key],
+    });
+    const finance = new (world.svc.finance.constructor as any)(crowded);
+
+    const failure = await refusal(() => finance.refundsDue('ACCOUNTANT'));
+
+    expect(failure?.status).toBe(400);
+    expect(failure?.message).toMatch(/^Trop de missions annulées pour un résumé/);
+    expect(failure?.message).toContain('prévenez l’équipe technique');
+  });
+});

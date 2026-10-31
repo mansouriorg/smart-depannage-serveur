@@ -323,6 +323,8 @@ enum NotificationType {
   COMPLAINT_UPDATED
   ARTISAN_APPLICATION_APPROVED
   ARTISAN_APPLICATION_REJECTED
+  // A visit is about to take place (P3-01): sent by the appointment reminders, to the customer and to the artisan.
+  APPOINTMENT_REMINDER
   GENERAL
 }
 
@@ -1874,6 +1876,10 @@ model AppointmentRequest {
 
   type   AppointmentRequestType
   status AppointmentRequestStatus @default(PENDING)
+
+  // What the visit was when this was asked (SCHEDULED or CONFIRMED): what a refusal puts back (P3-01). Null on a request made
+  // before this column existed: the status is then worked out from the visit (confirmed once the artisan has confirmed it).
+  previousStatus AppointmentStatus?
 
   requestedStartAt DateTime?
   requestedEndAt   DateTime?

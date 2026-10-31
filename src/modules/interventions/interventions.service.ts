@@ -40,6 +40,7 @@ import {
   VISITOR_MAY_REPORT_ISSUE_IN,
 } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
+import { CANCEL_BY_STATUS } from '../intervention-workflow/cancel-by-status';
 import { checkRequestedService } from '../service-catalog/catalog-check';
 import {
   isUniqueViolation,
@@ -518,6 +519,18 @@ export class InterventionsService {
     const data: Record<string, unknown> = { ...rest };
 
     const target = status;
+
+    // A cancellation has its own route (P3-01): it frees the artisan's hour, closes the requests about the visit, drops the reminders,
+    // writes who cancelled and why, and tells the back office when the job holds money. This route writes none of that, so a job
+    // cancelled here would keep its visit booked and its reminders waiting. Saying "cancelled" again of a job that is cancelled already
+    // (a form that sends the status back with an edit) is not a cancellation, and is let through.
+    if (target && actor.kind === 'staff' && canonicalStatus(target) === 'CANCELLED') {
+      const stored = await this.prisma.intervention.findUnique({ where: { id }, select: { status: true } });
+
+      if (stored && canonicalStatus(stored.status) !== 'CANCELLED') {
+        throw new BadRequestException(CANCEL_BY_STATUS);
+      }
+    }
 
     // 3. Save to Database. A status change goes through the status table.
     let statusChanged = false;

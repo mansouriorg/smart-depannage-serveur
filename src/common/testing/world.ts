@@ -54,6 +54,7 @@ import { ReviewsController } from '../../modules/reviews/reviews.controller';
 import { ReviewsService } from '../../modules/reviews/reviews.service';
 import { SchedulingController } from '../../modules/scheduling/scheduling.controller';
 import { SchedulingService } from '../../modules/scheduling/scheduling.service';
+import { APPOINTMENT_OVERLAP_CONSTRAINT, visitsClash } from '../../modules/scheduling/appointment-overlap';
 import { ServiceCatalogController } from '../../modules/service-catalog/service-catalog.controller';
 import { ServiceCatalogService } from '../../modules/service-catalog/service-catalog.service';
 import { ServiceZonesController } from '../../modules/service-zones/service-zones.controller';
@@ -173,6 +174,8 @@ export class World {
     process.env.FRONTEND_URL ??= 'https://app.example.test';
 
     this.memory = new MemoryPrisma(schemaText);
+    // The database of the deployment refuses two visits of one artisan at the same time (P3-01): so does this one, by the same rule.
+    this.memory.addExclusion({ name: APPOINTMENT_OVERLAP_CONSTRAINT, model: 'Appointment', clash: visitsClash });
     this.prisma = this.memory.client();
 
     const prisma = this.prisma;

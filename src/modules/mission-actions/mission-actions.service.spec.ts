@@ -1554,6 +1554,30 @@ describe('the visit of a job given back', () => {
     expect(w.appointments.rows[0].startsAt).toEqual(planned.startsAt);
   });
 
+  it('a confirmed visit with a request to move it waiting: the request is dropped and the confirmation goes with the artisan (P3-01)', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+    visit(w, id, artisan, { status: 'RESCHEDULE_REQUESTED' });
+
+    await decline(w, artisan, id);
+
+    expect(w.appointments.rows[0]).toMatchObject({ status: 'SCHEDULED', confirmedAt: null, artisanId: null });
+  });
+
+  it('a visit that was never confirmed, with a request to move it waiting, is planned again and has no confirmation to lose', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+    visit(w, id, artisan, { status: 'RESCHEDULE_REQUESTED', confirmedAt: null });
+
+    await decline(w, artisan, id);
+
+    expect(w.appointments.rows[0]).toMatchObject({ status: 'SCHEDULED', confirmedAt: null, artisanId: null });
+  });
+
   it('a visit that is over is history: it stays as it was', async () => {
     const w = makeWorld();
     const artisan = w.addArtisan();

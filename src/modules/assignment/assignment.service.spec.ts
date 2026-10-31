@@ -21,7 +21,15 @@ const monday = (fromHour: number, toHour: number) => ({
   endsAt: new Date(MONDAY_8.getTime() + (toHour - 8) * HOUR),
 });
 
-type Options = { notifyThrows?: boolean; eventsThrow?: boolean; liveThrows?: boolean; remindersThrow?: boolean; leaveThrows?: boolean };
+type Options = {
+  notifyThrows?: boolean;
+  eventsThrow?: boolean;
+  liveThrows?: boolean;
+  remindersThrow?: boolean;
+  leaveThrows?: boolean;
+  /** Called each time a lock is taken, with how many locks were taken so far: somebody else's change that lands just before it. */
+  onLock?: (taken: number) => void;
+};
 
 function makeWorld(options: Options = {}) {
   const users = new FakeTable({ defaults: () => ({ role: 'ARTISAN', isActive: true, deletedAt: null }) });
@@ -55,6 +63,7 @@ function makeWorld(options: Options = {}) {
       $executeRaw: async (_strings: TemplateStringsArray, ...values: number[]) => {
         locks.push(values);
         lockSql.push(_strings.join('?'));
+        options.onLock?.(lockSql.length);
         return 1;
       },
     },
@@ -771,6 +780,123 @@ describe('giving a job to an artisan (P1-05)', () => {
       expect(w.appointments.rows.length).toBe(1);
     });
 
+    it('when the new reminders cannot be written the old ones are still there: they are replaced in one transaction, not deleted first (P3-01)', async () => {
+      const w = makeWorld({ remindersThrow: true });
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+      const appointment = w.appointments.insert({ interventionId: id, clientId: 1, artisanId: artisan, status: 'SCHEDULED', startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      w.reminders.insert({ appointmentId: appointment.id, recipientId: artisan, status: 'PENDING', minutesBefore: 120 });
+
+      await assign(w, id, artisan, { startsAt: new Date(start.getTime() + HOUR), endsAt: new Date(start.getTime() + 2 * HOUR) });
+
+      expect(w.reminders.rows.filter((r) => r.status === 'PENDING')).toHaveLength(1);
+    });
+
+    it('the reminders are written under the lock of the job, after the assignment has been committed (P3-01)', async () => {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, artisan, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      // the assignment takes the lock of the job and of the calendar; the reminders take the lock of the job again
+      expect(w.locks.filter((values) => values.includes(id)).length).toBeGreaterThanOrEqual(2);
+      expect(w.lockSql.length).toBe(3);
+    });
+
+    it('a cancellation that lands before the reminders are written: the visit is cancelled, so it gets none (P3-01)', async () => {
+      let w: ReturnType<typeof makeWorld>;
+      // the assignment takes two locks (job, calendar); the third is the reminders'
+      w = makeWorld({ onLock: (taken) => { if (taken === 3) w.appointments.rows[0].status = 'CANCELLED'; } });
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, artisan, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      expect(w.appointments.rows[0].status).toBe('CANCELLED');
+      expect(w.reminders.rows).toHaveLength(0);
+    });
+
+    it('a later assignment that finished first: the reminders are made for the visit as it is now, for the artisan who has it', async () => {
+      let w: ReturnType<typeof makeWorld>;
+      let second = 0;
+      const later = new Date(Date.now() + 100 * HOUR);
+
+      w = makeWorld({
+        onLock: (taken) => {
+          if (taken !== 3) return;
+          Object.assign(w.appointments.rows[0], { artisanId: second, startsAt: later, endsAt: new Date(later.getTime() + HOUR) });
+        },
+      });
+
+      const first = w.addArtisan();
+      second = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, first, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      const pending = w.reminders.rows;
+
+      expect(pending.length).toBe(4);
+      expect(pending.some((r) => r.recipientId === second)).toBe(true);
+      expect(pending.some((r) => r.recipientId === first)).toBe(false);
+      // made for the time the visit has now (the day before is 24 hours ahead of it)
+      expect(pending.filter((r) => r.minutesBefore === 1440).every((r) => r.dueAt.getTime() === later.getTime() - 1440 * 60000)).toBe(true);
+    });
+
+    it('a visit that lost its artisan meanwhile keeps no reminders', async () => {
+      let w: ReturnType<typeof makeWorld>;
+
+      w = makeWorld({ onLock: (taken) => { if (taken === 3) w.appointments.rows[0].artisanId = null; } });
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, artisan, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      expect(w.appointments.rows[0].artisanId).toBe(null);
+      expect(w.reminders.rows).toHaveLength(0);
+    });
+
+    it('a visit whose hour was cleared meanwhile keeps no reminders and the step does not fail', async () => {
+      let w: ReturnType<typeof makeWorld>;
+
+      w = makeWorld({ onLock: (taken) => { if (taken === 3) Object.assign(w.appointments.rows[0], { startsAt: null, endsAt: null }); } });
+      const failures: string[] = [];
+      (w.service as any).logger.error = (message: string) => failures.push(message);
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, artisan, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      expect(w.appointments.rows[0].startsAt).toBe(null);
+      expect(w.reminders.rows).toHaveLength(0);
+      expect(failures).toEqual([]);
+    });
+
+    it('a visit that is gone meanwhile gets no reminders and the step does not fail', async () => {
+      let w: ReturnType<typeof makeWorld>;
+
+      w = makeWorld({ onLock: (taken) => { if (taken === 3) w.appointments.rows.splice(0, w.appointments.rows.length); } });
+      const failures: string[] = [];
+      (w.service as any).logger.error = (message: string) => failures.push(message);
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+      const start = new Date(Date.now() + 72 * HOUR);
+
+      await assign(w, id, artisan, { startsAt: start, endsAt: new Date(start.getTime() + HOUR) });
+
+      expect(w.appointments.rows).toHaveLength(0);
+      expect(w.reminders.rows).toHaveLength(0);
+      expect(failures).toEqual([]);
+    });
+
     it('the other steps still run when one of them fails', async () => {
       const w = makeWorld({ eventsThrow: true });
       const artisan = w.addArtisan();
@@ -959,6 +1085,23 @@ describe('giving a job to an artisan (P1-05)', () => {
       expect(rows.find((row) => row.id === approved.id)!.status).toBe('APPROVED');
       expect(rows.find((row) => row.id === approved.id)!.adminResponse).toBe('Ok');
       expect(w.appointments.rows[0].status).toBe('SCHEDULED');
+    });
+
+    it('a new time is a new plan: the confirmation the artisan gave to the old time goes (P3-01), whoever holds the job', async () => {
+      for (const same of [true, false]) {
+        const w = makeWorld();
+        const first = w.addArtisan();
+        const second = same ? first : w.addArtisan();
+        const id = w.addJob({ status: 'ASSIGNED', artisanId: first });
+
+        w.appointments.insert({ interventionId: id, clientId: 1, artisanId: first, status: 'CONFIRMED', confirmedAt: new Date(), ...monday(9, 10) });
+
+        await assign(w, id, second, monday(14, 15));
+
+        expect(w.appointments.rows[0].status).toBe('SCHEDULED');
+        expect(w.appointments.rows[0].confirmedAt).toBe(null);
+        expect(w.appointments.rows[0].artisanId).toBe(second);
+      }
     });
 
     it('a job handed to another artisan with a new time closes them too', async () => {

@@ -26,6 +26,7 @@ import { InterventionEventsService } from '../intervention-events/intervention-e
 import { NotificationsService } from '../notifications/notifications.service';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { RealtimeService } from '../realtime/realtime.service';
+import { overlapAsConflict } from '../scheduling/appointment-overlap';
 
 import {
   ACTIVE_APPOINTMENT_STATUSES,
@@ -337,6 +338,8 @@ export class AssignmentService {
             scheduledById: actorId,
             ...(input.adminNote !== undefined ? { adminNote: input.adminNote } : {}),
             status: AppointmentStatus.SCHEDULED,
+            // The artisan confirmed the time that was planned before, not this one (P3-01).
+            confirmedAt: null,
             timezone: timeZone,
           },
           create: {
@@ -378,6 +381,10 @@ export class AssignmentService {
         previousArtisanId: job.artisanId as number | null,
         nothingChanged: false,
       };
+    }).catch((error: unknown) => {
+      // The check above looked at the artisan's calendar under the lock; the database refuses two visits at the same time whatever
+      // was checked (P3-01). What it refuses is a conflict for the dispatcher (409), not an error 500, and nothing was written.
+      throw overlapAsConflict(error);
     });
 
     if (!done.nothingChanged) {
@@ -449,9 +456,29 @@ export class AssignmentService {
       scheduled && appointment?.startsAt instanceof Date ? formatLocalDateTime(appointment.startsAt, timeZone) : null;
 
     await this.attempt('reminders', async () => {
-      // An old appointment only detached gets no new reminders, but loses the ones
-      // the artisan who lost the job was still to receive.
-      if (appointment) await replaceDefaultReminders(this.prisma as any, scheduled ? appointment : { ...appointment, startsAt: null });
+      // The reminders are replaced in one transaction, under the lock of the job (P3-01): a crash between the delete and the create
+      // would leave the visit with none, and a cancellation in between would not see the new ones. They follow the visit as it is under
+      // the lock, not as this assignment left it: a cancellation, or a later assignment that finished first, has changed it since, and
+      // reminders made from the old picture would be for a visit that is gone or for somebody who no longer has it. A visit has
+      // reminders when it is active, has an artisan and has a time; otherwise it has none (that also drops the ones the artisan who
+      // lost the job was still to receive).
+      if (appointment) {
+        await this.prisma.$transaction(async (tx) => {
+          await lockJob(tx, interventionId);
+
+          const current = await tx.appointment.findUnique({ where: { id: appointment.id } });
+
+          if (!current) return;
+
+          const holdsAnHour =
+            (ACTIVE_APPOINTMENT_STATUSES as readonly string[]).includes(String(current.status)) &&
+            current.artisanId !== null &&
+            current.artisanId !== undefined &&
+            Boolean(current.startsAt);
+
+          await replaceDefaultReminders(tx as any, holdsAnHour ? current : { ...current, startsAt: null });
+        });
+      }
     });
 
     await this.attempt('timeline', () =>

@@ -777,7 +777,10 @@ export class AdminService {
 
     // The status and the visit are written together: a cancelled job must not keep the technician's
     // calendar blocked or its reminders going out.
-    const { row: updated, changed } = await this.prisma.$transaction(async (tx) => {
+    const { row: updated, changed, previousStatus } = await this.prisma.$transaction(async (tx) => {
+      // The lock of the job first, as every other writer of its visit takes it (P3-01).
+      await lockJob(tx, interventionId);
+
       const result = await transitionStatusDetailed(tx, {
         id: interventionId,
         to: Status.CANCELLED,
@@ -792,7 +795,9 @@ export class AdminService {
         include: this.interventionInclude,
       });
 
-      if (result.changed) await cancelVisit(tx as any, interventionId, reason, adminId);
+      // Also when the job was cancelled already: a job cancelled before this rule (or by a route that did not free the visit) may still hold an
+      // hour, and cancelling it again is how the back office frees it. A visit that is over or already cancelled is left alone.
+      await cancelVisit(tx as any, interventionId, reason, adminId);
 
       return result;
     });
@@ -806,7 +811,7 @@ export class AdminService {
         createdById: adminId,
       });
 
-      await this.tellAboutStatusChange(String(intervention.status), updated, adminId, { reason });
+      await this.tellAboutStatusChange(String(previousStatus ?? intervention.status), updated, adminId, { reason });
     }
 
     return updated;

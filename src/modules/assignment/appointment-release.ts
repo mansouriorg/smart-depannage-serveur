@@ -70,7 +70,7 @@ type VisitDb = Db &
   };
 
 /** A visit that is over or already cancelled has nothing left to cancel. */
-const VISIT_ENDED: readonly AppointmentStatus[] = [
+export const VISIT_ENDED: readonly AppointmentStatus[] = [
   AppointmentStatus.CANCELLED,
   AppointmentStatus.COMPLETED,
   AppointmentStatus.NO_SHOW,

@@ -13,8 +13,9 @@ import { businessDateOf } from '../../common/locale/business-time';
 import { currencyCode } from '../../common/locale/locale';
 import { compareMoney, money, subtractMoney, sumMoney, sumMoneyOf } from '../../common/money/money';
 import { PrismaService } from '../../prisma/prisma.service';
+import { statusesInGroup } from '../intervention-workflow/intervention-status';
 import { TypeSums, activeCollections, totalsOfSums } from '../cash-ledger/cash-ledger-ops';
-import { RECEIVED_PAYMENT_STATUSES, amountToPay, paymentFigures, refundedOn } from '../payments/financials-ops';
+import { RECEIVED_PAYMENT_STATUSES, amountToPay, moneyDueOnCancelledJob, paymentFigures, refundedOn } from '../payments/financials-ops';
 import { FinancePaymentsExportQueryDto, FinancePaymentsQueryDto, FinanceInvoicesQueryDto, FinancePeriodQueryDto } from './dto/finance.dto';
 import {
   INVOICE_LIST_SELECT,
@@ -408,17 +409,20 @@ export class FinanceService {
   }
 
   /**
-   * The money to give back to customers, job by job. Two reasons make a job appear (both can):
+   * The money to give back to customers, job by job. Three reasons make a job appear (several can):
    *  - a credit note: the job holds (received less given back) more than the standing invoice asks (nothing when a credit note
    *    closed it). A job that continues on its quote after a closing credit note shows what it holds: the accountant decides,
    *    the server does not guess;
    *  - a complaint whose refund was accepted for an amount (P2-09): the amount less what has already gone back on the job (the
    *    payment refund that reaches it settles the complaint). An acceptance with no amount says nothing about how much: it is
-   *    in the complaints screen, not here.
-   * When both apply the job owes the larger: money that goes back answers both.
+   *    in the complaints screen, not here;
+   *  - a cancellation (P3-01): a job that was cancelled and still holds money (received less given back), less what a standing
+   *    invoice still asks. The whole of it is listed: the server has no rule for a cancellation fee, so the accountant, who sees the
+   *    job, decides what is kept and refunds the rest through the payments.
+   * When several apply the job owes the largest: money that goes back answers all of them.
    */
   private async computeRefundsDue(): Promise<RefundDueRow[]> {
-    const [notes, complaints]: Row[][] = await Promise.all([
+    const [notes, complaints, cancelled]: Row[][] = await Promise.all([
       this.db.creditNote.findMany({
         select: { id: true, creditNoteNumber: true, interventionId: true, amountTTC: true, stampDuty: true, issuedAt: true },
         orderBy: { id: 'asc' },
@@ -430,17 +434,32 @@ export class FinanceService {
         orderBy: { id: 'asc' },
         take: SUMMARY_LIMIT + 1,
       }),
+      // A cancelled job that still holds money: a payment that was received and has not all gone back (a payment marked as refunded
+      // has: it holds nothing, so the list does not grow with every cancelled job that was ever paid).
+      this.db.intervention.findMany({
+        where: { status: { in: statusesInGroup('cancelled') }, payments: { some: { status: { in: RECEIVED_PAYMENT_STATUSES.filter((status) => status !== 'REFUNDED') } } } },
+        select: { id: true, cancelledAt: true, cancelledReason: true },
+        orderBy: { id: 'asc' },
+        take: SUMMARY_LIMIT + 1,
+      }),
     ]);
 
     tooMany(notes, 'avoirs', false);
     tooMany(complaints, 'réclamations', false);
+    tooMany(cancelled, 'missions annulées', false);
 
     // An acceptance that states no amount cannot be priced here.
     const promises = complaints.filter((complaint) => compareMoney(money(complaint.refundAmount), 0) > 0);
 
-    if (notes.length === 0 && promises.length === 0) return [];
+    if (notes.length === 0 && promises.length === 0 && cancelled.length === 0) return [];
 
-    const jobIds = [...new Set([...notes.map((note) => note.interventionId as number), ...promises.map((complaint) => complaint.interventionId as number)])];
+    const jobIds = [
+      ...new Set([
+        ...notes.map((note) => note.interventionId as number),
+        ...promises.map((complaint) => complaint.interventionId as number),
+        ...cancelled.map((job) => job.id as number),
+      ]),
+    ];
 
     const [payments, invoices, jobs]: Row[][] = await Promise.all([
       this.db.payment.findMany({
@@ -457,6 +476,7 @@ export class FinanceService {
     const clients = new Map<number, Row | null>(jobs.map((job) => [job.id as number, (job.client ?? null) as Row | null]));
     const notesOf = new Map<number, Row[]>();
     const promisesOf = new Map<number, Row[]>();
+    const cancelledOf = new Map<number, Row>(cancelled.map((job) => [job.id as number, job]));
     const company = currencyCode();
 
     for (const payment of payments) paymentsOf.set(payment.interventionId, [...(paymentsOf.get(payment.interventionId) ?? []), payment]);
@@ -491,13 +511,21 @@ export class FinanceService {
         .filter((complaint) => compareMoney(complaint.remaining, 0) > 0);
       const fromComplaints = pending.reduce((most, complaint) => (compareMoney(complaint.remaining, most) > 0 ? complaint.remaining : most), 0);
 
-      const due = compareMoney(fromCreditNotes, fromComplaints) >= 0 ? fromCreditNotes : fromComplaints;
+      // A cancelled job holds money it has no claim on, less what a standing invoice still asks (a fee invoiced for the visit, say).
+      const cancelledJob = cancelledOf.get(jobId) ?? null;
+      const fromCancellation = cancelledJob ? moneyDueOnCancelledJob(jobPayments, standing ? [standing] : []).due : 0;
+
+      const due = [fromCreditNotes, fromComplaints, fromCancellation].reduce((most, amount) => (compareMoney(amount, most) > 0 ? amount : most), 0);
 
       if (compareMoney(due, 0) <= 0) continue;
 
       const client = clients.get(jobId) ?? null;
       // The line is as old as the oldest thing that makes the job owe: a credit note the invoice already covers owes nothing.
-      const dates = [...(compareMoney(fromCreditNotes, 0) > 0 ? [jobNotes[0]?.issuedAt] : []), ...(compareMoney(fromComplaints, 0) > 0 ? pending.map((complaint) => complaint.decidedAt) : [])].filter((date): date is Date => date instanceof Date);
+      const dates = [
+        ...(compareMoney(fromCreditNotes, 0) > 0 ? [jobNotes[0]?.issuedAt] : []),
+        ...(compareMoney(fromComplaints, 0) > 0 ? pending.map((complaint) => complaint.decidedAt) : []),
+        ...(compareMoney(fromCancellation, 0) > 0 ? [cancelledJob?.cancelledAt] : []),
+      ].filter((date): date is Date => date instanceof Date);
 
       rows.push({
         interventionId: jobId,
@@ -509,6 +537,8 @@ export class FinanceService {
         owed,
         fromCreditNotes,
         fromComplaints,
+        fromCancellation,
+        cancelled: compareMoney(fromCancellation, 0) > 0 ? { at: (cancelledJob?.cancelledAt ?? null) as Date | null, reason: (cancelledJob?.cancelledReason ?? null) as string | null } : null,
         due,
         payments: jobPayments
           .filter((payment) => RECEIVED_PAYMENT_STATUSES.includes(String(payment.status)) && (!payment.currency || String(payment.currency) === company))

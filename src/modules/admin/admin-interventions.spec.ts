@@ -67,6 +67,12 @@ function makeService(job: { status: string; artisanId: number | null }, visit: a
   // The visit and its reminders exist on the transaction only: a write made outside it would not find them.
   const tx: any = {
     intervention: jobTable(true),
+    // the lock of the job (P3-01): taken before the status is written
+    $executeRaw: async () => {
+      log.push({ table: 'lock', op: 'executeRaw', args: null });
+
+      return 0;
+    },
     appointment: {
       findUnique: record('appointment', 'findUnique', visit),
       update: async (args: any) => {
@@ -342,6 +348,21 @@ describe('AdminService.cancelIntervention', () => {
     expect(w.events.length).toBe(1);
   });
 
+  it('takes the lock of the job before anything is read or written: a request, an answer or a reminder that is being decided waits for it (P3-01)', async () => {
+    const w = makeService({ status: 'ARTISAN_ACCEPTED', artisanId: 7 }, visit);
+
+    await w.service.cancelIntervention(99, 12, { reason: 'Le client ne répond plus.' } as any);
+
+    const lock = w.log.findIndex((entry) => entry.table === 'lock');
+    const write = w.log.findIndex((entry) => entry.table === 'intervention' && entry.op === 'update');
+    const visitWrite = w.log.findIndex((entry) => entry.table === 'appointment' && entry.op === 'update');
+
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(lock).toBeLessThan(write);
+    expect(lock).toBeLessThan(visitWrite);
+    expect(w.log.filter((entry) => entry.table === 'lock')).toHaveLength(1);
+  });
+
   it('the job and its visit are one transaction: if the visit cannot be written, the job stays as it was and nobody is told', async () => {
     const w = makeService({ status: 'ARTISAN_ACCEPTED', artisanId: 7 }, visit, { visitThrows: true });
 
@@ -390,6 +411,27 @@ describe('AdminService.cancelIntervention', () => {
     expect(w.notices.length).toBe(1);
   });
 
+  it('the dashboards are told the status the job had under the lock, not the one read before it (P3-01)', async () => {
+    const w = makeService({ status: 'ASSIGNED', artisanId: 7 }, visit);
+    const client = (w.service as any).prisma.intervention;
+    const original = client.findUnique;
+
+    // somebody moves the job on between the first look and the lock
+    client.findUnique = async (args: any) => {
+      const found = await original(args);
+
+      w.state.status = 'ARTISAN_ACCEPTED';
+
+      return found;
+    };
+
+    await w.service.cancelIntervention(99, 12, { reason: 'Doublon.' } as any);
+
+    expect(w.live).toHaveLength(1);
+    expect(w.live[0].oldStatus).toBe('ARTISAN_ACCEPTED');
+    expect(w.live[0].newStatus).toBe('CANCELLED');
+  });
+
   it('a job with no visit is cancelled without touching any visit', async () => {
     const w = makeService({ status: 'WAITING_ADMIN_REVIEW', artisanId: null }, null);
 
@@ -399,15 +441,29 @@ describe('AdminService.cancelIntervention', () => {
     expect(w.writesTo('appointment').length).toBe(0);
   });
 
-  it('a job that was already cancelled changes nothing, not even its visit, and tells nobody', async () => {
+  it('a job that was already cancelled is not written again and tells nobody, but a visit still standing on it is freed (P3-01)', async () => {
     const w = makeService({ status: 'CANCELLED', artisanId: 7 }, visit);
 
     await w.service.cancelIntervention(99, 12, { reason: 'Doublon.' } as any);
 
-    expect(w.writesTo('appointment').length).toBe(0);
+    expect(w.writesTo('intervention')).toEqual([]);
+    expect(w.writesTo('appointment').map((entry) => entry.args.data.status)).toEqual(['CANCELLED']);
+    expect(w.writesTo('appointmentRequest').length).toBe(1);
+    expect(w.writesTo('appointmentReminder').length).toBeGreaterThan(0);
     expect(w.events.length).toBe(0);
     expect(w.live.length).toBe(0);
     expect(w.notices.length).toBe(0);
+  });
+
+  it('a job that was already cancelled whose visit is over or cancelled changes nothing at all', async () => {
+    for (const status of ['CANCELLED', 'COMPLETED', 'NO_SHOW']) {
+      const w = makeService({ status: 'CANCELLED', artisanId: 7 }, { ...visit, status });
+
+      await w.service.cancelIntervention(99, 12, { reason: 'Doublon.' } as any);
+
+      expect(w.writesTo('appointment')).toEqual([]);
+      expect(w.writesTo('intervention')).toEqual([]);
+    }
   });
 
   it('nothing is written when the job is not in the status the screen showed', async () => {

@@ -67,7 +67,7 @@ export interface FinanceSummary {
     unpaid: { count: number; left: number };
   };
 
-  /** Credit notes were issued and the customer has paid more than is now owed: money to give back. */
+  /** Money to give back: credit notes were issued and the customer has paid more than is now owed, a complaint was accepted, or a cancelled job holds money. */
   refundsDue: { count: number; amount: number };
 
   /** Cash taken by artisans and the commission on it that they have not handed over. */
@@ -97,11 +97,15 @@ export interface RefundDueRow {
   fromCreditNotes: number;
   /** What the accepted refunds of complaints still lack: the largest of them (0 for a job with no accepted refund). */
   fromComplaints: number;
-  /** What to give back: the larger of the two (money that goes back answers both). */
+  /** What a cancelled job holds that the standing invoice does not ask (P3-01): all of it when nothing is asked (0 for a job that is not cancelled). */
+  fromCancellation: number;
+  /** When and why the job was cancelled, for a job that owes because of the cancellation (`fromCancellation` above 0); null for any other job, a cancelled one that owes nothing included. */
+  cancelled: { at: Date | null; reason: string | null } | null;
+  /** What to give back: the largest of the three (money that goes back answers all of them). */
   due: number;
   /** The payments the money can go back on, oldest first. */
   payments: Array<{ id: number; method: string; status: string; amount: number; refundable: number; confirmedAt: Date | null }>;
-  /** The date of the first credit note or of the first acceptance of a refund: the one who has waited longest comes first. */
+  /** The date of the first credit note, of the first acceptance of a refund or of the cancellation: the one who has waited longest comes first. */
   since: Date | null;
 }
 

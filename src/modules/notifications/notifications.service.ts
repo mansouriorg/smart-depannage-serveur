@@ -217,6 +217,15 @@ export class NotificationsService {
           NotificationChannel.EMAIL,
         ];
 
+      // A reminder is read when it arrives or not at all: the app, a push, and an e-mail. The reminders say where else it goes
+      // (a guest has no app and no mailbox: an SMS), so these are only what is used when nothing was said (P3-01).
+      case NotificationType.APPOINTMENT_REMINDER:
+        return [
+          NotificationChannel.IN_APP,
+          NotificationChannel.PUSH,
+          NotificationChannel.EMAIL,
+        ];
+
       default:
         return [
           NotificationChannel.IN_APP,
@@ -1748,6 +1757,38 @@ export class NotificationsService {
           interventionId: payment.interventionId,
         },
       });
+    });
+  }
+
+  /**
+   * A job was cancelled while it holds money (P3-01): the money is the customer's, and somebody has to decide how much goes back and
+   * give it back. Told to the accountants and the admins (the refunds-due list shows the job too). It travels as a payment notice, like
+   * the other money notices: a type of its own would change the shared contract of all four other projects for a notice only the back
+   * office reads.
+   */
+  async notifyRefundDueAfterCancellation(interventionId: number, amount: number, actorId?: number) {
+    return this.guarded('refund due after a cancellation', async () => {
+      const notice = {
+        roles: MONEY_ROLES,
+        type: NotificationType.PAYMENT_RECEIVED,
+        priority: NotificationPriority.HIGH,
+        title: 'Mission annulée avec de l’argent encaissé',
+        message: `La mission n° ${interventionId} a été annulée alors que le client avait payé: un remboursement de ${formatMoney(amount)} est à décider.`,
+        entityType: 'INTERVENTION',
+        entityId: interventionId,
+        data: {
+          interventionId,
+          refundDue: true,
+        },
+      };
+
+      // The one who approved the cancellation knows it; the others are told. When nobody else handles money (a team of one admin), the
+      // approver is told too: the notice is how the refund gets decided, and nobody else would see it.
+      const told = await this.notifyAdmins({ ...notice, actorId });
+
+      if (told.length === 0 && actorId !== undefined) return this.notifyAdmins({ ...notice, actorId: undefined });
+
+      return told;
     });
   }
 

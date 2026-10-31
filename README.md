@@ -113,3 +113,49 @@ Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
   column, a view, the status table or the page type. When `smart-depannage-shared` sits next to the server, the test in `src/common/api-contract` fails too.
 - The page type (`paginated()` in `src/common/api-contract/envelope.ts`) is the only place that
   writes a `meta`: a service that builds its own does not pass the tests.
+
+
+## Scheduling: two bookings for one artisan (P3-01)
+
+The code refuses a second visit on an hour an artisan already holds (the availability check under the artisan's lock). PostgreSQL
+refuses it too, whatever wrote the row: an exclusion constraint on `Appointment` (`Appointment_artisan_no_overlap`). Prisma's schema
+cannot say it, so it is applied by a script, once per database. This step is not part of a deploy: until somebody runs it, only the
+code check holds.
+
+Order of the update:
+
+1. Stop the reminders from running on the old code, or deploy in one go: the new code writes a notification type
+   (`APPOINTMENT_REMINDER`) that a database which has not had step 2 yet does not know.
+2. `npx prisma generate && npx prisma db push` (new notification type `APPOINTMENT_REMINDER`, new column `AppointmentRequest.previousStatus`).
+3. Deploy the new code.
+4. `npm run scheduling:constraints` is a dry run: it lists the pairs of visits of one artisan that overlap today (each with the status of
+   its job), says whether the database offers the `btree_gist` extension, and applies nothing.
+   - A visit that took place (its job is finished, its hour is past) is set to `COMPLETED`, which frees its hour; do not cancel it. For
+     example `UPDATE "Appointment" SET "status" = 'COMPLETED' WHERE "id" = 123;`
+   - A visit still to come is moved or cancelled from the dashboard.
+   - A visit that still stands on a **cancelled** job (a job cancelled before a cancellation freed its visit) holds no hour. The dry run
+     says how many there are and leaves them out of the pairs; `--apply` cancels them first, the way a cancellation does (the requests
+     about them are closed, their reminders dropped). Cancelling such a job again from the dashboard does the same for one job.
+5. When the dry run says it is ready, `npm run scheduling:constraints -- --apply` cancels those visits, then creates the `btree_gist`
+   extension (the database user needs the right to create it; on a managed database it is often a setting of the provider) and the
+   constraint. Run again, it finds the constraint and does nothing. Exit codes: 0 ready or applied, 1 overlaps remain or the extension
+   is not offered (the constraint was not created), 2 error.
+
+To take the constraint away: `ALTER TABLE "Appointment" DROP CONSTRAINT "Appointment_artisan_no_overlap";` (the code check stays).
+
+A booking that loses a race against another is refused by the constraint and comes back as a 409 ("Ce créneau vient d’être pris").
+Prisma's `db push` is not made to know the constraint: run it once on a copy of the database after the constraint is applied, to check
+that your Prisma version leaves it in place, and run the script again after a push on a new database.
+
+Visits left in "move requested" or "cancellation requested" with no request waiting (a refusal that could not restore them before this
+change) are not repaired by anything. They are found with
+`SELECT a."id", a."status" FROM "Appointment" a WHERE a."status" IN ('RESCHEDULE_REQUESTED', 'CANCEL_REQUESTED') AND NOT EXISTS (SELECT 1 FROM "AppointmentRequest" r WHERE r."appointmentId" = a."id" AND r."status" = 'PENDING');`
+and set back by hand to `SCHEDULED` (or `CONFIRMED` when the artisan had confirmed).
+
+A job is cancelled from the dashboard's cancellation (`PATCH /admin/interventions/:id/cancel`), by the customer, or by approving a
+cancellation request. A status cannot cancel a job: `PATCH /interventions/:id` and `PATCH /interventions/:id/workflow/status` with the
+status `CANCELLED` are refused (400), and the dashboard's `PATCH /admin/interventions/:id/status` was already. They wrote the status and
+nothing else, so the artisan's hour stayed booked, no reminder was dropped and the back office was not told about money the job still
+held. Saying `CANCELLED` again of a job that is cancelled already is let through.
+
+Reminders go out at most once: a crash between taking a reminder and sending it loses that reminder rather than sending it twice.

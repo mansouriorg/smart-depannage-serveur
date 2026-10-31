@@ -43,7 +43,8 @@ function fullRow(model: string, extra: Record<string, unknown> = {}): Record<str
 }
 
 const KEPT_INSIDE_APPOINTMENT = ['adminNote', 'artisanNote', 'scheduledById'];
-const KEPT_INSIDE_REQUEST_FOR_THE_OTHER_PARTY = ['adminResponse', 'reviewedById'];
+// previousStatus (P3-01) is what the visit was when the request was made: the back office's bookkeeping, read by nobody else.
+const KEPT_INSIDE_REQUEST_FOR_THE_OTHER_PARTY = ['adminResponse', 'reviewedById', 'previousStatus'];
 
 describe('the visit as the customer and the artisan read it (P1-17)', () => {
   it('decides, for every column of the Appointment model, whether the parties read it', () => {
@@ -128,6 +129,8 @@ describe('a request to move or cancel the visit (P1-17)', () => {
     expect(asker).not.toHaveProperty('reviewedById');
     expect(other).not.toHaveProperty('adminResponse');
     expect(other).not.toHaveProperty('reviewedById');
+    expect(asker).not.toHaveProperty('previousStatus');
+    expect(other).not.toHaveProperty('previousStatus');
     expect([...Object.keys(other), ...KEPT_INSIDE_REQUEST_FOR_THE_OTHER_PARTY].sort()).toEqual(schemaColumns('AppointmentRequest'));
   });
 

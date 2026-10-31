@@ -22,6 +22,7 @@
     "status:migrate-vocabulary": "ts-node scripts/migrate-status-vocabulary.ts",
     "money:migrate": "ts-node scripts/migrate-money.ts",
     "invoices:audit": "ts-node scripts/invoice-numbers.ts",
+    "scheduling:constraints": "ts-node scripts/appointment-constraints.ts",
     "proofs:migrate": "ts-node scripts/migrate-proofs.ts",
     "phones:backfill": "ts-node scripts/backfill-phone-keys.ts",
     "artisans:backfill": "ts-node scripts/backfill-artisan-profiles.ts",

@@ -338,6 +338,76 @@ describe('who is told about what', () => {
     }
   });
 
+  it('a job cancelled while it holds money (P3-01): the money people are told, urgently, which job and that a refund is due; not the support, nor the customer, nor the person who approved it', async () => {
+    const { service, notifications } = makeWorld({});
+
+    await service.notifyRefundDueAfterCancellation(100, 90, 1);
+
+    // the accountant (3) and the super admin (5): not the admin who approved it (1), not the inactive admin, not the support (2), the dispatcher (4)
+    expect(recipients(notifications)).toEqual([3, 5]);
+
+    for (const notification of notifications) {
+      expect(notification.type).toBe('PAYMENT_RECEIVED');
+      expect(notification.priority).toBe('HIGH');
+      expect(notification.title).toBe('Mission annulée avec de l’argent encaissé');
+      expect(notification.message).toMatch(/La mission n° 100 a été annulée alors que le client avait payé: un remboursement de 90[ ,.\d]*[A-Za-z]+ est à décider\./);
+      expect(notification.entityType).toBe('INTERVENTION');
+      expect(notification.entityId).toBe(100);
+      expect(notification.data).toEqual({ interventionId: 100, refundDue: true });
+    }
+  });
+
+  it('a job cancelled while it holds money, with nobody named as the one who approved it: the admin is told too', async () => {
+    const { service, notifications } = makeWorld({});
+
+    await service.notifyRefundDueAfterCancellation(100, 90);
+
+    expect(recipients(notifications)).toEqual([1, 3, 5]);
+  });
+
+  it('a job cancelled while it holds money, when the person who approved it is the only one who handles money: they are told too, or nobody would decide the refund (P3-01)', async () => {
+    const { service, notifications } = makeWorld({
+      users: [
+        { id: 1, role: 'ADMIN', isActive: true },
+        { id: 2, role: 'SUPPORT', isActive: true },
+        { id: 4, role: 'DISPATCHER', isActive: true },
+        { id: 10, role: 'CLIENT', isActive: true, email: 'client@example.com', name: 'Sami' },
+      ],
+    });
+
+    await service.notifyRefundDueAfterCancellation(100, 90, 1);
+
+    expect(recipients(notifications)).toEqual([1]);
+    expect(notifications[0].data).toEqual({ interventionId: 100, refundDue: true });
+  });
+
+  it('a job cancelled while it holds money, with others who handle money: the approver is still not told', async () => {
+    const { service, notifications } = makeWorld({
+      users: [
+        { id: 1, role: 'ADMIN', isActive: true },
+        { id: 3, role: 'ACCOUNTANT', isActive: true },
+      ],
+    });
+
+    await service.notifyRefundDueAfterCancellation(100, 90, 1);
+
+    expect(recipients(notifications)).toEqual([3]);
+  });
+
+  it('a reminder that says nothing of where it goes uses the app, the push and the e-mail (P3-01)', async () => {
+    const { service, notifications } = makeWorld({});
+
+    await service.notify({
+      recipientId: 10,
+      type: 'APPOINTMENT_REMINDER' as any,
+      title: 'Rappel de rendez-vous',
+      message: 'Votre intervention est prévue dans 2 heures.',
+    } as any);
+
+    expect(notifications.length).toBe(1);
+    expect([...notifications[0].channels].sort()).toEqual(['EMAIL', 'IN_APP', 'PUSH']);
+  });
+
   it('a card payment to check that is not found tells nobody', async () => {
     const { service, notifications } = makeWorld({ payments: [] });
 

@@ -27,6 +27,8 @@ export const schedulingScenarios: Scenario[] = [
     route: 'POST /scheduling/interventions/:/preferred-time',
     note: 'the time the customer prefers is the customer’s to give (the back office may set it for them)',
     allowed: ['client', 'ticketStaff'],
+    // A visit that is planned is moved by a request, not by this route (P3-01): the customer chooses before a visit is planned.
+    prepare: (w) => w.set('appointment', { status: 'REQUESTED' }),
     request: (h, w) => ({ params: { interventionId: job(h, w) }, body: { preferredDate: '2026-11-03', preferredStartTime: '09:00', preferredEndTime: '11:00' } }),
     hidden: hiddenOnAppointment,
   },
@@ -40,6 +42,8 @@ export const schedulingScenarios: Scenario[] = [
   {
     route: 'POST /scheduling/appointments/:/reschedule-request',
     allowed: ['client', 'artisan', 'ticketStaff'],
+    // The seed holds a move that waits for an answer; a second identical one is refused (P3-01): the question here is who may ask.
+    prepare: (w) => w.set('appointmentRequest', { status: 'REJECTED' }),
     request: (h, w) => ({
       params: { appointmentId: appointment(h, w) },
       body: { requestedStartAt: '2026-11-05T09:00:00.000Z', requestedEndAt: '2026-11-05T11:00:00.000Z', reason: 'Imprévu' },
@@ -56,6 +60,8 @@ export const schedulingScenarios: Scenario[] = [
     route: 'PATCH /scheduling/artisan/appointments/:/accept',
     note: 'the artisan of the visit confirms it (the back office may confirm for them)',
     allowed: ['artisan', 'ticketStaff'],
+    // A visit with no hour has nothing to confirm (P3-01): the visit is planned.
+    prepare: scheduled,
     request: (h, w) => ({ params: { appointmentId: appointment(h, w) } }),
     hidden: (h, person) => (person.role === 'ARTISAN' ? hiddenOnAppointment(h, person) : []),
   },

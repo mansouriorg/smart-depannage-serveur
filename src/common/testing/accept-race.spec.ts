@@ -154,6 +154,12 @@ describe('one artisan taps twice (P1-17)', () => {
     w.set('intervention', { artisanId: A });
     w.set('appointment', { status: 'SCHEDULED', artisanId: A });
 
+    // The visit has an hour (a visit with none has nothing to confirm, P3-01); only the visit of this job: the other household has its own.
+    const visit = w.memory.rows('appointment').find((entry) => entry.id === w.ids.A.appointment) as any;
+
+    visit.startsAt = new Date(Date.now() + 24 * 3600_000);
+    visit.endsAt = new Date(Date.now() + 26 * 3600_000);
+
     const [byMission, byPlanning] = await within(
       Promise.all([accept(w, 'artisanA', id), attempt(w, w.people.artisanA, SCHEDULED_ACCEPT, { params: { appointmentId: w.ids.A.appointment } })]),
     );
