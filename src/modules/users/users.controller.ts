@@ -23,6 +23,7 @@ import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmEmailChangeDto } from './dto/confirm-email-change.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
 import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
+import { UpdateLocaleDto } from './dto/update-locale.dto';
 
 import { Role } from '../../../generated/prisma/client';
 
@@ -134,6 +135,17 @@ export class UsersController {
     @Body() dto: ConfirmPhoneChangeDto,
   ) {
     return this.contactChange.confirmPhoneChange(userId, dto.code);
+  }
+
+  // PATCH /users/me/locale   { locale: 'fr' | 'ar' }
+  // The language of the messages sent to this person (P3-04). It writes that one column and answers { locale }.
+  @UseGuards(JwtAuthGuard)
+  @Patch('me/locale')
+  setMyLocale(
+    @CurrentUser('id') userId: number,
+    @Body() dto: UpdateLocaleDto,
+  ) {
+    return this.usersService.setLocale(userId, dto.locale);
   }
 
   // DELETE /users/me

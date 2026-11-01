@@ -108,6 +108,7 @@ import {
   Status,
 } from '../../../generated/prisma/client';
 import { Permission, can } from '../../common/auth/permissions';
+import { MESSAGES, localeOfUser, moneyIn, notice, recipientLocale, reference, say } from '../../common/i18n/messages';
 
 /** The last page the list can be asked for: with 100 rows a page, the offset stays far below what the database holds. */
 const MAX_PAGE = 1_000_000;
@@ -721,17 +722,26 @@ export class AdminService {
     const now = canonicalStatus(row.status);
     const phone: string | null | undefined = row.client?.phone;
 
-    if (now === 'ARTISAN_ACCEPTED' && phone) {
-      await attempt('text to the customer', () =>
-        this.notifications.sendSms(
-          phone,
-          `Smart Dépannage: Votre demande a été acceptée ! ${row.artisan?.name || 'Un artisan'} prend en charge votre dossier.`,
-        ),
-      );
-    }
+    if ((now === 'ARTISAN_ACCEPTED' || now === 'COMPLETED') && phone) {
+      // The customer is written to in their own language (French when it cannot be read).
+      const locale = await localeOfUser(this.prisma, row.clientId ?? row.client?.id);
 
-    if (now === 'COMPLETED' && phone) {
-      await attempt('text to the customer', () => this.notifications.sendSms(phone, 'Intervention terminée. Merci de votre confiance !'));
+      if (now === 'ARTISAN_ACCEPTED') {
+        const name = row.artisan?.name;
+
+        await attempt('text to the customer', () =>
+          this.notifications.sendSms(
+            phone,
+            name
+              ? say(MESSAGES.mission.accepted.smsNamed, locale, { name })
+              : say(MESSAGES.mission.accepted.sms, locale),
+          ),
+        );
+      }
+
+      if (now === 'COMPLETED') {
+        await attempt('text to the customer', () => this.notifications.sendSms(phone, say(MESSAGES.mission.completed.smsAfterStatusChange, locale)));
+      }
     }
 
     if (cancelled && typeof row.artisanId === 'number') {
@@ -740,8 +750,10 @@ export class AdminService {
           recipientId: row.artisanId,
           actorId: adminId,
           type: NotificationType.GENERAL,
-          title: 'Mission annulée',
-          message: `La mission #${row.id} a été annulée: ${cancelled.reason}`,
+          ...notice((locale) => ({
+            title: say(MESSAGES.mission.cancelled.title, locale),
+            message: say(MESSAGES.mission.cancelled.message, locale, { ref: reference(row.id), reason: cancelled.reason }),
+          })),
           channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
           entityType: 'INTERVENTION',
           entityId: row.id,
@@ -907,18 +919,21 @@ export class AdminService {
       createdById: adminId,
     });
 
+    // The customer is written to in their own language.
+    const locale = recipientLocale(intervention.client);
+
     if (intervention.contactPhone || intervention.client.phone) {
       await this.notifications.sendSms(
         intervention.contactPhone || intervention.client.phone!,
-        `Smart Dépannage: vous avez reçu un devis de ${formatMoney(amountTTC)} TTC.`,
+        say(MESSAGES.quote.sent.sms, locale, { amount: moneyIn(locale, amountTTC) }),
       );
     }
 
     if (intervention.contactEmail || intervention.client.email) {
       await this.notifications.sendEmail(
         intervention.contactEmail || intervention.client.email,
-        'Votre devis Smart Dépannage',
-        `Vous avez reçu un devis de ${formatMoney(amountTTC)} TTC.`,
+        say(MESSAGES.quote.sent.emailSubject, locale),
+        say(MESSAGES.quote.sent.emailBody, locale, { amount: moneyIn(locale, amountTTC) }),
       );
     }
 
@@ -1318,10 +1333,13 @@ export class AdminService {
       });
     });
 
+    // The applicant is written to in the language they applied in.
+    const locale = await localeOfUser(this.prisma, profile.userId);
+
     await this.notifications.sendEmail(
       profile.user.email,
-      'Candidature artisan refusée',
-      `Votre candidature artisan n’a pas été retenue.\n\nMotif: ${reason}`,
+      say(MESSAGES.application.rejected.title, locale),
+      say(MESSAGES.application.rejected.emailBody, locale, { reason }),
     );
 
     return updated;

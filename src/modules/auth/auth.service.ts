@@ -31,6 +31,8 @@ import {
   generateSixDigitCode,
   hashOneTimeCode,
 } from '../../common/auth/one-time-code';
+import type { Locale } from '../../common/i18n/i18n';
+import { MESSAGES, recipientLocale, say } from '../../common/i18n/messages';
 
 import {
   AuthTokenType,
@@ -295,12 +297,16 @@ export class AuthService {
   // profile (P0-09): that needs the one-time code flow of GuestService.
   // ==========================================================
 
-  async register(userDto: {
-    email: string;
-    password: string;
-    name?: string;
-    phone?: string;
-  }) {
+  async register(
+    userDto: {
+      email: string;
+      password: string;
+      name?: string;
+      phone?: string;
+    },
+    /** The language the app showed when the person signed up (X-App-Locale); the account starts in it. */
+    locale?: Locale,
+  ) {
     const normalizedEmail = this.normalizeEmail(userDto.email);
     const normalizedPhone = this.normalizePhone(userDto.phone);
 
@@ -377,6 +383,7 @@ export class AuthService {
       phone: normalizedPhone,
       role: Role.CLIENT,
       isGuest: false,
+      ...(locale ? { locale } : {}),
     });
 
     await this.sendEmailVerification(user.id);
@@ -619,12 +626,15 @@ export class AuthService {
 
     const resetUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
+    const locale = recipientLocale(user);
+
     await this.notificationsService.sendEmail(
       user.email,
-      'Réinitialisation de votre mot de passe',
-      `Cliquez sur ce lien pour réinitialiser votre mot de passe: ${resetUrl}`,
+      say(MESSAGES.auth.passwordReset.subject, locale),
+      say(MESSAGES.auth.passwordReset.body, locale, { link: resetUrl }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.password_reset', vars: { name: user.name, link: resetUrl } },
         // Same life as the token (1 h); a new request revokes the old token, so its message must not go out either.
         validForMs: 60 * 60 * 1000,
@@ -817,12 +827,15 @@ export class AuthService {
 
     const verifyUrl = `${this.getFrontendUrl()}/verify-email?token=${rawToken}`;
 
+    const locale = recipientLocale(user);
+
     const queued = await this.notificationsService.sendEmail(
       user.email,
-      'Vérification de votre email',
-      `Cliquez sur ce lien pour vérifier votre email: ${verifyUrl}`,
+      say(MESSAGES.auth.emailVerification.subject, locale),
+      say(MESSAGES.auth.emailVerification.body, locale, { link: verifyUrl }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.email_verification', vars: { name: user.name, link: verifyUrl } },
         validForMs: 24 * 60 * 60 * 1000,
         replaces: `auth:EMAIL_VERIFICATION:${user.id}`,
@@ -953,11 +966,14 @@ export class AuthService {
       },
     });
 
+    const locale = recipientLocale(user);
+
     const queued = await this.notificationsService.sendSms(
       user.phone,
-      `Votre code de vérification est: ${code}`,
+      say(MESSAGES.auth.phoneCode.sms, locale, { code }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.phone_code', vars: { name: user.name, code } },
         // The code lives 10 minutes; asking again cancels the previous one, so a
         // gateway coming back after an outage never delivers a pile of dead codes.
@@ -1063,12 +1079,15 @@ export class AuthService {
 
     const setupUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
+    const locale = recipientLocale(user);
+
     const queued = await this.notificationsService.sendEmail(
       user.email,
-      'Création de votre mot de passe',
-      `Votre compte a été créé. Cliquez ici pour créer votre mot de passe: ${setupUrl}`,
+      say(MESSAGES.auth.passwordSetup.subject, locale),
+      say(MESSAGES.auth.passwordSetup.body, locale, { link: setupUrl }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
         validForMs: 24 * 60 * 60 * 1000,
         // Setup links are password-reset tokens: a newer one revokes the older one.

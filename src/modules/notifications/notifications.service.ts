@@ -23,6 +23,17 @@ import { pushPayload } from './delivery/push-payload';
 import { isDeliverableEmail } from './delivery/contact';
 import { describeError } from './delivery/delivery-error';
 import { formatMoney, money } from '../../common/money/money';
+import { DEFAULT_LOCALE, Locale } from '../../common/i18n/i18n';
+import {
+  MESSAGES,
+  NoticeTexts,
+  moneyIn,
+  notice,
+  recipientLocale,
+  reference,
+  say,
+  whenIn,
+} from '../../common/i18n/messages';
 
 import {
   NotificationChannel,
@@ -58,6 +69,11 @@ export type SendOptions = {
     vars?: Record<string, string | number | boolean | null | undefined>;
   };
   /**
+   * The language the caller wrote the text in (P3-04). It chooses the Arabic version of the editable template
+   * (`<key>@ar`); without it the French template is looked up, as before.
+   */
+  locale?: Locale;
+  /**
    * How long the message is still worth sending (a code or link that expires
    * in 10 minutes is no use after 10 minutes, e.g. when the gateway was down).
    */
@@ -80,6 +96,11 @@ type NotifyPayload = {
   entityType?: string;
   entityId?: number;
   data?: Prisma.InputJsonValue;
+  /**
+   * The same title and message in the language of whoever reads them (P3-04, see `notice`). `title` and `message` stay the
+   * French ones; a recipient who reads Arabic gets what this writes. Staff are always written to in French.
+   */
+  texts?: NoticeTexts;
 };
 
 @Injectable()
@@ -536,9 +557,13 @@ export class NotificationsService {
 
   async sendSms(phoneNumber: string, message: string, options?: SendOptions) {
     const rendered = options?.template
-      ? await this.templates.render(options.template.key, 'SMS', options.template.vars ?? {}, {
-          content: message,
-        })
+      ? await this.templates.render(
+          options.template.key,
+          'SMS',
+          options.template.vars ?? {},
+          { content: message },
+          options.locale,
+        )
       : { content: message };
 
     return this.queue('SMS', {
@@ -551,10 +576,13 @@ export class NotificationsService {
 
   async sendEmail(email: string, subject: string, content: string, options?: SendOptions) {
     const rendered = options?.template
-      ? await this.templates.render(options.template.key, 'EMAIL', options.template.vars ?? {}, {
-          subject,
-          content,
-        })
+      ? await this.templates.render(
+          options.template.key,
+          'EMAIL',
+          options.template.vars ?? {},
+          { subject, content },
+          options.locale,
+        )
       : { subject, content };
 
     return this.queue('EMAIL', {
@@ -666,19 +694,6 @@ export class NotificationsService {
     return this.queue('PUSH', { userId, subject: title, body: message, data });
   }
 
-  // Old compatibility helpers
-  async notifyArtisan(artisanPhone: string, jobDescription: string) {
-    const msg = `Nouvelle mission disponible: ${jobDescription}. Connectez-vous pour accepter.`;
-
-    return this.sendSms(artisanPhone, msg);
-  }
-
-  async notifyClient(clientPhone: string, artisanName: string) {
-    const msg = `Bonne nouvelle! ${artisanName} a accepté votre demande et est en route.`;
-
-    return this.sendSms(clientPhone, msg);
-  }
-
   // ==========================================================
   // 3. CORE NOTIFICATION CREATION
   // ==========================================================
@@ -720,12 +735,20 @@ export class NotificationsService {
         phone: true,
         role: true,
         isActive: true,
+        locale: true,
       },
     });
 
     if (!recipient || !recipient.isActive) {
       return null;
     }
+
+    // The language of the person (P3-04). Staff are always written to in French.
+    const locale = recipientLocale(recipient);
+    const words =
+      locale !== DEFAULT_LOCALE && payload.texts
+        ? payload.texts(locale)
+        : { title: payload.title, message: payload.message };
 
     const preferences = await this.getOrCreatePreferences(payload.recipientId);
 
@@ -752,8 +775,8 @@ export class NotificationsService {
         actorId: payload.actorId,
         type: payload.type,
         priority: payload.priority || NotificationPriority.NORMAL,
-        title: payload.title,
-        message: payload.message,
+        title: words.title,
+        message: words.message,
         channels: allowedChannels,
         entityType: payload.entityType,
         entityId: payload.entityId,
@@ -762,12 +785,12 @@ export class NotificationsService {
       include: this.notificationInclude,
     });
 
-    await this.deliverNotification(notification);
+    await this.deliverNotification(notification, locale);
 
     return notification;
   }
 
-  private async deliverNotification(notification: any) {
+  private async deliverNotification(notification: any, locale: Locale) {
     const channels = notification.channels as NotificationChannel[];
 
     // The live (socket) copy goes to the recipient's own room, once, even when
@@ -827,7 +850,7 @@ export class NotificationsService {
           channel === NotificationChannel.SMS ||
           channel === NotificationChannel.PUSH
         ) {
-          await this.queueNotificationChannel(notification, channel);
+          await this.queueNotificationChannel(notification, channel, locale);
 
           continue;
         }
@@ -853,6 +876,7 @@ export class NotificationsService {
   private async queueNotificationChannel(
     notification: any,
     channel: 'EMAIL' | 'SMS' | 'PUSH',
+    locale: Locale,
   ) {
     const recipient = notification.recipient;
 
@@ -888,7 +912,7 @@ export class NotificationsService {
         error: 'This address cannot receive e-mail (placeholder address).',
       });
 
-      await this.fallbackToSms(notification);
+      await this.fallbackToSms(notification, locale);
 
       return;
     }
@@ -905,6 +929,7 @@ export class NotificationsService {
         ...flattenVars(notification.data),
       },
       { subject: notification.title, content: notification.message },
+      locale,
     );
 
     const log = await this.logDelivery({
@@ -954,7 +979,7 @@ export class NotificationsService {
    * has a phone, and neither they nor the notification say no to SMS, the text
    * goes there instead, so a guest still hears about their quote.
    */
-  private async fallbackToSms(notification: any) {
+  private async fallbackToSms(notification: any, locale: Locale) {
     const channels = (notification.channels ?? []) as NotificationChannel[];
 
     if (channels.includes(NotificationChannel.SMS) || !notification.recipient?.phone) {
@@ -967,7 +992,7 @@ export class NotificationsService {
       return;
     }
 
-    await this.queueNotificationChannel(notification, NotificationChannel.SMS as 'SMS');
+    await this.queueNotificationChannel(notification, NotificationChannel.SMS as 'SMS', locale);
   }
 
   // ==========================================================
@@ -1282,13 +1307,19 @@ export class NotificationsService {
       return null;
     }
 
+    // " Rendez-vous le 19/10/2026 à 08:00." when the visit has a time, nothing otherwise.
+    const when = (locale: Locale) =>
+      schedule ? ` ${say(MESSAGES.mission.assigned.schedule, locale, { when: whenIn(locale, schedule.when) })}` : '';
+
     await this.notify({
       recipientId: artisanId,
       actorId,
       type: NotificationType.ARTISAN_ASSIGNED,
       priority: NotificationPriority.HIGH,
-      title: 'Nouvelle mission assignée',
-      message: `Une mission vous a été assignée: ${intervention.address}.${schedule ? ` Rendez-vous le ${schedule.when}.` : ''}`,
+      ...notice((locale) => ({
+        title: say(MESSAGES.mission.assigned.artisanTitle, locale),
+        message: `${say(MESSAGES.mission.assigned.artisanMessage, locale, { address: intervention.address })}${when(locale)}`,
+      })),
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });
@@ -1297,8 +1328,10 @@ export class NotificationsService {
       recipientId: intervention.clientId,
       actorId,
       type: NotificationType.ARTISAN_ASSIGNED,
-      title: 'Artisan assigné',
-      message: `Un artisan a été assigné à votre intervention.${schedule ? ` Rendez-vous le ${schedule.when}.` : ''}`,
+      ...notice((locale) => ({
+        title: say(MESSAGES.mission.assigned.clientTitle, locale),
+        message: `${say(MESSAGES.mission.assigned.clientMessage, locale)}${when(locale)}`,
+      })),
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });
@@ -1341,8 +1374,8 @@ export class NotificationsService {
     type: NotificationType;
     staff: { title: string; message: (who: string) => string; priority?: NotificationPriority };
     client?: {
-      title: string;
-      message: (name: string) => string;
+      /** What the customer reads, in the language they read; `name` is the artisan's, or nothing when none is on file. */
+      texts: (locale: Locale, name: string) => { title: string; message: string };
       channels?: NotificationChannel[];
       /** The client's copy does not say who the artisan is (no actor, no artisan id): the artisan left the job. */
       anonymous?: boolean;
@@ -1389,8 +1422,7 @@ export class NotificationsService {
         ...(params.client.anonymous ? { data: { interventionId: params.interventionId } } : { actorId, data }),
         recipientId: context.clientId,
         type: params.type,
-        title: params.client.title,
-        message: params.client.message(context.name),
+        ...notice((locale) => params.client!.texts(locale, context.name)),
         channels: params.client.channels,
       });
     }
@@ -1415,8 +1447,12 @@ export class NotificationsService {
         message: (who) => `${who} a accepté la mission #${interventionId}.`,
       },
       client: {
-        title: 'Mission acceptée',
-        message: (name) => `${name || 'L’artisan'} a accepté votre intervention.`,
+        texts: (locale, name) => ({
+          title: say(MESSAGES.mission.accepted.title, locale),
+          message: name
+            ? say(MESSAGES.mission.accepted.clientNamed, locale, { name })
+            : say(MESSAGES.mission.accepted.client, locale),
+        }),
       },
     });
   }
@@ -1431,8 +1467,12 @@ export class NotificationsService {
         message: (who) => `${who} est en route pour la mission #${interventionId}.`,
       },
       client: {
-        title: 'Artisan en route',
-        message: (name) => `Votre artisan${name ? ` ${name}` : ''} est en route.`,
+        texts: (locale, name) => ({
+          title: say(MESSAGES.mission.onTheWay.title, locale),
+          message: name
+            ? say(MESSAGES.mission.onTheWay.clientNamed, locale, { name })
+            : say(MESSAGES.mission.onTheWay.client, locale),
+        }),
       },
     });
   }
@@ -1447,8 +1487,12 @@ export class NotificationsService {
         message: (who) => `${who} est arrivé sur place (mission #${interventionId}).`,
       },
       client: {
-        title: 'Artisan arrivé',
-        message: (name) => `Votre artisan${name ? ` ${name}` : ''} est arrivé sur place.`,
+        texts: (locale, name) => ({
+          title: say(MESSAGES.mission.arrived.title, locale),
+          message: name
+            ? say(MESSAGES.mission.arrived.clientNamed, locale, { name })
+            : say(MESSAGES.mission.arrived.client, locale),
+        }),
       },
     });
   }
@@ -1476,9 +1520,10 @@ export class NotificationsService {
           `${who} a refusé la mission #${interventionId}${reasonText ? ` (${reasonText})` : ''}. Elle attend un nouvel artisan.`,
       },
       client: {
-        title: 'Nouvel artisan en recherche',
-        message: () =>
-          'Votre artisan n’est plus disponible pour cette intervention. Nous en cherchons un autre et revenons vers vous.',
+        texts: (locale) => ({
+          title: say(MESSAGES.mission.declined.clientTitle, locale),
+          message: say(MESSAGES.mission.declined.clientMessage, locale),
+        }),
         channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.SMS],
         // The client is not given the name or the id of an artisan who is not coming.
         anonymous: true,
@@ -1545,16 +1590,19 @@ export class NotificationsService {
     /** The photo came off the job and can be taken again; false: the job is closed, the team will be in touch. */
     retake?: boolean;
   }) {
-    const what = params.kind === 'BEFORE' ? 'avant' : 'après';
-    const next = params.retake === false ? 'L’équipe vous contactera.' : 'Reprenez-la sur place.';
-
     return this.notify({
       recipientId: params.artisanId,
       actorId: params.actorId,
       type: NotificationType.GENERAL,
       priority: NotificationPriority.HIGH,
-      title: 'Photo refusée',
-      message: `La photo ${what} intervention de la mission #${params.interventionId} a été refusée par l’équipe. ${next}`,
+      ...notice((locale) => ({
+        title: say(MESSAGES.mission.proofRefused.title, locale),
+        message: say(MESSAGES.mission.proofRefused.message, locale, {
+          what: say(params.kind === 'BEFORE' ? MESSAGES.mission.proofRefused.before : MESSAGES.mission.proofRefused.after, locale),
+          ref: reference(params.interventionId),
+          next: say(params.retake === false ? MESSAGES.mission.proofRefused.contact : MESSAGES.mission.proofRefused.retake, locale),
+        }),
+      })),
       entityType: 'INTERVENTION',
       entityId: params.interventionId,
       data: { interventionId: params.interventionId, proofId: params.proofId },
@@ -1576,8 +1624,10 @@ export class NotificationsService {
       recipientId: intervention.clientId,
       actorId: artisanId,
       type: NotificationType.WORK_STARTED,
-      title: 'Travaux commencés',
-      message: 'L’intervention a commencé.',
+      ...notice((locale) => ({
+        title: say(MESSAGES.mission.started.title, locale),
+        message: say(MESSAGES.mission.started.message, locale),
+      })),
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });
@@ -1607,8 +1657,10 @@ export class NotificationsService {
       recipientId: intervention.clientId,
       actorId: artisanId,
       type: NotificationType.WORK_COMPLETED,
-      title: 'Intervention terminée',
-      message: 'L’artisan a terminé l’intervention. Vous pouvez la valider.',
+      ...notice((locale) => ({
+        title: say(MESSAGES.mission.completed.clientTitle, locale),
+        message: say(MESSAGES.mission.completed.clientMessage, locale),
+      })),
       entityType: 'INTERVENTION',
       entityId: interventionId,
     });
@@ -1637,8 +1689,10 @@ export class NotificationsService {
         recipientId: quote.intervention.clientId,
         actorId,
         type: NotificationType.QUOTE_SENT,
-        title: 'Devis reçu',
-        message: `Un devis de ${formatMoney(quote.amountTTC, { currency: quote.currency })} TTC vous a été envoyé.`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.quote.sent.title, locale),
+          message: say(MESSAGES.quote.sent.message, locale, { amount: moneyIn(locale, quote.amountTTC, quote.currency) }),
+        })),
         channels,
         entityType: 'QUOTE',
         entityId: quoteId,
@@ -1669,8 +1723,10 @@ export class NotificationsService {
       const payload = {
         actorId,
         type: NotificationType.QUOTE_ACCEPTED,
-        title: 'Devis accepté',
-        message: `Le client a accepté le devis #${quoteId}.`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.quote.accepted.title, locale),
+          message: say(MESSAGES.quote.accepted.message, locale, { ref: reference(quoteId) }),
+        })),
         entityType: 'QUOTE',
         entityId: quoteId,
         data: {
@@ -1732,8 +1788,10 @@ export class NotificationsService {
         recipientId: payment.intervention.clientId,
         actorId,
         type: NotificationType.PAYMENT_RECEIVED,
-        title: 'Paiement confirmé',
-        message: `Votre paiement de ${formatMoney(payment.amount, { currency: payment.currency })} a été confirmé.`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.payment.received.title, locale),
+          message: say(MESSAGES.payment.received.message, locale, { amount: moneyIn(locale, payment.amount, payment.currency) }),
+        })),
         entityType: 'PAYMENT',
         entityId: paymentId,
         data: {
@@ -1826,16 +1884,20 @@ export class NotificationsService {
       // A refund of a card payment is made at the payment provider by the team (the server does not send it): the customer is told it is
       // recorded and will reach the card, not that the money is already back.
       const byCard = Boolean(payment.providerPaymentId);
-      const sum = formatMoney(amount, { currency: payment.currency });
 
       return this.notify({
         recipientId: payment.intervention.clientId,
         actorId,
         type: NotificationType.PAYMENT_RECEIVED,
-        title: byCard ? 'Remboursement enregistré' : 'Remboursement effectué',
-        message: byCard
-          ? `Un remboursement de ${sum} a été enregistré sur votre paiement par carte. Il sera versé sur votre carte par notre prestataire de paiement.`
-          : `Un remboursement de ${sum} a été effectué sur votre paiement.`,
+        ...notice((locale) => {
+          const sum = moneyIn(locale, amount, payment.currency);
+          const refunded = MESSAGES.payment.refunded;
+
+          return {
+            title: say(byCard ? refunded.byCardTitle : refunded.title, locale),
+            message: say(byCard ? refunded.byCardMessage : refunded.message, locale, { sum }),
+          };
+        }),
         entityType: 'PAYMENT',
         entityId: paymentId,
         data: {
@@ -1867,8 +1929,10 @@ export class NotificationsService {
         recipientId: invoice.intervention.clientId,
         actorId,
         type: NotificationType.INVOICE_READY,
-        title: 'Facture disponible',
-        message: `Votre facture ${invoice.invoiceNumber} est disponible.`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.invoice.ready.title, locale),
+          message: say(MESSAGES.invoice.ready.message, locale, { number: invoice.invoiceNumber }),
+        })),
         entityType: 'INVOICE',
         entityId: invoiceId,
         data: {
@@ -1929,8 +1993,10 @@ export class NotificationsService {
         recipientId,
         actorId,
         type: NotificationType.COMPLAINT_UPDATED,
-        title: 'Réclamation mise à jour',
-        message: `Votre réclamation "${complaint.title}" a été mise à jour.`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.complaint.updated.title, locale),
+          message: say(MESSAGES.complaint.updated.message, locale, { title: complaint.title }),
+        })),
         entityType: 'COMPLAINT',
         entityId: complaintId,
         data: {
@@ -1964,8 +2030,10 @@ export class NotificationsService {
       const payload = {
         actorId,
         type: NotificationType.COMPLAINT_UPDATED,
-        title: 'Nouveau message sur une réclamation',
-        message: `Nouveau message sur la réclamation "${complaint.title}".`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.complaint.reply.title, locale),
+          message: say(MESSAGES.complaint.reply.message, locale, { title: complaint.title }),
+        })),
         entityType: 'COMPLAINT',
         entityId: complaintId,
         data: {
@@ -2099,14 +2167,22 @@ export class NotificationsService {
         artisanId: message.intervention.artisanId,
       });
 
-      const text = (message.content ?? '').trim().slice(0, 140) || 'Pièce jointe';
-      const from = message.sender.name ? `${message.sender.name}: ` : '';
+      const written = (message.content ?? '').trim().slice(0, 140);
+
+      // "Sami: the text", or the text alone; a message with only an attachment says so.
+      const preview = (locale: Locale) => {
+        const text = written || say(MESSAGES.chat.newMessage.attachment, locale);
+
+        return message.sender.name ? say(MESSAGES.chat.newMessage.fromSender, locale, { name: message.sender.name, text }) : text;
+      };
 
       const base = {
         actorId: message.senderId,
         type: NotificationType.GENERAL,
-        title: `Nouveau message (demande #${message.interventionId})`,
-        message: `${from}${text}`,
+        ...notice((locale) => ({
+          title: say(MESSAGES.chat.newMessage.title, locale, { ref: reference(message.interventionId) }),
+          message: preview(locale),
+        })),
         entityType: 'MESSAGE',
         entityId: message.id,
         data: {
@@ -2143,8 +2219,10 @@ export class NotificationsService {
       recipientId: userId,
       actorId,
       type: NotificationType.ARTISAN_APPLICATION_APPROVED,
-      title: 'Candidature artisan approuvée',
-      message: 'Votre candidature artisan a été approuvée.',
+      ...notice((locale) => ({
+        title: say(MESSAGES.application.approved.title, locale),
+        message: say(MESSAGES.application.approved.message, locale),
+      })),
       entityType: 'ARTISAN_APPLICATION',
     });
   }
@@ -2158,10 +2236,11 @@ export class NotificationsService {
       recipientId: userId,
       actorId,
       type: NotificationType.ARTISAN_APPLICATION_REJECTED,
-      title: 'Candidature artisan refusée',
-      message:
-        reason ||
-        'Votre candidature artisan a été refusée. Vous pouvez contacter le support pour plus d’informations.',
+      ...notice((locale) => ({
+        title: say(MESSAGES.application.rejected.title, locale),
+        // The reason the back office wrote is shown as it was written.
+        message: reason || say(MESSAGES.application.rejected.message, locale),
+      })),
       entityType: 'ARTISAN_APPLICATION',
     });
   }

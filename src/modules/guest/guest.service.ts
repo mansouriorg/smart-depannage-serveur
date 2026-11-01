@@ -69,6 +69,8 @@ import { creditNotePdfFile, invoicePdfFile, type PdfFile } from '../invoices/pdf
 import { paymentPosition } from '../cash-ledger/cash-ledger-ops';
 import { PAYMENT_WORDS, ensureCardCurrency, ensureJobTakesPayment, ensureMethodOffered, paymentOptionsOf } from '../payments/payment-options';
 import { money } from '../../common/money/money';
+import type { Locale } from '../../common/i18n/i18n';
+import { MESSAGES, recipientLocale, reference, say } from '../../common/i18n/messages';
 
 import { CreateGuestInterventionDto } from './dto/create-guest-intervention.dto';
 import { GuestQuoteActionDto } from './dto/guest-quote-action.dto';
@@ -255,6 +257,8 @@ export class GuestService {
   private async findOrCreateGuestProfile(
     dto: CreateGuestInterventionDto,
     attempt = 1,
+    /** The language the visitor's page showed (X-App-Locale), or null when the request does not say. */
+    language: Locale | null = null,
   ): Promise<User> {
     const contactPhone = dto.contactPhone?.trim();
     const contactEmail = dto.contactEmail?.trim()?.toLowerCase();
@@ -309,6 +313,11 @@ export class GuestService {
       reusable[0];
 
     if (existingUser) {
+      // A returning visitor who now asks in another language is written to in it from now on; a request that does not say changes nothing.
+      if (language && existingUser.locale !== language) {
+        return this.prisma.user.update({ where: { id: existingUser.id }, data: { locale: language } });
+      }
+
       return existingUser;
     }
 
@@ -337,13 +346,14 @@ export class GuestService {
           role: Role.CLIENT,
           isActive: true,
           isGuest: true,
+          ...(language ? { locale: language } : {}),
         },
       });
     } catch (error) {
       // Two requests with the same details at the same moment: the second one
       // finds the profile the first one just made.
       if (isUniqueViolation(error) && attempt < 3) {
-        return this.findOrCreateGuestProfile(dto, attempt + 1);
+        return this.findOrCreateGuestProfile(dto, attempt + 1, language);
       }
 
       return rethrowContactConflict(error);
@@ -355,7 +365,11 @@ export class GuestService {
   // Public request without account
   // ==========================================================
 
-  async createGuestIntervention(dto: CreateGuestInterventionDto) {
+  async createGuestIntervention(
+    dto: CreateGuestInterventionDto,
+    /** `declaredLocale(request)`: the language the visitor's page showed, or null/absent when the request does not say (P3-04). */
+    language: Locale | null = null,
+  ) {
     // Before the visitor's profile exists: a request that cannot be taken leaves nothing behind (P1-10).
     // The pictures of a visitor's request come afterwards, on the tracking link, so the answer says
     // whether this service expects some.
@@ -364,7 +378,7 @@ export class GuestService {
       subServiceId: dto.subServiceId,
     });
 
-    const guestUser = await this.findOrCreateGuestProfile(dto);
+    const guestUser = await this.findOrCreateGuestProfile(dto, 1, language);
 
     const rawTrackingToken = this.generateRawToken();
     const trackingTokenHash = this.hashToken(rawTrackingToken);
@@ -436,7 +450,7 @@ export class GuestService {
 
     const trackingUrl = buildTrackingUrl(intervention.id, rawTrackingToken);
 
-    await this.sendTrackingLink(guestUser.id, intervention.id, dto, trackingUrl);
+    await this.sendTrackingLink(guestUser.id, intervention.id, dto, trackingUrl, recipientLocale(guestUser));
 
     // The visitor's copy of the request: no column of the back office (internal notes, hash of the
     // tracking token), and no profile nor its id: a visitor who types somebody else's number
@@ -479,11 +493,15 @@ export class GuestService {
     interventionId: number,
     dto: { contactName?: string; contactPhone?: string; contactEmail?: string },
     trackingUrl: string,
+    /** The language of the visitor's profile (what they asked in, or French). */
+    locale: Locale = 'fr',
   ) {
     // The name is typed by the visitor and ends up in an e-mail sent to somebody else's
     // mailbox (and in the editable templates): a name or nothing (see greetingName).
     const name = greetingName(dto.contactName);
-    const greeting = name ? `Bonjour ${name},` : 'Bonjour,';
+    const greeting = name
+      ? say(MESSAGES.guest.tracking.greetingNamed, locale, { name })
+      : say(MESSAGES.guest.tracking.greeting, locale);
     const vars = { name, link: trackingUrl, reference: interventionId };
 
     // A link that is still unsent after a day is no use to somebody who was told to wait.
@@ -496,8 +514,8 @@ export class GuestService {
         // message into the 70-character kind, and the bill goes from 2 messages to 3.
         await this.notifications.sendSms(
           dto.contactPhone,
-          `Smart Dépannage: votre demande #${interventionId} est enregistrée. Suivez-la ici: ${trackingUrl}`,
-          { userId: guestUserId, validForMs: lifetime, template: { key: 'guest.tracking_sms', vars } },
+          say(MESSAGES.guest.tracking.sms, locale, { ref: reference(interventionId), link: trackingUrl }),
+          { userId: guestUserId, locale, validForMs: lifetime, template: { key: 'guest.tracking_sms', vars } },
         );
       }
     } catch (error: any) {
@@ -513,11 +531,9 @@ export class GuestService {
       ) {
         await this.notifications.sendEmail(
           dto.contactEmail,
-          'Votre demande Smart Dépannage',
-          `${greeting}\n\nVotre demande n°${interventionId} est enregistrée. ` +
-            `Suivez son avancement avec ce lien personnel (ne le partagez pas) :\n${trackingUrl}\n\n` +
-            `L'équipe Smart Dépannage`,
-          { userId: guestUserId, validForMs: lifetime, template: { key: 'guest.tracking_email', vars } },
+          say(MESSAGES.guest.tracking.subject, locale),
+          say(MESSAGES.guest.tracking.body, locale, { greeting, reference: interventionId, link: trackingUrl }),
+          { userId: guestUserId, locale, validForMs: lifetime, template: { key: 'guest.tracking_email', vars } },
         );
       }
     } catch (error: any) {
@@ -1212,7 +1228,12 @@ export class GuestService {
   // Send magic link and/or OTP
   // ==========================================================
 
-  async requestAccountActivation(dto: RequestGuestActivationDto, requester = 'unknown') {
+  async requestAccountActivation(
+    dto: RequestGuestActivationDto,
+    requester = 'unknown',
+    /** `declaredLocale(request)`: when the page says its language, the code and the link are written in it, and the profile keeps it. */
+    language: Locale | null = null,
+  ) {
     if (!dto.email && !dto.phone) {
       throw new BadRequestException('Email ou téléphone obligatoire.');
     }
@@ -1282,6 +1303,10 @@ export class GuestService {
       return genericAnswer;
     }
 
+    // The language of THIS code and link is the one the page showed (else the profile's own). It is not stored: this route
+    // answers anybody who knows a number or an address, so it must not change what the owner of the profile receives from now on.
+    const locale = language ?? recipientLocale(user);
+
     // Two separate proofs, each sent where only its owner reads it:
     //  - the LINK goes to the guest's mailbox and proves the e-mail address;
     //  - the CODE goes to the guest's phone and proves the phone number.
@@ -1301,10 +1326,11 @@ export class GuestService {
 
       await this.notifications.sendEmail(
         user.email,
-        'Activation de votre compte',
-        `Cliquez sur ce lien pour activer votre compte: ${activationUrl}`,
+        say(MESSAGES.guest.activation.emailSubject, locale),
+        say(MESSAGES.guest.activation.emailBody, locale, { link: activationUrl }),
         {
           userId: user.id,
+          locale,
           template: { key: 'guest.activation_email', vars: { name: user.name, link: activationUrl } },
           validForMs: 30 * 60 * 1000, // the link's life
           replaces: `guest:magic-link:${user.id}`,
@@ -1324,9 +1350,10 @@ export class GuestService {
 
       await this.notifications.sendSms(
         user.phone,
-        `Smart Dépannage: votre code d’activation est ${otp}. Il est valable 10 minutes.`,
+        say(MESSAGES.guest.activation.sms, locale, { code: otp }),
         {
           userId: user.id,
+          locale,
           template: {
             key: 'guest.activation_sms',
             vars: { name: user.name, code: otp },
@@ -1345,7 +1372,7 @@ export class GuestService {
    * goes to it (same link, template and replacement key as AuthService's). It never
    * fails the activation that was just done.
    */
-  private async sendEmailVerificationLink(user: { id: number; name: string | null; email: string }) {
+  private async sendEmailVerificationLink(user: { id: number; name: string | null; email: string; role?: string; locale?: string }) {
     if (!isDeliverableEmail(user.email)) return;
 
     try {
@@ -1360,12 +1387,15 @@ export class GuestService {
 
       const link = `${this.getFrontendUrl()}/verify-email?token=${rawToken}`;
 
+      const locale = recipientLocale(user);
+
       await this.notifications.sendEmail(
         user.email,
-        'Vérification de votre email',
-        `Cliquez sur ce lien pour vérifier votre email: ${link}`,
+        say(MESSAGES.auth.emailVerification.subject, locale),
+        say(MESSAGES.auth.emailVerification.body, locale, { link }),
         {
           userId: user.id,
+          locale,
           template: { key: 'auth.email_verification', vars: { name: user.name, link } },
           validForMs: 24 * 60 * 60 * 1000,
           replaces: `auth:EMAIL_VERIFICATION:${user.id}`,
@@ -1573,6 +1603,7 @@ export class GuestService {
           name: true,
           phone: true,
           role: true,
+          locale: true,
           isGuest: true,
           guestActivatedAt: true,
           emailVerifiedAt: true,

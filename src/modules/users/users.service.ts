@@ -30,6 +30,8 @@ import {
   AuthTokenType,
 } from '../../../generated/prisma/client';
 import { Permission, can } from '../../common/auth/permissions';
+import type { Locale } from '../../common/i18n/i18n';
+import { MESSAGES, recipientLocale, say } from '../../common/i18n/messages';
 
 @Injectable()
 export class UsersService {
@@ -63,6 +65,9 @@ export class UsersService {
     emailVerifiedAt: true,
     phoneVerifiedAt: true,
     passwordChangedAt: true,
+
+    // The language of the messages sent to the person (P3-04): the apps read it after sign-in and from /users/me.
+    locale: true,
 
     createdAt: true,
     updatedAt: true,
@@ -339,6 +344,31 @@ export class UsersService {
       data,
       select: this.safeUserSelect,
     });
+  }
+
+  // ==========================================================
+  // 8b. CHOOSE THE LANGUAGE
+  // Used by PATCH /users/me/locale (any signed-in account)
+  // ==========================================================
+
+  async setLocale(userId: number, locale: Locale) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, deletedAt: true },
+    });
+
+    if (!user || user.deletedAt) {
+      throw new NotFoundException('Utilisateur introuvable.');
+    }
+
+    // Only the language: nothing else of the account is written here.
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { locale },
+      select: { locale: true },
+    });
+
+    return { locale: updated.locale };
   }
 
   // ==========================================================
@@ -633,13 +663,15 @@ export class UsersService {
   private async sendPasswordSetupLink(user: User): Promise<string | undefined> {
     const setupUrl = await issuePasswordSetupLink(this.prisma, user.id);
 
+    const locale = recipientLocale(user);
+
     await this.notifications.sendEmail(
       user.email,
-      'Création de votre mot de passe',
-      `Votre compte Smart Dépannage a été créé. Choisissez votre mot de passe ` +
-        `(lien valable 24 heures, usage unique) : ${setupUrl}`,
+      say(MESSAGES.auth.passwordSetup.subject, locale),
+      say(MESSAGES.auth.passwordSetup.bodyWithLifetime, locale, { link: setupUrl }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.password_setup', vars: { name: user.name, link: setupUrl } },
         validForMs: 24 * 60 * 60 * 1000,
         replaces: `auth:PASSWORD_RESET:${user.id}`,

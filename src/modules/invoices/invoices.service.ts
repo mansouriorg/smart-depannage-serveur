@@ -16,6 +16,8 @@ import { isDeliverableEmail } from '../notifications/delivery/contact';
 import { currentInvoice, invoiceForArtisan, invoiceForClient } from '../../common/views/views';
 import { totalsFromAmount, totalsFromItems } from '../../common/money/document-totals';
 import { compareMoney, formatMoney, money, sumMoney, toMoneyString } from '../../common/money/money';
+import { DEFAULT_LOCALE } from '../../common/i18n/i18n';
+import { MESSAGES, localeOfUser, moneyIn, say } from '../../common/i18n/messages';
 import { lockJob } from '../assignment/artisan-lock';
 import { amountToPay, paymentFigures, syncFinancials } from '../payments/financials-ops';
 import { jobIsInPaidPayout } from '../cash-ledger/cash-ledger-ops';
@@ -747,15 +749,16 @@ export class InvoicesService {
       );
     }
 
+    // What the back office wrote is sent as it is; the text proposed instead is in the customer's language.
+    const locale = dto.message ? DEFAULT_LOCALE : await localeOfUser(this.prisma, invoice.intervention?.clientId ?? invoice.intervention?.client?.id);
+    const stamped = money(invoice.stampDuty ?? 0) > 0;
+
     const message =
       dto.message ||
-      `Bonjour,
-
-Votre facture ${invoice.invoiceNumber} d’un montant de ${formatMoney(amountToPay(invoice), { currency: invoice.currency })} TTC${money(invoice.stampDuty ?? 0) > 0 ? ' (timbre fiscal compris)' : ''} est disponible.
-
-Vous pouvez la télécharger en PDF depuis votre page de suivi.
-
-Cordialement.`;
+      say(stamped ? MESSAGES.invoice.email.bodyWithStamp : MESSAGES.invoice.email.body, locale, {
+        number: invoice.invoiceNumber,
+        amount: moneyIn(locale, amountToPay(invoice), invoice.currency),
+      });
 
     // The invoice is only marked as sent when the e-mail really can leave:
     // otherwise the back office would believe a customer was billed.
@@ -773,7 +776,7 @@ Cordialement.`;
 
     const queued = await this.notifications.sendEmail(
       email,
-      `Votre facture ${invoice.invoiceNumber}`,
+      say(MESSAGES.invoice.email.subject, locale, { number: invoice.invoiceNumber }),
       message,
     );
 

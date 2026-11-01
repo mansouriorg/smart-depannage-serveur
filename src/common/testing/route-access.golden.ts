@@ -216,6 +216,7 @@ export const ROUTE_ACCESS: Record<string, string> = {
   'PATCH /users/:/reactivate': 'users.manage | ADMIN,SUPER_ADMIN',
   'PATCH /users/location': 'location.report | ADMIN,ARTISAN,SUPER_ADMIN',
   'PATCH /users/me': 'signed-in',
+  'PATCH /users/me/locale': 'signed-in',
   'PATCH /users/profile': 'signed-in',
   'POST /admin/artisans': 'artisans.manage | ADMIN,SUPER_ADMIN',
   'POST /admin/artisans/:/internal-notes': 'notes.write | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',

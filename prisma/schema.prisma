@@ -454,6 +454,11 @@ model User {
   isGuest          Boolean   @default(false)
   guestActivatedAt DateTime?
 
+  // The language of the messages sent to this person and of what the apps show them: "fr" or "ar" (P3-04). Kept as text, not an
+  // enum: the shared package owns the list of languages and the code reads it with localeOf(). French for everybody until they choose;
+  // staff are always written to in French whatever this says.
+  locale String @default("fr")
+
   deletedAt DateTime?
 
   emailVerifiedAt DateTime?

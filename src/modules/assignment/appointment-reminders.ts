@@ -5,6 +5,8 @@ import {
 } from '../../../generated/prisma/client';
 
 import { formatLocalDateTime } from '../../common/availability/weekly-schedule';
+import { DEFAULT_LOCALE, Locale } from '../../common/i18n/i18n';
+import { MESSAGES, say, whenIn } from '../../common/i18n/messages';
 import { canonicalStatus, STATUS_GROUPS } from '../intervention-workflow/intervention-status';
 import { ACTIVE_APPOINTMENT_STATUSES } from './artisan-availability';
 
@@ -71,17 +73,24 @@ export async function replaceDefaultReminders(
  * How long before the visit, said the way a person says it (P3-01): the reminders are kept in minutes (1440, 120), and
  * "dans 1440 minutes" is not something anybody reads. From an hour on it is hours ("24 heures", "2 heures", "1 heure 30",
  * "1 heure 05": the minutes keep two digits, so that "1 heure 5" is never read as an hour and five hours), below that minutes.
+ * In Arabic the same, with the six plural forms ("ساعتين", "ساعة و5 دقائق"; the minutes there are a number of their own, so no zero is added).
  */
-export function reminderLeadWording(minutesBefore: number): string {
+export function reminderLeadWording(minutesBefore: number, locale: Locale = DEFAULT_LOCALE): string {
   const total = Math.max(Math.round(minutesBefore), 0);
+  const lead = MESSAGES.appointment.lead;
 
-  if (total < 60) return `${total} minute${total > 1 ? 's' : ''}`;
+  if (total < 60) return say(lead.minutes, locale, { count: total });
 
   const hours = Math.floor(total / 60);
   const minutes = total % 60;
-  const hoursText = `${hours} heure${hours > 1 ? 's' : ''}`;
+  const hoursText = say(lead.hours, locale, { count: hours });
 
-  return minutes === 0 ? hoursText : `${hoursText} ${String(minutes).padStart(2, '0')}`;
+  if (minutes === 0) return hoursText;
+
+  return say(lead.hoursAndMinutes, locale, {
+    hours: hoursText,
+    minutes: locale === DEFAULT_LOCALE ? String(minutes).padStart(2, '0') : say(lead.minutes, locale, { count: minutes }),
+  });
 }
 
 /**
@@ -116,10 +125,13 @@ export function reminderDueAt(startsAt: Date, minutesBefore: number): Date {
  * What the reminder says: how long before, and the day and hour on the clock of the business, so it is right even if it comes late.
  * With `now`, the time that is really left is the one said (see `reminderLeadMinutes`); without, the time the reminder was made for.
  */
-export function reminderMessage(minutesBefore: number, startsAt: Date, timeZone: string, now?: Date): string {
+export function reminderMessage(minutesBefore: number, startsAt: Date, timeZone: string, now?: Date, locale: Locale = DEFAULT_LOCALE): string {
   const lead = now ? reminderLeadMinutes(minutesBefore, startsAt, now) : minutesBefore;
 
-  return `Votre intervention est prévue dans ${reminderLeadWording(lead)}, le ${formatLocalDateTime(startsAt, timeZone)}.`;
+  return say(MESSAGES.appointment.reminder.message, locale, {
+    lead: reminderLeadWording(lead, locale),
+    when: whenIn(locale, formatLocalDateTime(startsAt, timeZone)),
+  });
 }
 
 /**

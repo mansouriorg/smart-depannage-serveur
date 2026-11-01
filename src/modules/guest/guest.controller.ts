@@ -10,6 +10,7 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
   Res,
   UploadedFiles,
   UseGuards,
@@ -23,6 +24,7 @@ import { GuestService } from './guest.service';
 import { sendPdf } from '../invoices/pdf/pdf-files';
 import { BotCheckGuard } from '../../common/bot-check/bot-check.guard';
 import { BotCheckService } from '../../common/bot-check/bot-check.service';
+import { declaredLocale } from '../../common/i18n/messages';
 import { GuestTrackingLinkGuard } from './guest-tracking-link.guard';
 import {
   RateLimit,
@@ -71,8 +73,9 @@ export class GuestController {
   @UseGuards(RateLimitGuard, BotCheckGuard)
   @RateLimit({ name: 'guest-create', limit: 10, windowMs: 60 * 60_000 })
   @Post('interventions')
-  createGuestIntervention(@Body() dto: CreateGuestInterventionDto) {
-    return this.guestService.createGuestIntervention(dto);
+  createGuestIntervention(@Body() dto: CreateGuestInterventionDto, @Req() request: any) {
+    // The language the visitor's page shows (X-App-Locale) is the language of their profile and of the messages (P3-04).
+    return this.guestService.createGuestIntervention(dto, declaredLocale(request));
   }
 
   // ==========================================================
@@ -329,10 +332,10 @@ export class GuestController {
   @UseGuards(RateLimitGuard)
   @RateLimit({ name: 'guest-request-activation', limit: 5, windowMs: 15 * 60_000 })
   @Post('account/request-activation')
-  requestAccountActivation(@Body() dto: RequestGuestActivationDto, @Ip() ip: string) {
+  requestAccountActivation(@Body() dto: RequestGuestActivationDto, @Ip() ip: string, @Req() request: any) {
     // The client address is part of the quota: one visitor cannot use up the messages an
     // address or a number may receive and keep its real owner out.
-    return this.guestService.requestAccountActivation(dto, ip || 'unknown');
+    return this.guestService.requestAccountActivation(dto, ip || 'unknown', declaredLocale(request));
   }
 
   // ==========================================================

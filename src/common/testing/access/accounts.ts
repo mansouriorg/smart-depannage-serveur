@@ -67,6 +67,7 @@ export const ownPreferences = (person: { id: number }, value: unknown) => ((valu
 export const accountSelfScenarios: SelfScenario[] = [
   { route: 'GET /users/me', reads: true, ...mine },
   { route: 'PATCH /users/me', request: () => ({ body: { name: 'Nouveau nom' } }), ...mine },
+  { route: 'PATCH /users/me/locale', request: () => ({ body: { locale: 'ar' } }), ...mine },
   { route: 'GET /users/profile', reads: true, ...mine },
   { route: 'PATCH /users/profile', request: () => ({ body: { address: '3 avenue Habib Bourguiba' } }), ...mine },
   { route: 'PATCH /users/location', servedRoles: ['ARTISAN', 'BACK_OFFICE'], request: () => ({ body: { latitude: 36.8, longitude: 10.18 } }) },

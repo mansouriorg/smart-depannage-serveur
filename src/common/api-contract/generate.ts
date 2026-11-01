@@ -28,6 +28,8 @@ export const COPIED_FILES: Array<{ from: string; to: string }> = [
   { from: 'src/common/trades/trades.ts', to: 'trades.ts' },
   // Who opens which page of the dashboard, and who sees which button (P1-12): the menu and the route guard read it.
   { from: 'src/common/auth/staff-pages.ts', to: 'staff-pages.ts' },
+  // The languages and the way a message gets its values (P3-04): the server, the website and the phone app read them the same way.
+  { from: 'src/common/i18n/i18n.ts', to: 'i18n.ts' },
 ];
 
 export const SCHEMA_FILE = 'prisma/schema.prisma';
@@ -132,6 +134,7 @@ export function generateContract(read: (relativePath: string) => string): Record
   files['index.ts'] = [
     HEADER,
     "export * from './envelope';",
+    "export * from './i18n';",
     "export * from './intervention-status';",
     "export * from './staff-pages';",
     "export * from './trades';",

@@ -996,6 +996,28 @@ describe('giving a job to an artisan (P1-05)', () => {
       expect(w.live.length).toBe(0);
       expect(w.others.length).toBe(2); // but both are told the new time
     });
+
+    it('both are told the new time in French, and the same notice carries its Arabic for the reader who chose it, with the date and the hour set apart (P3-04)', async () => {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ARTISAN_ACCEPTED', artisanId: artisan });
+
+      await assign(w, id, artisan, monday(9, 10));
+
+      expect(w.others.length).toBe(2);
+
+      for (const payload of w.others) {
+        expect(payload.title).toBe('Rendez-vous modifié');
+        expect(payload.message).toMatch(/^Le rendez-vous de l’intervention #\d+ est fixé le \d{2}\/\d{2}\/\d{4} à \d{2}:\d{2}\.$/);
+        expect(typeof payload.texts).toBe('function');
+        expect(payload.texts('fr')).toEqual({ title: payload.title, message: payload.message });
+
+        const arabic = payload.texts('ar');
+
+        expect(arabic.title).toBe('تم تغيير الموعد');
+        expect(arabic.message).toMatch(/^تم تحديد موعد التدخّل ⁨#\d+⁩: ⁨\d{2}\/\d{2}\/\d{4}⁩ الساعة ⁨\d{2}:\d{2}⁩\.$/);
+      }
+    });
   });
 
   describe('an appointment that is over, or cancelled, when the job changes hands', () => {

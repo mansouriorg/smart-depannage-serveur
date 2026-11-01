@@ -227,6 +227,23 @@ describe('the reminder that goes out', () => {
     expect(d.reminders()[0].sentAt instanceof Date).toBe(true);
   });
 
+  it('the same notice carries its Arabic for the person who chose it: the title, and the hours with the day and the hour of the visit set apart (P3-04)', async () => {
+    const d = desk();
+
+    d.addReminder({ minutesBefore: 120 });
+    await sendAt(d.service);
+
+    const texts = d.told[0].texts;
+
+    expect(typeof texts).toBe('function');
+    expect(texts('fr')).toEqual({ title: d.told[0].title, message: d.told[0].message });
+    expect(texts('ar').title).toBe('تذكير بالموعد');
+    expect(texts('ar').message).toBe(reminderMessage(120, d.visit.startsAt, 'Africa/Tunis', new Date(), 'ar'));
+    expect(texts('ar').message).toMatch(/[؀-ۿ]/);
+    expect(texts('ar').message).toMatch(/⁨\d\d\/\d\d\/\d{4}⁩/);
+    expect(texts('ar').message).not.toBe(d.told[0].message);
+  });
+
   it('the day-before reminder says 24 hours', async () => {
     const d = desk();
 

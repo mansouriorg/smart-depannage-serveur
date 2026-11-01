@@ -76,13 +76,35 @@ export class FakeTable {
       defaults?: () => Row;
       /** `include: { user: true }` support. */
       include?: Record<string, (row: Row) => Row | undefined>;
+      /**
+       * Give back only the columns that `select` names, as the database does. A service that forgets a column in its `select` then
+       * reads `undefined` here as it would with the real database; by default the whole row comes back, which hides that mistake.
+       */
+      honourSelect?: boolean;
     } = {},
   ) {}
+
+  /** The row as the database gives it for this `select` (the whole row when none is given or the table does not honour it). */
+  private picked(row: Row, select?: any): Row {
+    if (!this.options.honourSelect || !select) return { ...row };
+
+    const out: Row = {};
+
+    for (const [name, wanted] of Object.entries<any>(select)) {
+      if (!wanted) continue;
+
+      const load = this.options.include?.[name];
+
+      out[name] = load && typeof wanted === 'object' ? load(row) : row[name];
+    }
+
+    return out;
+  }
 
   private copy(row: Row | undefined, args?: any): Row | null {
     if (!row) return null;
 
-    const out: Row = { ...row };
+    const out: Row = this.picked(row, args?.select);
 
     for (const [name, load] of Object.entries(this.options.include ?? {})) {
       if (args?.include?.[name]) out[name] = load(row);
@@ -115,7 +137,7 @@ export class FakeTable {
     return row;
   }
 
-  create = async ({ data }: any) => ({ ...this.insert(data) });
+  create = async ({ data, select }: any) => this.picked(this.insert(data), select);
 
   findUnique = async ({ where, ...args }: any) => this.copy(this.rows.find((row) => matchesWhere(row, where)), args);
 
@@ -125,14 +147,14 @@ export class FakeTable {
     return this.copy(found, args);
   };
 
-  findMany = async ({ where, orderBy, take, skip }: any = {}) =>
+  findMany = async ({ where, orderBy, take, skip, select }: any = {}) =>
     this.sorted(this.rows.filter((row) => matchesWhere(row, where)), orderBy)
       .slice(skip ?? 0, (skip ?? 0) + (take ?? 1000))
-      .map((row) => ({ ...row }));
+      .map((row) => this.picked(row, select));
 
   count = async ({ where }: any = {}) => this.rows.filter((row) => matchesWhere(row, where)).length;
 
-  update = async ({ where, data }: any) => {
+  update = async ({ where, data, select }: any) => {
     const row = this.rows.find((candidate) => matchesWhere(candidate, where));
 
     if (!row) throw Object.assign(new Error('Record to update not found.'), { code: 'P2025' });
@@ -142,7 +164,7 @@ export class FakeTable {
     this.assertUnique({ ...row, ...changes }, row.id);
     Object.assign(row, changes);
 
-    return { ...row };
+    return this.picked(row, select);
   };
 
   upsert = async ({ where, update, create }: any) => {

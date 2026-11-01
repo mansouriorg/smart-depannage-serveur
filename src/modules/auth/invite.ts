@@ -1,5 +1,7 @@
 import { PrismaService } from '../../prisma/prisma.service';
 
+import { MESSAGES, recipientLocale, say } from '../../common/i18n/messages';
+
 import { PASSWORD_SETUP_TTL_MS, issuePasswordSetupLink } from './password-setup';
 
 /**
@@ -26,7 +28,8 @@ type Notifier = {
 
 export type InviteDeps = { prisma: PrismaService; notifications: Notifier };
 
-export type InviteTarget = { id: number; email: string; name: string; phone?: string | null };
+/** `locale`: the language the technician chose (French when the row does not say; the invitation of an accepted applicant is in the language they applied in). */
+export type InviteTarget = { id: number; email: string; name: string; phone?: string | null; locale?: string | null };
 
 export async function inviteArtisan(
   deps: InviteDeps,
@@ -36,17 +39,20 @@ export async function inviteArtisan(
   const link = await issuePasswordSetupLink(deps.prisma, user.id);
 
   const approved = reason === 'approved';
+  // An invited technician is not staff: their own language, French when they have not chosen.
+  const locale = recipientLocale({ locale: user.locale });
 
   await deps.notifications.sendEmail(
     user.email,
-    approved ? 'Votre candidature est acceptée' : 'Création de votre mot de passe',
     approved
-      ? `Bonne nouvelle: votre candidature artisan est acceptée. Choisissez votre mot de passe ` +
-          `(lien valable 24 heures, usage unique) : ${link}`
-      : `Votre compte Smart Dépannage a été créé. Choisissez votre mot de passe ` +
-          `(lien valable 24 heures, usage unique) : ${link}`,
+      ? say(MESSAGES.application.approved.inviteSubject, locale)
+      : say(MESSAGES.auth.passwordSetup.subject, locale),
+    approved
+      ? say(MESSAGES.application.approved.inviteBody, locale, { link })
+      : say(MESSAGES.auth.passwordSetup.bodyWithLifetime, locale, { link }),
     {
       userId: user.id,
+      locale,
       template: {
         key: approved ? 'artisan.application_approved' : 'auth.password_setup',
         vars: { name: user.name, link },
@@ -60,8 +66,8 @@ export async function inviteArtisan(
     await deps.notifications.sendSms(
       user.phone,
       approved
-        ? `Smart Dépannage: votre candidature est acceptée. Créez votre mot de passe ici: ${link}`
-        : `Smart Dépannage: créez votre mot de passe ici: ${link}`,
+        ? say(MESSAGES.application.approved.inviteSms, locale, { link })
+        : say(MESSAGES.auth.passwordSetup.sms, locale, { link }),
       {
         userId: user.id,
         validForMs: PASSWORD_SETUP_TTL_MS,

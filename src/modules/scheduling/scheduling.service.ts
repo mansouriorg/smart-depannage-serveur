@@ -34,6 +34,7 @@ import { appointmentForParties, appointmentRequestForParties } from '../../commo
 import { isTicketStaff } from '../../common/auth/role-policy';
 import { moneyDueOnCancelledJob } from '../payments/financials-ops';
 import { compareMoney, formatMoney } from '../../common/money/money';
+import { MESSAGES, NoticeTexts, notice, say } from '../../common/i18n/messages';
 
 import { overlapAsConflict } from './appointment-overlap';
 import { baseStatusOf, STEADY_STATUSES, visitStatusFor, WAITING_STATUSES } from './appointment-requests';
@@ -383,8 +384,10 @@ export class SchedulingService {
 
   private async notifyUser(params: {
     userId: number;
+    /** The French title and message, with how to write them for a person who reads another language (see `notice`). */
     title: string;
     message: string;
+    texts: NoticeTexts;
     entityType?: string;
     entityId?: number;
     /** What kind of notice it is (GENERAL unless it is a reminder), where it goes (the app, a push, an e-mail unless told), and what travels with it. */
@@ -398,6 +401,7 @@ export class SchedulingService {
       priority: NotificationPriority.NORMAL,
       title: params.title,
       message: params.message,
+      texts: params.texts,
       channels: params.channels ?? [
         NotificationChannel.IN_APP,
         NotificationChannel.PUSH,
@@ -1444,8 +1448,10 @@ export class SchedulingService {
     if (accepted) {
       await this.notifyUser({
         userId: appointment.clientId,
-        title: 'Mission acceptée',
-        message: 'L’artisan a accepté la mission planifiée.',
+        ...notice((locale) => ({
+          title: say(MESSAGES.mission.accepted.title, locale),
+          message: say(MESSAGES.mission.accepted.planned, locale),
+        })),
         entityType: 'APPOINTMENT',
         entityId: appointment.id,
       });
@@ -1731,17 +1737,22 @@ export class SchedulingService {
 
         const { appointment, recipient } = taken;
 
+        const sentAt = new Date();
+
         const sent: any = await this.notifyUser({
           userId: recipient.id,
           type: NotificationType.APPOINTMENT_REMINDER,
           channels: reminderChannels(recipient),
-          title: 'Rappel de rendez-vous',
-          message: reminderMessage(
-            reminder.minutesBefore,
-            appointment.startsAt as Date,
-            appointment.timezone || getBusinessTimeZone(),
-            new Date(),
-          ),
+          ...notice((locale) => ({
+            title: say(MESSAGES.appointment.reminder.title, locale),
+            message: reminderMessage(
+              reminder.minutesBefore,
+              appointment.startsAt as Date,
+              appointment.timezone || getBusinessTimeZone(),
+              sentAt,
+              locale,
+            ),
+          })),
           entityType: 'APPOINTMENT',
           entityId: reminder.appointmentId,
           // What the phone reads when the reminder is tapped: which job to open.

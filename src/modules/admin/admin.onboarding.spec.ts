@@ -15,6 +15,7 @@ const file = (type: string, status: string, fileUrl: string | null = '/files/5/d
 function makeWorld(options: { simulated?: boolean } = {}) {
   const users = new FakeTable({
     unique: ['email', 'phoneKey'],
+    honourSelect: true,
     defaults: () => ({ isActive: true, isGuest: false, deletedAt: null, phone: null, phoneKey: null }),
   });
   const profiles = new FakeTable({
@@ -240,6 +241,22 @@ describe('refusing an application (P1-11)', () => {
     expect(w.mails[0].content).toContain('Motif: Pièce d’identité illisible, merci de nous contacter');
     // refusing sends no link
     expect(w.tokens.rows).toEqual([]);
+  });
+
+  it('the applicant reads the refusal in the language they applied in (P3-04): Arabic when their account says so, French otherwise', async () => {
+    const w = makeWorld();
+    const french = w.applicant();
+    const arabic = w.applicant();
+
+    w.users.rows.find((user) => user.id === arabic.userId)!.locale = 'ar';
+
+    await w.service.rejectArtisan(9, french.id, { reason: 'Pièce illisible' } as any);
+    await w.service.rejectArtisan(9, arabic.id, { reason: 'صورة غير واضحة' } as any);
+
+    expect(w.mails[0].subject).toBe('Candidature artisan refusée');
+    expect(w.mails[1].subject).toBe('تم رفض طلب الانضمام');
+    expect(w.mails[1].content).toContain('صورة غير واضحة');
+    expect(/[؀-ۿ]/.test(w.mails[0].content)).toBe(false);
   });
 
   it('no reason, a blank one, or a few letters is a 400 and nothing changes', async () => {

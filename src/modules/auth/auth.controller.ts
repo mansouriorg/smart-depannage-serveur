@@ -18,6 +18,7 @@ import {
   RateLimitGuard,
 } from '../../common/rate-limit/rate-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { declaredLocale } from '../../common/i18n/messages';
 
 // DTOs for the new auth features
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -39,10 +40,11 @@ export class AuthController {
   @UseGuards(RateLimitGuard)
   @RateLimit({ name: 'register', limit: 10, windowMs: 60 * 60_000 })
   @Post('register')
-  async register(@Body() registerDto: RegisterDto) {
+  async register(@Body() registerDto: RegisterDto, @Req() request: any) {
     // RegisterDto enforces the password policy (8+ chars, uppercase, digit)
-    // and accepts the optional name and phone (P0-03).
-    return this.authService.register(registerDto);
+    // and accepts the optional name and phone (P0-03). An app that says its language
+    // (X-App-Locale) opens the account in it (P3-04).
+    return this.authService.register(registerDto, declaredLocale(request) ?? undefined);
   }
 
   // ==========================================================

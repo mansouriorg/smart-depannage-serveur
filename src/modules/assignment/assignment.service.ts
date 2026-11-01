@@ -19,6 +19,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
 import { formatLocalDateTime } from '../../common/availability/weekly-schedule';
+import { MESSAGES, notice, reference, say, whenIn } from '../../common/i18n/messages';
 import { instantOf } from '../../common/locale/business-time';
 import { canonicalStatus, LEGACY_STATUS_ALIASES } from '../intervention-workflow/intervention-status';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
@@ -521,8 +522,12 @@ export class AssignmentService {
           recipientId,
           actorId,
           type: NotificationType.GENERAL,
-          title: 'Rendez-vous modifié',
-          message: `Le rendez-vous de l’intervention #${interventionId} est fixé${when ? ` le ${when}` : ''}.`,
+          ...notice((locale) => ({
+            title: say(MESSAGES.mission.rescheduled.title, locale),
+            message: when
+              ? say(MESSAGES.mission.rescheduled.message, locale, { ref: reference(interventionId), when: whenIn(locale, when) })
+              : say(MESSAGES.mission.rescheduled.messageWithoutDate, locale, { ref: reference(interventionId) }),
+          })),
           channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
           entityType: 'INTERVENTION',
           entityId: interventionId,
@@ -536,8 +541,10 @@ export class AssignmentService {
           recipientId: previousArtisanId as number,
           actorId,
           type: NotificationType.GENERAL,
-          title: 'Mission retirée',
-          message: `La mission #${interventionId} a été confiée à un autre artisan.`,
+          ...notice((locale) => ({
+            title: say(MESSAGES.mission.withdrawn.title, locale),
+            message: say(MESSAGES.mission.withdrawn.message, locale, { ref: reference(interventionId) }),
+          })),
           channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
           entityType: 'INTERVENTION',
           entityId: interventionId,

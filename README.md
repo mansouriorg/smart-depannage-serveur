@@ -327,3 +327,82 @@ What changes for somebody, and what the replacements do not do:
   and three comments in `intervention-status.ts` that say "legacy PATCH" (the file is copied into the shared package).
 - `POST /interventions/secure`, which the dashboard's "create a ticket" calls, files the ticket under the staff member's own account and drops the
   contact name and phone the form asks for. It did before; with the public route gone it is the only way to create a ticket from the dashboard.
+
+## Languages: French and Arabic (P3-04)
+
+The product speaks French and Arabic (Modern Standard Arabic, short and plain). French is the source: every French text is what the server
+always said, character for character. Arabic is read right to left; the apps draw the screens, the server decides the **language of what it
+sends**. The admin dashboard stays French, and so does everything written to back-office staff.
+
+**Order of the update.** Take a backup, then `npx prisma generate && npx prisma db push` **before** the new code runs: the step adds one column
+(`User.locale`, text, `"fr"` for every existing row, nothing to migrate by hand), and the new code reads it with every query that reads a whole user row, so
+on a database without it those queries fail (sign-in included). Then deploy the server, then the website and the phone app. The other order
+works too for the apps: an old server ignores `X-App-Locale` and answers 404 to `PATCH /users/me/locale` (the app keeps the choice and tries
+again), and the new server treats an old app (no header) as French.
+
+**Where the language comes from**
+
+- `User.locale` (`"fr"` or `"ar"`, text, `"fr"` by default; `npx prisma db push` adds the column). A customer or a technician chooses it in the
+  website (the language switch) or the phone app (the profile); the app tells the server with `PATCH /users/me/locale  { "locale": "ar" }`, which
+  writes that one column and answers `{ locale }`. `GET /users/me` and the sign-in answers carry it, so an app that signs in on a new phone shows
+  the language the person chose.
+- The header `X-App-Locale: fr|ar` is sent by the website and the phone app on every call. The server reads it (`requestLocale`, `declaredLocale`;
+  a region or a capital letter does not matter, `en` or nothing is "no header"). **The dashboard never sends it, so it always gets French.**
+- `recipientLocale(user, requestLocale?)` is the one rule for "which language do I write to this person in": staff (admin, super admin, support,
+  dispatcher, accountant) are always **French**; a customer or technician gets their `locale`; an account with no usable `locale` gets French;
+  nobody known (a visitor with no account) gets the language of the request. The language of a request never overrides an account's own choice.
+- A visitor with no account: the guest profile keeps the language the website showed when the request was made (`createGuestIntervention`),
+  and the tracking link and the activation code are written in it. A visitor who asks again in another language is written to in that one. (Known limit: a guest profile is found by its phone number, so a request that
+  gives somebody else's number with another language changes the language of that profile's next messages; the owner's next request changes it back.
+  Nothing else of the profile changes, and the same request could already make the platform text that number.)
+  Asking for an activation code does **not** change the profile language (it proves nothing); the code and the link that follow are in the
+  language of the page, falling back to the profile's.
+- Registration (`POST /auth/register`) opens the account in the language of the request. A technician's application keeps the language it was made
+  in, and the invitation sent when it is approved is written in it.
+
+**The texts** (`src/common/i18n`)
+
+- `i18n.ts` is the small formatter shared with the apps (it is copied into the shared package by the contract generator): `{name}` values and
+  `{count, plural, ...}` with the Arabic forms (zero, one, two, few, many, other) and `=N`. `#`, `<`, `>` and the straight apostrophe are not part of
+  the syntax; a test rejects them.
+- `messages/` holds **every text sent to a customer, a visitor or a technician** as a pair `{ fr, ar, isolate }`, grouped by area (auth, guest,
+  mission, quote, payment, invoice, appointment, complaint, chat, application). Use `say(MESSAGES.area.key, locale, { values })`. `isolate` names
+  the values that are Latin letters or digits (a name, an address, an amount, a request number, a code): in Arabic they are wrapped in
+  direction isolates so that the right-to-left sentence does not reorder them; in French nothing is added. **A link is deliberately not isolated**
+  (a message app that makes a link tappable could take the invisible mark into the address, or into a one-time token); it stays on a line of its own
+  or after a colon. `moneyIn` and `whenIn` write an amount and a moment for each language.
+- `messages.fr-pins.spec.ts` pins the French of every message to the wording that existed before this step; `messages.spec.ts` checks that every
+  message has both languages and the same values in both, that an Arabic text has Arabic letters and Arabic punctuation, that it does not use the
+  words the glossary forbids for the customer, the technician and the job, and that no link is isolated.
+- Messages to back-office staff (the staff notices, the alert SMS, the internal notes) are **not** in `messages/` and stay French. A text that a
+  person typed (a note, a description, a name) is sent as typed.
+
+**Notifications and templates**
+
+- A notification is written in its recipient's language at the moment it is made (`recipientLocale`), and a text message that falls back from a
+  push is rendered again in the same language. A push, an SMS and an e-mail of one event are in one language.
+- The templates an administrator writes in the table of templates are French and keep their keys. The Arabic version of a message is another row
+  whose key is `<key>@ar` (`QUOTE_SENT.SMS@ar`, `guest.tracking_sms@ar`). A message to somebody who reads Arabic looks for that row only; when it is
+  missing, inactive, of another type, or has lost its code or link, the built-in Arabic text is sent. The French template is never used for
+  Arabic, and the two are never mixed. There is no screen for the `@ar` rows yet; they are created through the existing template route.
+
+**Refusals (the sentence of an error)**
+
+- The services throw French sentences (`throw new ConflictException('...')`). `I18nExceptionFilter` (`APP_FILTER`) gives the body of the answer in
+  Arabic when the request says `X-App-Locale: ar`, from the dictionary `errors/errors.ar.ts`: the key is the French sentence with `{}` where a value
+  goes, the Arabic text uses `{1}`, `{2}` for them. A sentence the dictionary does not know stays French, so a missing entry is never a failure.
+  Without the header the body is the one Nest would have sent (same object, same status). A translation error never turns a refusal into a 500.
+- `errors.coverage.spec.ts` scans the source for every sentence thrown in an `HttpException` and fails when one is not in the dictionary or has the
+  wrong values, so a new refusal must get its Arabic in the same change.
+
+**Tests that keep this honest:** `i18n.format.spec.ts` (the formatter and the plural forms), `request-locale.spec.ts`, `messages/*.spec.ts`,
+`errors/*.spec.ts`, and one `*.locale.spec.ts` beside each service that sends a message (users, auth, guest, invoices, assignment, artisans,
+notifications, admin).
+
+**Not done here / to know**
+
+- A technician who was signed in before this step has `locale = "fr"` on the server until they open the profile, pick a language, or sign in again
+  (the app tells the server then). The server cannot tell a French default from a French choice.
+- The Arabic of the messages needs a reader whose first language it is before it is relied on; the glossary decisions are listed in the plan.
+- An Arabic text message with a link is two or more SMS segments (Arabic is sent in UCS-2: 70 characters for one segment).
+- A text typed by a person, and the names of the services and trades in the database, are not translated.

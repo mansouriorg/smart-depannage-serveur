@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { PrismaService } from '../../../prisma/prisma.service';
+import { DEFAULT_LOCALE, Locale } from '../../../common/i18n/i18n';
 
 import { describeError } from './delivery-error';
 import { renderTemplate } from './render-template';
@@ -55,6 +56,12 @@ function mentions(text: string, placeholder: string): boolean {
  *   guest.tracking_sms  guest.tracking_email  (the link to follow a request made with no account)
  * A key with no active template of the right type uses the built-in text, so
  * an empty table changes nothing.
+ *
+ * Languages (P3-04): the templates the team writes are French and keep the keys above. The Arabic version of a message is
+ * another row whose key is `<key>@ar` (`QUOTE_SENT.SMS@ar`, `auth.phone_code@ar`). A message to somebody who reads Arabic looks for
+ * that row only: when it does not exist, is inactive, is of another type or has lost its code or link, the built-in Arabic text is
+ * sent. The French template is never used for Arabic, and the two are never mixed. `MUST_CONTAIN_ONE_OF` is the same for both
+ * (it is kept under the base key).
  */
 @Injectable()
 export class MessageTemplatesService {
@@ -92,18 +99,21 @@ export class MessageTemplatesService {
   }
 
   async render(
-    key: string,
+    templateKey: string,
     type: 'SMS' | 'EMAIL' | 'PUSH',
     vars: Vars,
     fallback: { subject?: string; content: string },
+    locale: Locale = DEFAULT_LOCALE,
   ): Promise<RenderedMessage> {
+    // French keeps the key it always had; any other language has a row of its own (the key below is the one that is read and logged).
+    const key = locale === DEFAULT_LOCALE ? templateKey : `${templateKey}@${locale}`;
     const template = await this.find(key);
 
     if (!template || !template.isActive || template.type !== type || !String(template.content ?? '').trim()) {
       return { subject: fallback.subject, content: fallback.content, fromTemplate: false };
     }
 
-    const needed = MUST_CONTAIN_ONE_OF[key];
+    const needed = MUST_CONTAIN_ONE_OF[templateKey];
 
     if (needed && !needed.some((placeholder) => mentions(String(template.content), placeholder))) {
       if (!this.warnedKeys.has(key)) {

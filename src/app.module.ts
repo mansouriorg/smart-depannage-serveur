@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -17,6 +17,7 @@ import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { StripStaffFieldsInterceptor } from './common/interceptors/strip-staff-fields.interceptor';
 import { MoneyNumbersInterceptor } from './common/money/money-numbers.interceptor';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
+import { I18nExceptionFilter } from './common/i18n/errors/i18n-exception.filter';
 
 // ==========================================================
 // 2. EXISTING FEATURE MODULES
@@ -176,6 +177,8 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     { provide: APP_INTERCEPTOR, useClass: StripStaffFieldsInterceptor },
     // Amounts are DECIMAL columns: Prisma answers Decimal objects, the apps read numbers (P2-01).
     { provide: APP_INTERCEPTOR, useClass: MoneyNumbersInterceptor },
+    // The sentence of a refusal in the language the app asks for (X-App-Locale); without the header the body is Nest's own (P3-04).
+    { provide: APP_FILTER, useClass: I18nExceptionFilter },
   ],
 })
 export class AppModule {}

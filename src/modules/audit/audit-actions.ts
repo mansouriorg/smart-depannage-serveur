@@ -153,6 +153,7 @@ export const AUDITED_ROUTES: Readonly<Record<string, AuditedRoute>> = Object.fre
   'POST /users/:/password-setup-link': { action: 'users.send-password-setup', targetType: 'User', param: 'id' },
   'PATCH /users/:/reactivate': { action: 'users.reactivate', targetType: 'User', param: 'id' },
   'PATCH /users/me': { action: 'account.update', targetType: 'User', self: true },
+  'PATCH /users/me/locale': { action: 'account.set-locale', targetType: 'User', self: true, details: ['locale'] },
   'PATCH /users/profile': { action: 'account.update-profile', targetType: 'User', self: true },
   'DELETE /users/me': { action: 'account.delete', targetType: 'User', self: true },
   'POST /users/me/email-change': { action: 'account.request-email-change', targetType: 'User', self: true },

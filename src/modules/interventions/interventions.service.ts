@@ -13,6 +13,7 @@ import { isTicketStaff } from '../../common/auth/role-policy';
 import { withoutStaffFields } from './intervention-redaction';
 import { interventionForClient } from '../../common/views/views';
 import { initialStatus, statusesInGroup } from '../intervention-workflow/intervention-status';
+import { MESSAGES, localeOfUser, say } from '../../common/i18n/messages';
 
 @Injectable()
 export class InterventionsService {
@@ -152,9 +153,12 @@ export class InterventionsService {
     // 4. 📱 SMS Notification to Client
     if (updatedIntervention.client?.phone) {
       try {
+        // The customer's own language (French when it cannot be read).
+        const locale = await localeOfUser(this.prisma, updatedIntervention.clientId ?? updatedIntervention.client?.id);
+
         await this.notifications.sendSms(
           updatedIntervention.client.phone,
-          `Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.`
+          say(MESSAGES.mission.completed.smsAfterProof, locale),
         );
       } catch (error) {
         this.logger.error(`After a job was closed, the text message to the client failed (${describeError(error)}).`);

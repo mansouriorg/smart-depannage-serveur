@@ -8,7 +8,7 @@ import { InterventionsService } from './interventions.service';
 
 const secrets = { adminInternalNotes: 'client difficile', trackingToken: 'hash-of-the-link', cancelledById: 9 };
 
-function makeWorld(result: Partial<{ completed: boolean; throws: Error }> = {}) {
+function makeWorld(result: Partial<{ completed: boolean; throws: Error }> = {}, customer: { locale?: string | null } | null = null) {
   const submitted: any[] = [];
   const sockets: any[] = [];
   const texts: Array<[string, string]> = [];
@@ -28,7 +28,9 @@ function makeWorld(result: Partial<{ completed: boolean; throws: Error }> = {}) 
   };
   const gateway: any = { sendInterventionStatus: (payload: any) => sockets.push(payload) };
   const notifications: any = { sendSms: async (to: string, text: string) => texts.push([to, text]) };
-  const service = new InterventionsService({} as any, gateway, notifications, {} as any, proofs);
+  // The customer's own language is read from their account (French when it cannot be read: an empty database stand-in).
+  const prisma: any = customer ? { user: { findUnique: async ({ select }: any) => (select?.locale ? { role: 'CLIENT', locale: customer.locale } : { role: 'CLIENT' }) } } : {};
+  const service = new InterventionsService(prisma, gateway, notifications, {} as any, proofs);
 
   return { service, submitted, sockets, texts };
 }
@@ -57,6 +59,18 @@ describe('completeWork (P1-07)', () => {
     expect(answer.status).toBe('COMPLETED');
     expect(answer.proof).toMatchObject({ id: 5, status: 'ACCEPTED', message: 'Photo enregistrée.' });
     expect(JSON.stringify(answer)).not.toMatch(/client difficile|hash-of-the-link|cancelledById/);
+  });
+
+  it('the text to the customer is in the language of their account (P3-04): Arabic for an Arabic one, French for the others', async () => {
+    const arabic = makeWorld({}, { locale: 'ar' });
+    const french = makeWorld({}, { locale: 'fr' });
+    const unread = makeWorld();
+
+    for (const w of [arabic, french, unread]) await w.service.completeWork(12, { id: 7, role: 'ARTISAN' as any }, { file, capture });
+
+    expect(arabic.texts[0][1]).toBe('تم إنجاز التدخّل! حُفظ إثبات الإنجاز بأمان في طلبك. Smart-Dépannage');
+    expect(french.texts[0][1]).toBe('Smart Dépannage: Votre intervention est terminée ! Une preuve sécurisée a été enregistrée sur votre dossier.');
+    expect(unread.texts[0][1]).toBe(french.texts[0][1]);
   });
 
   it('a live event or a text message that fails does not turn a closed job into an error', async () => {

@@ -43,6 +43,8 @@ import { CollectSignatureDto } from './dto/collect-signature.dto';
 import { ReportProblemDto } from './dto/report-problem.dto';
 import { ContactMessageDto } from './dto/contact-message.dto';
 import { tradeFieldsFor, tradeFieldsForEdit, tradesOfProfile } from './trade-fields';
+import type { Locale } from '../../common/i18n/i18n';
+import { MESSAGES, localeOfUser, recipientLocale, say } from '../../common/i18n/messages';
 import { FitJob, misfitOf } from './job-fit';
 import { drawableZones } from '../../common/geo/zone-match';
 
@@ -293,7 +295,12 @@ export class ArtisansService {
   // 2. ARTISAN ONBOARDING
   // ==========================================================
 
-  async apply(dto: ApplyArtisanDto, documents: ApplicantDocuments = {}) {
+  async apply(
+    dto: ApplyArtisanDto,
+    documents: ApplicantDocuments = {},
+    /** `declaredLocale(request)`: the language the form was shown in, or null when the request does not say (P3-04). */
+    language: Locale | null = null,
+  ) {
     // A name that is no trade is refused before anything is created (P1-10).
     const trades = tradeFieldsFor({ specialty: dto.specialty, specialties: dto.specialties })!;
 
@@ -348,6 +355,7 @@ export class ArtisansService {
       hashedPassword,
       existingUser,
       documents,
+      language,
     });
 
     // The back office is told there is something in its queue; a failure here never undoes the application.
@@ -355,20 +363,23 @@ export class ArtisansService {
       .notifyArtisanApplication({ profileId: result.id, name: dto.name, trades: trades.specialties })
       .catch(() => undefined);
 
+    // The applicant is written to in the language the form was shown in; an account that already exists keeps the one it has.
+    const locale = language ?? recipientLocale(existingUser);
+
     // Public form: the destination is whatever the visitor typed, so each one
     // gets a few messages per hour at most.
     if (this.rateLimit.allowSendTo('email', email)) {
       await this.notifications.sendEmail(
         email,
-        'Candidature artisan reçue',
-        'Votre candidature artisan a bien été reçue. Notre équipe va l’examiner.',
+        say(MESSAGES.application.received.subject, locale),
+        say(MESSAGES.application.received.body, locale),
       );
     }
 
     if (phone && this.rateLimit.allowSendTo('sms', phone)) {
       await this.notifications.sendSms(
         phone,
-        'Smart Dépannage: votre candidature artisan a bien été reçue.',
+        say(MESSAGES.application.received.sms, locale),
       );
     }
 
@@ -392,8 +403,9 @@ export class ArtisansService {
     hashedPassword: string;
     existingUser: { id: number; role: Role } | null;
     documents: ApplicantDocuments;
+    language: Locale | null;
   }) {
-    const { dto, trades, zones, email, phoneCols, hashedPassword, existingUser, documents } = params;
+    const { dto, trades, zones, email, phoneCols, hashedPassword, existingUser, documents, language } = params;
     const staged: Array<{ kind: ApplicantDocumentKind; file: Express.Multer.File; stored: StoredLocalFile }> = [];
 
     try {
@@ -415,6 +427,7 @@ export class ArtisansService {
                 password: hashedPassword,
                 role: Role.ARTISAN,
                 isActive: false,
+                ...(language ? { locale: language } : {}),
               },
             })
             .catch(rethrowContactConflict));
@@ -1192,9 +1205,11 @@ export class ArtisansService {
     });
 
     if (updated.client?.phone) {
+      const locale = await localeOfUser(this.prisma, updated.clientId ?? updated.client?.id);
+
       await this.notifications.sendSms(
         updated.client.phone,
-        'Smart Dépannage: votre intervention est terminée.',
+        say(MESSAGES.mission.completed.sms, locale),
       );
     }
 

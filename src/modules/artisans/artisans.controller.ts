@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Req,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -38,6 +39,7 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { declaredLocale } from '../../common/i18n/messages';
 
 @Controller('artisans')
 export class ArtisansController {
@@ -75,14 +77,18 @@ export class ArtisansController {
       companyDocument?: Express.Multer.File[];
       insuranceCertificate?: Express.Multer.File[];
     } = {},
+    @Req() request?: any,
   ) {
     const dto = parseApplication(data);
 
-    return this.artisansService.apply(dto, {
+    const documents = {
       identity: files?.identityDocument?.[0],
       company: files?.companyDocument?.[0],
       insurance: files?.insuranceCertificate?.[0],
-    });
+    };
+
+    // The language the form was shown in (X-App-Locale): the applicant's account starts in it, and so do the messages (P3-04).
+    return this.artisansService.apply(dto, documents, declaredLocale(request));
   }
 
   // ==========================================================

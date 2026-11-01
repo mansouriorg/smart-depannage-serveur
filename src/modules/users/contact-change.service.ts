@@ -41,6 +41,7 @@ import {
   hashOneTimeCode,
 } from '../../common/auth/one-time-code';
 import { AuthTokenType } from '../../../generated/prisma/client';
+import { MESSAGES, localeOfUser, recipientLocale, say } from '../../common/i18n/messages';
 
 const EMAIL_LINK_LIFE_MS = 60 * 60 * 1000;
 const PHONE_CODE_LIFE_MS = 10 * 60 * 1000;
@@ -78,6 +79,9 @@ type AccountRow = {
   isGuest: boolean;
   isActive: boolean;
   deletedAt: Date | null;
+  /** What the messages to this person are written in (P3-04); the role decides whether the back office gets French whatever this says. */
+  role: string;
+  locale: string;
 };
 
 /**
@@ -147,6 +151,8 @@ export class ContactChangeService implements OnApplicationBootstrap {
         isGuest: true,
         isActive: true,
         deletedAt: true,
+        role: true,
+        locale: true,
       },
     });
 
@@ -278,12 +284,15 @@ export class ContactChangeService implements OnApplicationBootstrap {
 
     const link = `${getFrontendUrl()}/confirm-email-change?token=${rawToken}`;
 
+    const locale = recipientLocale(user);
+
     const queued = await this.notifications.sendEmail(
       email,
-      'Confirmez votre nouvelle adresse e-mail',
-      `Cliquez sur ce lien pour confirmer cette adresse comme adresse de votre compte (valable 1 heure): ${link}`,
+      say(MESSAGES.auth.emailChange.subject, locale),
+      say(MESSAGES.auth.emailChange.body, locale, { link }),
       {
         userId: user.id,
+        locale,
         template: {
           key: 'auth.email_change',
           vars: { name: user.name, link },
@@ -455,11 +464,14 @@ export class ContactChangeService implements OnApplicationBootstrap {
       },
     });
 
+    const locale = recipientLocale(user);
+
     const queued = await this.notifications.sendSms(
       phone,
-      `Votre code de vérification est: ${code}`,
+      say(MESSAGES.auth.phoneCode.sms, locale, { code }),
       {
         userId: user.id,
+        locale,
         template: { key: 'auth.phone_code', vars: { name: user.name, code } },
         validForMs: PHONE_CODE_LIFE_MS,
         replaces: `auth:PHONE_CHANGE:${user.id}`,
@@ -503,7 +515,7 @@ export class ContactChangeService implements OnApplicationBootstrap {
     const columns = phoneColumns(record.newValue);
     const oldPhone = user.phone;
     const now = new Date();
-    let released: Array<{ id: number; name: string | null; email: string }> = [];
+    let released: Array<{ id: number; name: string | null; email: string; role?: string; locale?: string }> = [];
 
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -522,7 +534,7 @@ export class ContactChangeService implements OnApplicationBootstrap {
         // keeps it.
         const holders = await tx.user.findMany({
           where: { ...phoneWhere(columns.phone), NOT: { id: user.id } },
-          select: { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true },
+          select: { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true, role: true, locale: true },
         });
 
         if (holders.some((holder) => holder.phoneVerifiedAt)) {
@@ -552,7 +564,7 @@ export class ContactChangeService implements OnApplicationBootstrap {
           });
         }
 
-        released = holders.map(({ id, name, email }) => ({ id, name, email }));
+        released = holders.map(({ id, name, email, role, locale }) => ({ id, name, email, role, locale }));
 
         await tx.user.update({
           where: { id: user.id },
@@ -712,9 +724,12 @@ export class ContactChangeService implements OnApplicationBootstrap {
     result: { emailChangedFrom?: string; phoneChangedFrom?: string | null },
     updated: { email?: string; phone?: string | null },
   ) {
+    // The notice is written in the language of the person it is about (French for the back office), read once for both.
+    const locale = result.emailChangedFrom || result.phoneChangedFrom !== undefined ? await localeOfUser(this.prisma, user.id) : undefined;
+
     if (result.emailChangedFrom && updated.email) {
       await this.noticeEmailChanged(
-        user,
+        { ...user, locale },
         result.emailChangedFrom,
         updated.email,
         'support',
@@ -730,7 +745,7 @@ export class ContactChangeService implements OnApplicationBootstrap {
 
       if (account) {
         await this.noticePhoneChanged(
-          { id: user.id, name: user.name ?? null, email: account.email },
+          { id: user.id, name: user.name ?? null, email: account.email, locale },
           result.phoneChangedFrom,
           updated.phone ?? null,
         );
@@ -743,7 +758,7 @@ export class ContactChangeService implements OnApplicationBootstrap {
   // ==========================================================
 
   private async noticeEmailChanged(
-    user: { id: number; name?: string | null },
+    user: { id: number; name?: string | null; role?: string | null; locale?: string | null },
     oldEmail: string,
     newEmail: string,
     by: 'self' | 'support',
@@ -751,14 +766,16 @@ export class ContactChangeService implements OnApplicationBootstrap {
     if (!isDeliverableEmail(oldEmail)) return;
 
     try {
+      const locale = recipientLocale(user);
+      const body = by === 'support' ? MESSAGES.auth.emailChangedNotice.bodyBySupport : MESSAGES.auth.emailChangedNotice.body;
+
       await this.notifications.sendEmail(
         oldEmail,
-        "L'adresse e-mail de votre compte a changé",
-        `L'adresse e-mail de votre compte Smart Dépannage est maintenant ${maskEmail(newEmail)}` +
-          (by === 'support' ? ' (modifiée par notre équipe).' : '.') +
-          " Si ce n'est pas vous, contactez-nous immédiatement.",
+        say(MESSAGES.auth.emailChangedNotice.subject, locale),
+        say(body, locale, { newEmail: maskEmail(newEmail) }),
         {
           userId: user.id,
+          locale,
           template: {
             key: 'auth.email_changed_notice',
             vars: { name: user.name, newEmail: maskEmail(newEmail), by },
@@ -771,17 +788,19 @@ export class ContactChangeService implements OnApplicationBootstrap {
   }
 
   /** The number was claimed by somebody who proved they own it: the account that held it is told. */
-  private async noticePhoneReleased(user: { id: number; name: string | null; email: string }) {
+  private async noticePhoneReleased(user: { id: number; name: string | null; email: string; role?: string | null; locale?: string | null }) {
     if (!isDeliverableEmail(user.email)) return;
 
     try {
+      const locale = recipientLocale(user);
+
       await this.notifications.sendEmail(
         user.email,
-        'Le numéro de téléphone de votre compte a été retiré',
-        'Le numéro de téléphone de votre compte Smart Dépannage a été retiré: une autre personne a prouvé ' +
-          "qu'il est le sien (code reçu par SMS). Vous pouvez ajouter un autre numéro depuis votre profil.",
+        say(MESSAGES.auth.phoneReleasedNotice.subject, locale),
+        say(MESSAGES.auth.phoneReleasedNotice.body, locale),
         {
           userId: user.id,
+          locale,
           template: { key: 'auth.phone_released_notice', vars: { name: user.name } },
         },
       );
@@ -791,33 +810,35 @@ export class ContactChangeService implements OnApplicationBootstrap {
   }
 
   private async noticePhoneChanged(
-    user: { id: number; name: string | null; email: string },
+    user: { id: number; name: string | null; email: string; role?: string | null; locale?: string | null },
     oldPhone: string | null,
     newPhone: string | null,
   ) {
     if (!isDeliverableEmail(user.email)) return;
 
     try {
-      await this.notifications.sendEmail(
-        user.email,
-        'Le numéro de téléphone de votre compte a changé',
-        (newPhone
-          ? `Le numéro de téléphone de votre compte Smart Dépannage est maintenant ${maskPhone(newPhone)}`
-          : 'Le numéro de téléphone a été retiré de votre compte Smart Dépannage') +
-          (oldPhone ? ` (avant: ${maskPhone(oldPhone)}).` : '.') +
-          " Si ce n'est pas vous, changez votre mot de passe et contactez-nous.",
-        {
-          userId: user.id,
-          template: {
-            key: 'auth.phone_changed_notice',
-            vars: {
-              name: user.name,
-              newPhone: newPhone ? maskPhone(newPhone) : '',
-              oldPhone: oldPhone ? maskPhone(oldPhone) : '',
-            },
+      const locale = recipientLocale(user);
+      const notice = MESSAGES.auth.phoneChangedNotice;
+      const body = newPhone
+        ? oldPhone
+          ? say(notice.bodyChangedFrom, locale, { newPhone: maskPhone(newPhone), oldPhone: maskPhone(oldPhone) })
+          : say(notice.bodyChanged, locale, { newPhone: maskPhone(newPhone) })
+        : oldPhone
+          ? say(notice.bodyRemovedFrom, locale, { oldPhone: maskPhone(oldPhone) })
+          : say(notice.bodyRemoved, locale);
+
+      await this.notifications.sendEmail(user.email, say(notice.subject, locale), body, {
+        userId: user.id,
+        locale,
+        template: {
+          key: 'auth.phone_changed_notice',
+          vars: {
+            name: user.name,
+            newPhone: newPhone ? maskPhone(newPhone) : '',
+            oldPhone: oldPhone ? maskPhone(oldPhone) : '',
           },
         },
-      );
+      });
     } catch (error: any) {
       this.logger.warn(`Phone change notice not queued (${describeError(error)})`);
     }
