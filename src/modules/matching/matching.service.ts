@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
 import { normalizeTradeText, textPointsToTrade } from '../../common/trades/trades';
 import { distanceKm } from '../../common/geo/distance';
+import { positionAge, readLocationConfig } from '../../common/geo/location-rules';
 import { ZoneCircle, zoneVerdict } from '../../common/geo/zone-match';
 import {
   WeeklySlot,
@@ -669,6 +670,8 @@ export class MatchingService {
       },
     });
 
+    const { staleAfterMinutes } = readLocationConfig();
+
     const scored = artisans
       .map((artisan) => {
         const profile = artisan.artisanProfile;
@@ -706,6 +709,10 @@ export class MatchingService {
                 lng2: artisan.longitude,
               })
             : null;
+
+        // How old the position that the distance is measured from: a technician whose phone has been silent is flagged for the dispatcher (P3-05).
+        // The score is not changed by it: the flag is the dispatcher's to weigh, not a hidden penalty.
+        const position = positionAge((artisan as any).positionAt, new Date(), staleAfterMinutes);
 
         const distance = this.distanceScore(distanceKm);
         reasons.push(distance.reason);
@@ -843,6 +850,10 @@ export class MatchingService {
             distanceKm === null ? null : Number(distanceKm.toFixed(2)),
 
           estimatedArrivalMinutes,
+
+          // fresh, stale (no news for the silence limit or longer) or unknown (never sent, or sent before the time was kept)
+          locationState: position.state,
+          locationAgeMinutes: position.ageMinutes,
 
           currentStatus: profile.availabilityStatus,
           isAcceptingJobs: profile.isAcceptingJobs,

@@ -447,6 +447,8 @@ model User {
 
   latitude  Float?
   longitude Float?
+  // When the phone last said where it was (P3-05): the position above is as old as this. Null for a position nobody has sent.
+  positionAt DateTime?
 
   role     Role    @default(CLIENT)
   isActive Boolean @default(true)
@@ -471,6 +473,9 @@ model User {
 
   clientInterventions  Intervention[] @relation("ClientInterventions")
   artisanInterventions Intervention[] @relation("ArtisanInterventions")
+
+  // The positions a technician's phone sent over the last days (P3-05).
+  locationPings ArtisanLocationPing[]
 
   artisanProfile ArtisanProfile?
 
@@ -1001,6 +1006,9 @@ model Intervention {
   cashLedgerEntries CashLedgerEntry[]
 
   missionRejections ArtisanMissionRejection[]
+
+  // The positions sent while the technician was on this job (P3-05): the route that can be replayed for a dispute.
+  locationPings ArtisanLocationPing[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1814,6 +1822,34 @@ model ArtisanMissionRejection {
   @@index([artisanProfileId])
   @@index([interventionId])
   @@index([reason])
+}
+
+/// One position a technician's phone sent (P3-05). Kept for a few days (LOCATION_HISTORY_DAYS, 7 by default), longer for a job that has
+/// an open complaint, then deleted by the server's daily purge. `interventionId` is the job the technician was on when it was sent
+/// (on the way, arrived or at work); it is null for a position sent with no such job, and stays null if the job is deleted.
+model ArtisanLocationPing {
+  id Int @id @default(autoincrement())
+
+  artisanId Int
+  artisan   User @relation(fields: [artisanId], references: [id], onDelete: Cascade)
+
+  interventionId Int?
+  intervention   Intervention? @relation(fields: [interventionId], references: [id], onDelete: SetNull)
+
+  latitude  Float
+  longitude Float
+
+  // What the phone said about the reading, when it said it: the radius of doubt in metres, the speed in metres per second (as the phone
+  // reports it), the heading in degrees.
+  accuracyMeters Float?
+  speedMps       Float?
+  heading        Float?
+
+  recordedAt DateTime @default(now())
+
+  @@index([artisanId, recordedAt])
+  @@index([interventionId, recordedAt])
+  @@index([recordedAt])
 }
 
 // ==========================================================

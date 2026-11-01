@@ -40,6 +40,7 @@ import { InterventionEventsModule } from './modules/intervention-events/interven
 import { ClientInterventionsModule } from './modules/client-interventions/client-interventions.module';
 import { QuotesModule } from './modules/quotes/quotes.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { LocationsModule } from './modules/locations/locations.module';
 import { InvoicesModule } from './modules/invoices/invoices.module';
 import { ComplaintsModule } from './modules/complaints/complaints.module';
 import { MessagesModule } from './modules/messages/messages.module';
@@ -143,6 +144,7 @@ const noSniff = (res: { setHeader(name: string, value: string): unknown }) => {
     ClientInterventionsModule,
     QuotesModule,
     PaymentsModule,
+    LocationsModule,
     InvoicesModule,
     ComplaintsModule,
     BusinessModule,

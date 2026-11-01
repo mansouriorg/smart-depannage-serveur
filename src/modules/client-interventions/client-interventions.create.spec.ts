@@ -4,7 +4,7 @@ import { ClientInterventionsService } from './client-interventions.service';
 
 process.env.FRONTEND_URL = 'https://www.example.tn';
 
-function makeWorld(options: { eventsFail?: boolean } = {}) {
+function makeWorld(options: { eventsFail?: boolean; savedAddress?: any } = {}) {
   const interventions = new FakeTable({ defaults: () => ({ photos: [] }) });
   const order: string[] = [];
   const alerts: any[] = [];
@@ -17,7 +17,7 @@ function makeWorld(options: { eventsFail?: boolean } = {}) {
         return { ...interventions.insert(data), client: { id: data.clientId, name: 'Sami' }, subService: null };
       },
     },
-    clientAddress: { findUnique: async () => null },
+    clientAddress: { findUnique: async () => options.savedAddress ?? null },
     subService: fakeSubServices(),
   };
   const events: any = {
@@ -65,6 +65,51 @@ describe('a request made by a signed-in client (P1-04)', () => {
 
     expect(w.alerts.length).toBe(1);
     expect(typeof answer.rawTrackingToken).toBe('string');
+  });
+});
+
+describe('the point on the map of a request made from a saved address (P3-05)', () => {
+  const saved = { id: 5, clientId: 70, latitude: 36.8, longitude: 10.18 };
+
+  it('takes the point of the saved address when the request carries none', async () => {
+    const w = makeWorld({ savedAddress: saved });
+
+    const answer: any = await w.service.create(70, { ...dto(), savedAddressId: 5 });
+
+    expect([answer.latitude, answer.longitude]).toEqual([36.8, 10.18]);
+  });
+
+  it('keeps the point the request itself carries, when it is a place', async () => {
+    const w = makeWorld({ savedAddress: saved });
+
+    const answer: any = await w.service.create(70, { ...dto(), savedAddressId: 5, latitude: 35.7, longitude: 10.8 });
+
+    expect([answer.latitude, answer.longitude]).toEqual([35.7, 10.8]);
+  });
+
+  it('a point that is not a place (0, 0 from a phone with no fix) does not hide the one of the saved address', async () => {
+    const w = makeWorld({ savedAddress: saved });
+
+    const answer: any = await w.service.create(70, { ...dto(), savedAddressId: 5, latitude: 0, longitude: 0 });
+
+    expect([answer.latitude, answer.longitude]).toEqual([36.8, 10.18]);
+  });
+
+  it('a saved address with no point, and a request with none, stay without one', async () => {
+    const w = makeWorld({ savedAddress: { id: 5, clientId: 70, latitude: null, longitude: null } });
+
+    const answer: any = await w.service.create(70, { ...dto(), savedAddressId: 5 });
+
+    expect(answer.latitude ?? null).toBe(null);
+    expect(answer.longitude ?? null).toBe(null);
+  });
+
+  it('a request with no saved address is written as before', async () => {
+    const w = makeWorld({ savedAddress: saved });
+
+    const answer: any = await w.service.create(70, { ...dto(), latitude: 36.1, longitude: 9.9 });
+
+    expect([answer.latitude, answer.longitude]).toEqual([36.1, 9.9]);
   });
 });
 

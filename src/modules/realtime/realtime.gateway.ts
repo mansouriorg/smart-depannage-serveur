@@ -15,6 +15,8 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret, socketCorsOptions } from '../../config/env';
 import { artisanPositionIsShared } from '../../common/views/views';
+import { coordinateOf, optionalNumber, validPoint } from '../../common/geo/location-rules';
+import { planPing } from '../locations/ping-plan';
 import { decimalsToNumbers } from '../../common/money/money-numbers';
 
 import {
@@ -347,12 +349,16 @@ export class RealtimeGateway
     }
 
     const interventionId = Number(body.interventionId);
-    const latitude = Number(body.latitude);
-    const longitude = Number(body.longitude);
 
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    // Finite, on the earth and not the 0,0 of a phone with no reading (P3-05): checked here so that nothing is read or written for it.
+    // A null, an empty text or a list is not a number: `Number(null)` is 0, and a half reading (a phone's NaN travels as null) must not become a place.
+    const point = validPoint(coordinateOf(body.latitude), coordinateOf(body.longitude));
+
+    if (!point) {
       throw new WsException('Invalid GPS coordinates.');
     }
+
+    const { latitude, longitude } = point;
 
     const intervention = await this.prisma.intervention.findUnique({
       where: {
@@ -381,40 +387,60 @@ export class RealtimeGateway
 
     const artisanId = intervention.artisanId || user.id;
 
-    await this.prisma.user.update({
-      where: {
-        id: artisanId,
-      },
-      data: {
-        latitude,
-        longitude,
-      },
-    });
+    // What the technician's own phone says is news (P3-05): it gets its time, it is kept in the history and it makes the position fresh.
+    // A position sent by the staff for the technician is written as it always was, and is none of these: the phone did not say it, so
+    // it does not make the technician look reachable and it does not enter the trail that is replayed for a dispute.
+    const fromThePhone = user.role === Role.ARTISAN && user.id === artisanId;
+    const plan = fromThePhone ? await planPing(this.prisma, artisanId, { latitude, longitude, accuracy: body.accuracy, speed: body.speed, heading: body.heading }, { interventionId }) : null;
 
-    await this.prisma.artisanProfile.updateMany({
-      where: {
-        userId: artisanId,
-      },
-      data: {
-        lastSeenAt: new Date(),
-      },
-    });
+    // One transaction: the position, its time and the history row are written together or not at all. A position the staff sends has no time:
+    // it is not the phone's word, so it must not be taken for fresh (and an older time of the phone does not stay beside new coordinates).
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: {
+          id: artisanId,
+        },
+        data: {
+          latitude,
+          longitude,
+          positionAt: plan ? plan.positionAt : null,
+        },
+      }),
+
+      ...(plan
+        ? [
+            this.prisma.artisanProfile.updateMany({
+              where: {
+                userId: artisanId,
+              },
+              data: {
+                lastSeenAt: plan.positionAt,
+              },
+            }),
+          ]
+        : []),
+
+      ...(plan?.history ? [this.prisma.artisanLocationPing.create({ data: plan.history })] : []),
+    ]);
 
     const payload = {
       interventionId,
       artisanId,
       latitude,
       longitude,
-      accuracy: body.accuracy,
-      heading: body.heading,
-      speed: body.speed,
+      // What the customer's room receives is checked like what is stored: a number inside its range, else nothing.
+      accuracy: optionalNumber(body.accuracy, 0, 100_000) ?? undefined,
+      heading: optionalNumber(body.heading, 0, 360) ?? undefined,
+      speed: optionalNumber(body.speed, 0, 200) ?? undefined,
       status: intervention.status,
-      updatedAt: new Date(),
+      // A position the staff typed has no time of its own (the phone did not say it): null, so that nobody reads it as news.
+      updatedAt: plan ? plan.positionAt : null,
     };
 
     // The back office follows the artisan all the time; the customer (and everybody else in the
-    // room of the job) only while the artisan is on the way (P1-08).
-    if (artisanPositionIsShared(intervention.status)) {
+    // room of the job) only while the artisan is on the way (P1-08), and only a position the technician's own phone sent: one the staff
+    // typed in has no time, the pages of the customer refuse it for that reason, and the room must not hand it over as news.
+    if (plan && artisanPositionIsShared(intervention.status)) {
       this.emitToIntervention(
         interventionId,
         'artisan.location.updated',

@@ -9,11 +9,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateClientInterventionDto } from './dto/create-client-intervention.dto';
 import { InterventionEventsService } from '../intervention-events/intervention-events.service';
 import { StaffAlertsService } from '../interventions/staff-alerts.service';
+import { validPoint } from '../../common/geo/location-rules';
 import { buildTrackingUrl } from '../../common/links/tracking-url';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { initialStatus } from '../intervention-workflow/intervention-status';
 import { checkRequestedService } from '../service-catalog/catalog-check';
-import { chatsOf, interventionForClient } from '../../common/views/views';
+import { chatsOf, interventionForClient, withArrival } from '../../common/views/views';
 import { INVOICES_OF_JOB, INVOICES_OF_JOB_WITH_LINES } from '../invoices/invoice-includes';
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import { cancelVisit } from '../assignment/appointment-release';
@@ -57,6 +58,9 @@ export class ClientInterventionsService {
   }
 
   async create(clientId: number, dto: CreateClientInterventionDto) {
+    // A request made from a saved address that has a point on the map has that point: the time of arrival and the route of a dispute measure to it.
+    let savedPoint: { latitude: number; longitude: number } | null = null;
+
     if (dto.savedAddressId) {
       const savedAddress = await this.prisma.clientAddress.findUnique({
         where: { id: dto.savedAddressId },
@@ -65,7 +69,13 @@ export class ClientInterventionsService {
       if (!savedAddress || savedAddress.clientId !== clientId) {
         throw new ForbiddenException('Adresse sauvegardée invalide.');
       }
+
+      savedPoint = validPoint(savedAddress.latitude, savedAddress.longitude);
     }
+
+    // The point the request itself carries is the one kept; the saved address's is used when the request carries none that is a place.
+    const ownPoint = validPoint(dto.latitude, dto.longitude);
+    const point = ownPoint ?? savedPoint;
 
     // The sub-service exists, is on offer and belongs to the trade asked for (P1-10). Its photos
     // cannot be required here: a picture can only be uploaded once the request exists, so the
@@ -86,8 +96,8 @@ export class ClientInterventionsService {
         urgency: dto.urgency || UrgencyLevel.NORMAL,
         address: dto.address,
         savedAddressId: dto.savedAddressId,
-        latitude: dto.latitude,
-        longitude: dto.longitude,
+        latitude: point ? point.latitude : dto.latitude,
+        longitude: point ? point.longitude : dto.longitude,
         photos: dto.photos || [],
         preferredDate: dto.preferredDate
           ? new Date(dto.preferredDate)
@@ -188,6 +198,8 @@ export class ClientInterventionsService {
             phone: true,
             latitude: true,
             longitude: true,
+            // When it was sent: the arrival time is given only from a position that is not old (P3-05).
+            positionAt: true,
           },
         },
         events: {
@@ -223,7 +235,8 @@ export class ClientInterventionsService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    return interventionForClient(intervention);
+    // While the technician is on the way, the job also says when they will be there (P3-05).
+    return withArrival(interventionForClient(intervention), intervention);
   }
 
   async tracking(clientId: number, id: number) {

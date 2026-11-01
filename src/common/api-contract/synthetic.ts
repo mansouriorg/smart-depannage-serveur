@@ -55,6 +55,8 @@ export function buildRow(schema: ParsedSchema, modelName: string, depth: number,
     if (key === 'Intervention.status') row[field.name] = variant.jobStatus;
     else if (key === 'Invoice.status') row[field.name] = variant.invoiceStatus;
     else if (key === 'Quote.status') row[field.name] = 'SENT';
+    // The position of a technician is told to the customer only while it is fresh (P3-05): a stale one would make the views drop the fields.
+    else if (key === 'User.positionAt') row[field.name] = new Date();
     else if (key === 'InterventionEvent.type') row[field.name] = schema.enums.InterventionEventType.find((type) => type !== 'INTERNAL_NOTE_ADDED');
     else if (key === 'InterventionEvent.title') row[field.name] = 'Titre';
     else if (key === 'Message.deletedAt' || key === 'ComplaintMessage.deletedAt') row[field.name] = null;

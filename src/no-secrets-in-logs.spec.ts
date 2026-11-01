@@ -46,6 +46,9 @@ const SAFE_METHODS = new Set(['toLowerCase', 'toUpperCase', 'join', 'map', 'toFi
 const SAFE_NAMES = new Set([
   'attempt',
   'channel',
+  'deleted', // how many old positions the nightly round deleted
+  'heldJobs', // how many jobs in dispute kept their positions
+  'historyDays', // the setting: how many days positions are kept
   'key', // a rate limit or template key
   'label',
   'name', // a placeholder or provider name

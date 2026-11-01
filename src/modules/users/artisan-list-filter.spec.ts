@@ -55,8 +55,8 @@ describe('GET /users/artisans: who the dropdown of the dashboard may offer (P1-0
 });
 
 describe('GET /users/artisans: what each artisan carries (P1-12)', () => {
-  it('the profile summary is the trade and the real rating, nothing that is private to the profile', () => {
-    expect(Object.keys(ARTISAN_LIST_PROFILE_SELECT).sort()).toEqual(['averageRating', 'ratingCount', 'specialty']);
+  it('the profile summary is the trade, the real rating and whether the technician is at work, nothing that is private to the profile', () => {
+    expect(Object.keys(ARTISAN_LIST_PROFILE_SELECT).sort()).toEqual(['availabilityStatus', 'averageRating', 'ratingCount', 'specialty']);
     expect(Object.values(ARTISAN_LIST_PROFILE_SELECT).every((value) => value === true)).toBe(true);
   });
 

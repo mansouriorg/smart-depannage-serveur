@@ -46,6 +46,8 @@ import { totalsFromItems } from '../../common/money/document-totals';
 import { compareMoney, formatMoney, money, subtractMoney, sumMoney, sumMoneyOf } from '../../common/money/money';
 import { paymentFigures, REFUND_ALREADY_MADE, REFUND_MADE_DECISIONS, settleComplaintRefund } from '../payments/financials-ops';
 import { lockJob } from '../assignment/artisan-lock';
+import { positionAge } from '../../common/geo/location-rules';
+import { routeOfJob } from '../locations/route-of-job';
 import { INVOICES_OF_JOB } from '../invoices/invoice-includes';
 import { STAMP_DUTY_MAX, printedSettingsChanged } from '../invoices/invoice-legal';
 import { startOfBusinessDay, startOfBusinessMonth } from '../../common/locale/business-time';
@@ -182,6 +184,7 @@ export class AdminService {
     isGuest: true,
     latitude: true,
     longitude: true,
+    positionAt: true,
     createdAt: true,
     updatedAt: true,
   };
@@ -1517,16 +1520,34 @@ export class AdminService {
 
   async getArtisanLocation(profileId: number) {
     const profile = await this.getArtisanDetail(profileId);
+    const age = positionAge((profile.user as any).positionAt);
 
     return {
       artisanProfileId: profile.id,
       userId: profile.userId,
       latitude: profile.user.latitude,
       longitude: profile.user.longitude,
+      // When the phone last said where it is, and whether that is too long ago (P3-05). `lastSeenAt` is the last sign of life of any kind
+      // (the online switch counts), so it is not the age of the position.
+      positionAt: (profile.user as any).positionAt ?? null,
+      locationState: age.state,
+      locationAgeMinutes: age.ageMinutes,
       lastSeenAt: profile.lastSeenAt,
       availabilityStatus: profile.availabilityStatus,
       isAcceptingJobs: profile.isAcceptingJobs,
     };
+  }
+
+  /** Where the technician went on a job, for a dispute (P3-05). */
+  async getInterventionRoute(id: number, artisanId: number | null = null) {
+    this.refuseUnknownJob(id);
+
+    // A number the database could not hold is no technician (and would come back from it as an error, not as "not found").
+    if (artisanId !== null && (!Number.isInteger(artisanId) || artisanId < 1 || artisanId > MAX_ROW_ID)) {
+      throw new NotFoundException('Technicien introuvable.');
+    }
+
+    return routeOfJob(this.prisma, id, new Date(), artisanId);
   }
 
   async getArtisanRevenue(profileId: number) {

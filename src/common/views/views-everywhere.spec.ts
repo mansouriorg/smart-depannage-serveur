@@ -201,7 +201,8 @@ describe('the sockets push a view to the customer, the artisan and the room (P1-
     const source = code('modules/realtime/realtime.gateway.ts');
     const method = methodOf(source, 'updateArtisanLocation');
 
-    expect(method).toMatch(/if \(artisanPositionIsShared\(intervention\.status\)\) \{\s*this\.emitToIntervention\(/);
+    // only on the way, and only a position the technician's own phone sent (P3-05): a position the staff typed in has no plan and no time
+    expect(method).toMatch(/if \(plan && artisanPositionIsShared\(intervention\.status\)\) \{\s*this\.emitToIntervention\(/);
   });
 });
 

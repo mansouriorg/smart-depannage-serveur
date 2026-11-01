@@ -95,6 +95,8 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
       { method: 'GET', path: '/admin/interventions' },
       // The case file of a job (P1-14): the whole history, for the roles that work on jobs.
       { method: 'GET', path: '/admin/interventions/:id' },
+      // Where the technician went on the job, for a dispute (P3-05): the same four roles as the case file.
+      { method: 'GET', path: '/admin/interventions/:id/route' },
       { method: 'GET', path: '/proofs' },
     ],
   },

@@ -44,6 +44,7 @@ import {
   paymentForClient,
   quoteForParties,
   quotesForParties,
+  withArrival,
 } from '../../common/views/views';
 import { FilesService } from '../files/files.service';
 import { ComplaintsService } from '../complaints/complaints.service';
@@ -215,6 +216,8 @@ export class GuestService {
             phone: true,
             latitude: true,
             longitude: true,
+            // When it was sent: the arrival time is given only from a position that is not old (P3-05).
+            positionAt: true,
           },
         },
         subService: true,
@@ -548,9 +551,10 @@ export class GuestService {
   async track(interventionId: number, rawTrackingToken: string) {
     // What the link's holder may see: their request, the timeline without the back office's
     // lines, the quotes that were sent, what they paid. Never the account behind the request.
-    return interventionForTracking(
-      await this.findInterventionByPublicToken(interventionId, rawTrackingToken),
-    );
+    const row = await this.findInterventionByPublicToken(interventionId, rawTrackingToken);
+
+    // While the technician is on the way, the page also gets when they will be there (P3-05).
+    return withArrival(interventionForTracking(row), row);
   }
 
   // ==========================================================

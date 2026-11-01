@@ -28,6 +28,12 @@ function makeService(profile: any = {}, completedCount = 0) {
         counts.push(args);
         return completedCount;
       },
+      // The jobs the technician is on, to tell which one a position belongs to (P3-05): none here.
+      findMany: async () => [],
+    },
+    artisanLocationPing: {
+      findFirst: async () => null,
+      create: async ({ data }: any) => data,
     },
     $transaction: async (list: Promise<unknown>[]) => Promise.all(list),
   };

@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 
 import { AdminService } from './admin.service';
+import { routeArtisanOf } from '../locations/route-query';
 
 import {
   AdminContactDto,
@@ -83,6 +84,15 @@ export class AdminController {
   @Get('interventions/:id')
   getInterventionDetail(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.getInterventionDetail(id);
+  }
+
+  // The route of a job (P3-05): the positions the technician sent on the way, with the moments of the job, for a dispute. After a hand-over
+  // the route is the one of the technician who holds the job; `?artisanId=` reads the one of another technician who sent positions on it.
+  @RequirePermission(Permission.LOCATION_HISTORY)
+  @Get('interventions/:id/route')
+  getInterventionRoute(@Param('id', ParseIntPipe) id: number, @Query('artisanId') artisanId?: string) {
+    // Text, not a number: see routeArtisanOf (a number typed query that is absent becomes NaN under the global pipe, and the call is refused).
+    return this.adminService.getInterventionRoute(id, routeArtisanOf(artisanId));
   }
 
   @RequirePermission(Permission.TICKETS_DISPATCH)

@@ -35,6 +35,7 @@ import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { slotOrderProblem } from './dto/slot-time';
 import { UpdateBankDetailsDto } from './dto/update-bank-details.dto';
 import { UpdateArtisanLocationDto } from './dto/update-artisan-location.dto';
+import { planPing } from '../locations/ping-plan';
 import { RejectMissionDto } from './dto/reject-mission.dto';
 import { AddDiagnosticDto } from './dto/add-diagnostic.dto';
 import { AddMaterialUsedDto } from './dto/add-material-used.dto';
@@ -664,14 +665,23 @@ export class ArtisansService {
   // ==========================================================
 
   async updateLocation(userId: number, dto: UpdateArtisanLocationDto) {
-    const profile = await this.getArtisanProfileByUserId(userId);
+    // Only the id of the profile is needed: a phone that sends its position every 30 seconds does not load the documents, zones and bank details each time.
+    const profile = await this.prisma.artisanProfile.findUnique({ where: { userId }, select: { id: true } });
+
+    if (!profile) {
+      throw new NotFoundException('Profil artisan introuvable.');
+    }
+
+    // The position, the time it was sent and the history are written together (P3-05): the plan says what to write.
+    const plan = await planPing(this.prisma, userId, dto);
 
     const [user, artisanProfile] = await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },
         data: {
-          latitude: dto.latitude,
-          longitude: dto.longitude,
+          latitude: plan.latitude,
+          longitude: plan.longitude,
+          positionAt: plan.positionAt,
         },
         select: this.safeUserSelect,
       }),
@@ -679,7 +689,7 @@ export class ArtisansService {
       this.prisma.artisanProfile.update({
         where: { id: profile.id },
         data: {
-          lastSeenAt: new Date(),
+          lastSeenAt: plan.positionAt,
           // A position is not a decision to work: an artisan who went offline stays offline when
           // the phone reports where it is (P1-15). Online and offline have their own routes. What is not
           // sent is not written, so a status changed a moment ago (by the dispatcher, by a job that began)
@@ -688,6 +698,8 @@ export class ArtisansService {
           isAcceptingJobs: dto.isAcceptingJobs,
         },
       }),
+
+      ...(plan.history ? [this.prisma.artisanLocationPing.create({ data: plan.history })] : []),
     ]);
 
     return {

@@ -8,9 +8,11 @@ import { RealtimeGateway } from './realtime.gateway';
 function setup(status = 'ARTISAN_ON_THE_WAY') {
   const sent: Array<{ rooms: string[]; event: string; payload: any }> = [];
   const prisma: any = {
-    intervention: { findUnique: async () => ({ id: 1, clientId: 10, artisanId: 20, status }) },
+    intervention: { findUnique: async () => ({ id: 1, clientId: 10, artisanId: 20, status }), findFirst: async () => null, findMany: async () => [] },
+    $transaction: async (operations: Array<Promise<unknown>>) => Promise.all(operations),
     user: { update: async () => ({}) },
     artisanProfile: { updateMany: async () => ({}) },
+    artisanLocationPing: { findFirst: async () => null, create: async () => ({}) },
   };
   const gateway: any = new RealtimeGateway({} as any, prisma);
 
@@ -56,6 +58,20 @@ describe('what the gateway pushes (P1-08)', () => {
     await gateway.updateArtisanLocation(artisanSocket, { interventionId: 1, latitude: 36.8, longitude: 10.1 });
 
     expect(sent.map((emit) => emit.rooms[0])).toEqual(['intervention:1', 'admins']);
+  });
+
+  it('a position the phone sent carries its time; one the staff typed carries none and stays with the dashboard (P3-05)', async () => {
+    const phone = setup('ARTISAN_ON_THE_WAY');
+
+    await phone.gateway.updateArtisanLocation(phone.artisanSocket, { interventionId: 1, latitude: 36.8, longitude: 10.1 });
+    expect(phone.sent.find((emit) => emit.rooms[0] === 'admins')!.payload.updatedAt).toBeInstanceOf(Date);
+
+    const typed = setup('ARTISAN_ON_THE_WAY');
+    const staffSocket: any = { data: { user: { id: 99, role: 'DISPATCHER' } } };
+
+    await typed.gateway.updateArtisanLocation(staffSocket, { interventionId: 1, latitude: 36.8, longitude: 10.1 });
+    expect(typed.sent.map((emit) => emit.rooms[0])).toEqual(['admins']);
+    expect(typed.sent[0].payload.updatedAt).toBeNull();
   });
 
   it('at any other time it reaches the dashboard only', async () => {

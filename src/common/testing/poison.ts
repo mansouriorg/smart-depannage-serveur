@@ -101,6 +101,8 @@ export function poisonedJob(overrides: Record<string, unknown> = {}): Record<str
       email: secret('artisan.email'),
       latitude: 36.81,
       longitude: 10.19,
+      // sent a moment ago: the customer is shown the coordinates of a fresh position only (P3-05)
+      positionAt: new Date(),
     },
     subService: { id: 3, categoryId: 1, name: 'Fuite', description: 'd', estimatedDuration: 60, basePrice: 50, emergencyPrice: 80, requiresPhotos: true, isActive: true },
     events: [

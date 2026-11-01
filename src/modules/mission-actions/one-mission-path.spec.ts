@@ -285,6 +285,8 @@ describe('the artisan\'s mission actions are made in one place (P1-06)', () => {
       'common/views/intervention-columns.ts',
       // Names the columns the back office's case file shows (P1-14); a pure view, writes nothing.
       'common/views/case-file.ts',
+      // Reads the dates of the road to frame the route of a job (P3-05); it only selects them.
+      'modules/locations/route-of-job.ts',
     ];
     const offenders = listSourceFiles().filter(
       (rel) => !allowed.includes(rel) && /artisanOnTheWayAt|artisanArrivedAt/.test(stripComments(readSource(rel))),

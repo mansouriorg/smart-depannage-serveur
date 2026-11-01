@@ -32,16 +32,19 @@ describe('the money of the schema is DECIMAL, in dinars (P2-01)', () => {
     // What stays a Float is not money: positions, distances, a rating, a quantity.
     expect(floats.map((entry) => entry.column).sort().filter((name, at, all) => all.indexOf(name) === at)).toEqual([
       'accuracyM',
+      'accuracyMeters',
       'afterPhotoLat',
       'afterPhotoLng',
       'averageRating',
       'beforePhotoLat',
       'beforePhotoLng',
       'detail',
+      'heading',
       'latitude',
       'longitude',
       'quantity',
       'radiusKm',
+      'speedMps',
     ]);
   });
 

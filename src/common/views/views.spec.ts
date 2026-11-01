@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { atInstant } from '../testing/clock';
 import { jobSecretsHiddenFrom, leaked, poisonedJob, secret, STAFF_SECRETS } from '../testing/poison';
 import {
   INTERVENTION_COLUMNS,
@@ -257,6 +258,39 @@ describe('where the artisan is', () => {
       longitude: 10.19,
     });
     expect((interventionForTracking(poisonedJob({ status: 'IN_PROGRESS' })) as any).artisan).toEqual({ name: 'Ali', phone: '+21621111111' });
+  });
+
+  it('only while the position is fresh: an old one, or one nobody knows the time of, is not served', () => {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    const artisanSent = (positionAt: Date | null) => ({ ...poisonedJob().artisan, positionAt });
+
+    for (const [name, positionAt, served] of [
+      ['a minute ago', minutesAgo(1), true],
+      ['nine minutes ago', minutesAgo(9), true],
+      ['ten minutes ago, the limit', minutesAgo(10), false],
+      ['two hours ago', minutesAgo(120), false],
+      ['no time', null, false],
+    ] as const) {
+      const client: any = (interventionForClient(poisonedJob({ artisan: artisanSent(positionAt), status: 'ON_THE_WAY' })) as any).artisan;
+      const visitor: any = (interventionForTracking(poisonedJob({ artisan: artisanSent(positionAt), status: 'ON_THE_WAY' })) as any).artisan;
+
+      expect(`${name} (client): ${'latitude' in client}`).toBe(`${name} (client): ${served}`);
+      expect(`${name} (tracking): ${'longitude' in visitor}`).toBe(`${name} (tracking): ${served}`);
+      // the technician is still named and can still be called: only the place is withheld
+      expect(client.name).toBe('Ali');
+      expect(visitor.phone).toBe('+21621111111');
+    }
+  });
+
+  it('the limit is exact: ten minutes to the millisecond is old, a millisecond less is not', () => {
+    const NOW = new Date('2026-11-01T12:00:00Z');
+    const artisanSent = (positionAt: Date) => ({ ...poisonedJob().artisan, positionAt });
+    const served = (positionAt: Date) =>
+      atInstant(NOW, () => 'latitude' in ((interventionForClient(poisonedJob({ artisan: artisanSent(positionAt), status: 'ON_THE_WAY' })) as any).artisan));
+
+    expect(served(new Date(NOW.getTime() - 10 * 60_000 + 1))).toBe(true);
+    expect(served(new Date(NOW.getTime() - 10 * 60_000))).toBe(false);
+    expect(served(new Date(NOW.getTime() - 10 * 60_000 - 1))).toBe(false);
   });
 
   it('a job with no artisan, or an artisan row without a position, makes no position up', () => {

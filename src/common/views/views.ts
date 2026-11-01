@@ -1,4 +1,5 @@
 import { canonicalStatus } from '../../modules/intervention-workflow/intervention-status';
+import { Arrival, arrivalOf, positionAge, readLocationConfig } from '../geo/location-rules';
 import { each, pick } from './pick';
 import { INTERVENTION_COLUMNS, interventionColumnsFor } from './intervention-columns';
 
@@ -55,10 +56,29 @@ export function artisanPositionIsShared(status: unknown): boolean {
   return canonicalStatus(String(status ?? '')) === 'ARTISAN_ON_THE_WAY';
 }
 
-function withPosition(person: any, artisan: any, status: unknown) {
+/**
+ * When the technician will be there (P3-05), for the customer and the visitor: told while the technician is on the way, like the position it
+ * is worked out from, and at no other time. The answer is the one of `arrivalOf`: the minutes from a fresh position, or the reason there are
+ * none (the position is old, nobody knows when it was sent, the job has no point on the map). It is added next to the view of the job, not
+ * inside it: the shape of the job that the apps are given is read from the view, and this one is a computed value with a time in it.
+ */
+export function withArrival<View extends object>(view: View, row: any, now: Date = new Date()): View & { arrival?: Arrival } {
+  if (!view || !row?.artisan || !artisanPositionIsShared(row.status)) return view;
+
+  return { ...view, arrival: arrivalOf({ artisan: row.artisan, destination: row, now, staleAfterMinutes: readLocationConfig().staleAfterMinutes }) };
+}
+
+/**
+ * The coordinates go with the technician only while they are fresh (P3-05): a position from this minute is what the customer is shown; one
+ * that is old, or whose time nobody knows (the technician closed the app right after setting out), is not served at all, as the minutes
+ * are not. Withheld, the view has no `latitude` and `longitude`; `arrival` says why.
+ */
+function withPosition(person: any, artisan: any, status: unknown, now: Date = new Date()) {
   if (!person || !artisan) return person;
 
   if (!artisanPositionIsShared(status)) return person;
+
+  if (positionAge(artisan.positionAt, now, readLocationConfig().staleAfterMinutes).state !== 'fresh') return person;
 
   return { ...person, ...pick(artisan, ['latitude', 'longitude']) };
 }

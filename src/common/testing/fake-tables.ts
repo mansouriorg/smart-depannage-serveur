@@ -1,7 +1,7 @@
 /**
  * An in-memory stand-in for the few Prisma calls the account specs make, with
  * the behaviours that matter for them: UNIQUE columns that raise P2002, `where`
- * with in / gt / gte / lt / lte / not / OR / AND / NOT, and a $transaction that rolls back.
+ * with in / notIn / gt / gte / lt / lte / not / OR / AND / NOT, and a $transaction that rolls back.
  * Test support only: nothing in the application imports it.
  */
 
@@ -32,6 +32,7 @@ export function matchesWhere(row: Row, where: any): boolean {
 
     if (cond !== null && typeof cond === 'object' && !(cond instanceof Date)) {
       if ('in' in cond && !cond.in.includes(value)) return false;
+      if ('notIn' in cond && cond.notIn.includes(value)) return false;
       if ('not' in cond && value === cond.not) return false;
       if ('gt' in cond && !(value !== null && value > cond.gt)) return false;
       if ('lt' in cond && !(value !== null && value < cond.lt)) return false;
@@ -217,6 +218,35 @@ export class FakeTable {
     }
 
     return { count: hit.length };
+  };
+
+  /** `groupBy({ by, where, _count, _min, _max })`: one row per distinct value of the columns in `by`, with the counts, smallest and largest values asked for. */
+  groupBy = async ({ by, where, _count, _min, _max }: any) => {
+    const groups = new Map<string, Row[]>();
+
+    for (const row of this.rows.filter((candidate) => matchesWhere(candidate, where))) {
+      const key = JSON.stringify(by.map((name: string) => row[name] ?? null));
+
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    }
+
+    const extreme = (rows: Row[], column: string, pick: (a: any, b: any) => any) =>
+      rows.map((row) => row[column]).filter((value) => value !== null && value !== undefined).reduce((best, value) => (best === undefined ? value : pick(best, value)), undefined);
+
+    return [...groups.values()].map((rows) => {
+      const out: Row = Object.fromEntries(by.map((name: string) => [name, rows[0][name] ?? null]));
+
+      if (_count) {
+        out._count = Object.fromEntries(
+          Object.keys(_count).map((column) => [column, column === '_all' ? rows.length : rows.filter((row) => row[column] !== null && row[column] !== undefined).length]),
+        );
+      }
+
+      if (_min) out._min = Object.fromEntries(Object.keys(_min).map((column) => [column, extreme(rows, column, (a, b) => (b < a ? b : a)) ?? null]));
+      if (_max) out._max = Object.fromEntries(Object.keys(_max).map((column) => [column, extreme(rows, column, (a, b) => (b > a ? b : a)) ?? null]));
+
+      return out;
+    });
   };
 
   private sorted(rows: Row[], orderBy: any): Row[] {

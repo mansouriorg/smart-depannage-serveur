@@ -47,7 +47,14 @@ export class ClientAddressesService {
   }
 
   async update(clientId: number, id: number, dto: UpdateClientAddressDto) {
-    await this.findOneForClient(clientId, id);
+    const existing = await this.findOneForClient(clientId, id);
+
+    // The point on the map belongs to the text of the address (P3-05: a request made from a saved address is measured to it, for the arrival time and the
+    // route of a dispute). A new text with no new point does not keep the old one: it would send the technician's time and route to the old place.
+    // A city that was never given (null) and an empty one are the same text: saving the form again with the field left blank is not a change.
+    const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? '') === (b ?? '');
+    const textChanged = (dto.address !== undefined && !same(dto.address, existing.address)) || (dto.city !== undefined && !same(dto.city, existing.city));
+    const pointSent = dto.latitude !== undefined || dto.longitude !== undefined;
 
     if (dto.isDefault) {
       await this.prisma.clientAddress.updateMany({
@@ -58,7 +65,7 @@ export class ClientAddressesService {
 
     return this.prisma.clientAddress.update({
       where: { id },
-      data: dto,
+      data: textChanged && !pointSent ? { ...dto, latitude: null, longitude: null } : dto,
     });
   }
 

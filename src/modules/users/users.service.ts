@@ -20,6 +20,9 @@ import {
   rethrowContactConflict,
 } from '../../common/contact/phone';
 import { ARTISAN_LIST_PROFILE_SELECT, artisanFeedback } from './artisan-list-filter';
+import { positionAge, readLocationConfig, validPoint } from '../../common/geo/location-rules';
+import { NOT_A_POSITION, ROUTE_STATUSES, planPing } from '../locations/ping-plan';
+import { withAliases } from '../intervention-workflow/intervention-status';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 
@@ -28,6 +31,7 @@ import {
   User,
   Role,
   AuthTokenType,
+  Status,
 } from '../../../generated/prisma/client';
 import { Permission, can } from '../../common/auth/permissions';
 import type { Locale } from '../../common/i18n/i18n';
@@ -194,7 +198,8 @@ export class UsersService {
   async findArtisans(params: { where: Prisma.UserWhereInput; page?: number; limit?: number }) {
     const page = await this.findAll({
       ...params,
-      select: { ...this.safeUserSelect, artisanProfile: { select: ARTISAN_LIST_PROFILE_SELECT } },
+      // positionAt: when the phone last said where it is, so the list can flag a technician who has gone quiet (P3-05).
+      select: { ...this.safeUserSelect, positionAt: true, artisanProfile: { select: ARTISAN_LIST_PROFILE_SELECT } },
     });
 
     const ids = (page.data as Array<{ id: number }>).map((row) => row.id);
@@ -211,12 +216,30 @@ export class UsersService {
 
     const feedbackOf = new Map(groups.map((group) => [group.artisanId, group]));
 
+    // Who is on the way, arrived or at work: their phone keeps sending whatever the switch says, so a silence of theirs matters even when they
+    // are offline for new requests. A technician has a few such jobs at most.
+    const underWay = (await this.prisma.intervention.findMany({
+      where: { artisanId: { in: ids }, status: { in: withAliases([...ROUTE_STATUSES]) as Status[] } },
+      select: { artisanId: true },
+    })) as Array<{ artisanId: number | null }>;
+    const onJob = new Set(underWay.map((job) => job.artisanId));
+    const now = new Date();
+    const { staleAfterMinutes } = readLocationConfig();
+
     return {
       ...page,
-      data: (page.data as Array<{ id: number }>).map((row) => {
+      data: (page.data as Array<{ id: number; positionAt?: Date | null }>).map((row) => {
         const group = feedbackOf.get(row.id);
+        const age = positionAge(row.positionAt, now, staleAfterMinutes);
 
-        return { ...row, feedback: artisanFeedback(group?._avg.rating, group?._count.rating) };
+        return {
+          ...row,
+          feedback: artisanFeedback(group?._avg.rating, group?._count.rating),
+          // The flag the dispatcher reads: fresh, stale (no news for the limit or longer) or unknown (never sent, or sent before the time was kept).
+          locationState: age.state,
+          locationAgeMinutes: age.ageMinutes,
+          hasJobUnderWay: onJob.has(row.id),
+        };
       }),
     };
   }
@@ -457,13 +480,35 @@ export class UsersService {
   // ==========================================================
 
   async updateLocation(id: number, latitude: number, longitude: number) {
-    await this.findOne(id);
+    const account = await this.findOne(id);
+
+    // A technician's position is news with a time and a place in the history (P3-05), the same as the one the artisan routes write.
+    if (account.role === 'ARTISAN') {
+      const plan = await planPing(this.prisma, id, { latitude, longitude });
+
+      const [updated] = await this.prisma.$transaction([
+        this.prisma.user.update({
+          where: { id },
+          data: { latitude: plan.latitude, longitude: plan.longitude, positionAt: plan.positionAt },
+          select: this.safeUserSelect,
+        }),
+        this.prisma.artisanProfile.updateMany({ where: { userId: id }, data: { lastSeenAt: plan.positionAt } }),
+        ...(plan.history ? [this.prisma.artisanLocationPing.create({ data: plan.history })] : []),
+      ]);
+
+      return updated;
+    }
+
+    // Anybody else's position is a plain point: not a technician, so no time, no history, but still a place on the earth.
+    const point = validPoint(latitude, longitude);
+
+    if (!point) throw new BadRequestException(NOT_A_POSITION);
 
     return this.prisma.user.update({
       where: { id },
       data: {
-        latitude,
-        longitude,
+        latitude: point.latitude,
+        longitude: point.longitude,
       },
       select: this.safeUserSelect,
     });

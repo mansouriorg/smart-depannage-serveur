@@ -42,6 +42,7 @@ export const ROUTE_ACCESS: Record<string, string> = {
   'GET /admin/dashboard/kpis': 'dashboard.kpis | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/interventions': 'tickets.read | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/interventions/:': 'tickets.read | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
+  'GET /admin/interventions/:/route': 'location.history | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/settings/company': 'company.read | ACCOUNTANT,ADMIN,SUPER_ADMIN',
   'GET /admin/settings/notification-templates': 'settings.read | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/settings/service-zones': 'settings.read | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',

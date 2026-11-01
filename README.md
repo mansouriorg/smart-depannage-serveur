@@ -406,3 +406,121 @@ notifications, admin).
 - The Arabic of the messages needs a reader whose first language it is before it is relied on; the glossary decisions are listed in the plan.
 - An Arabic text message with a link is two or more SMS segments (Arabic is sent in UCS-2: 70 characters for one segment).
 - A text typed by a person, and the names of the services and trades in the database, are not translated.
+
+## Technician position: history, stale flag, arrival time, route replay (P3-05)
+
+The phone of a technician says where it is; the server keeps the **last position with the time it was sent**, keeps a **history of positions for a few
+days**, tells the dispatcher when a technician has **gone quiet**, tells the customer **when the technician will be there**, and can **replay the route**
+of a job when there is a dispute.
+
+**Order of the update.** Take a backup, then `npx prisma generate && npx prisma db push` **before** the new code runs: the step adds one column
+(`User.positionAt`, empty for every existing row) and one table (`ArtisanLocationPing`). The new code reads `positionAt` with every query that reads a
+whole user row, so on a database without it those queries fail. Then deploy the server, then the website, the dashboard and the phone app. An old
+phone app keeps working (it sends no extra fields); it only sends a position while it is open, as before.
+
+**Settings** (both optional; a value that is not a whole number in its range is ignored and the default is used)
+
+| Variable | Meaning | Range | Default |
+| --- | --- | --- | --- |
+| `LOCATION_STALE_MINUTES` | silence after which a position is called stale | 2 to 120 | 10 |
+| `LOCATION_HISTORY_DAYS` | days the history of positions is kept | 1 to 90 | 7 |
+
+The rules are in `src/common/geo/location-rules.ts` (pure functions, one spec pins each number).
+
+**What is written, and where**
+
+- Three places write a technician's position, and **all three ask `planPing` (`modules/locations/ping-plan.ts`) first**: `PATCH /artisans/me/location`
+  (the phone), the socket event `updateArtisanLocation` (the phone, live) and `PATCH /users/location` (the older general route). The plan checks the point
+  (finite numbers, inside the ranges, **not 0,0**, which is what a phone reports when it has no reading: refused with "Position invalide."), gives the
+  time (`positionAt`), and says which row to add to the history. The caller writes the position, the time, `lastSeenAt` and the row **in one
+  transaction** (the two REST routes and the socket). The phone's position on `PATCH /artisans/me/location` loads only the id of the profile.
+  `locations.write-sites.spec.ts` fails if any other code writes the coordinates of a user.
+- **A history row exists only for a position sent on a job** that is on the way, arrived or at work (the job named by the phone if it is theirs and at
+  one of those stages; otherwise the one on the way, then the one arrived, then the one at work, the latest first). A position sent while waiting or on
+  the way home has its time and no row: nothing replays it, so nothing keeps it.
+- A row is added only if the **last row of that technician, whatever its job, is not less than 10 seconds old**; the current position and its time are
+  updated every time. A phone that reports every second, or names two jobs by turns, does not fill the table. (There is no rate limit per user on the
+  position routes besides this; the guard is per IP.)
+- Two positions of one technician that are in flight together can both pass the 10-second check and add two rows, and the one that was sent first can be
+  written last and move the position back by a few seconds. Both are harmless for a route and a flag; they are known, not guarded.
+- The socket reads latitude and longitude as numbers (or as a text that holds one): `null`, an empty text or a list is **not** read as 0. The accuracy,
+  speed and heading sent on to the customer's room are checked like the ones stored.
+- **A position sent over the socket by the staff** (a dispatcher moving a dot for a technician) is written without a time (`positionAt` is emptied, so the
+  coordinates are `unknown`, never fresh), with no `lastSeenAt` and no history row. The phone did not say it, so it must not make the technician look reachable
+  and must not enter the route that is replayed for a dispute. (No client sends this event today.)
+- `lastSeenAt` is the last sign of life of any kind (the online switch counts); `positionAt` is the age of the **position**. The flags use `positionAt`.
+
+**Stale, fresh, unknown**
+
+- A position is **fresh** when its news is less than `LOCATION_STALE_MINUTES` old, **stale** from that silence on (the limit itself is stale), and
+  **unknown** when nobody knows when it was sent (a position written before this step has no time, until the technician's next ping).
+- Read-time flags (`locationState`: `fresh|stale|unknown`, `locationAgeMinutes`): the technicians list (`GET /users/artisans`, which also carries
+  `artisanProfile.availabilityStatus` and `hasJobUnderWay` (a job on the way, arrived or at work: one extra read per page, for the ids of the page) so that "no news" is shown only for a technician who is active and at work
+  or on a job: the dashboard flags nobody who is offline with no job, because that phone sends nothing), the location of one technician
+  (`GET /admin/artisans/:profileId/location`, with `positionAt`) and the candidates of the matching. **The matching score is not changed by the flag**: it is for
+  the dispatcher to weigh, not a hidden penalty. That includes `POST /matching/admin/interventions/:id/assign-best`, which takes the first candidate with
+  nobody reading the flag: a technician who has been silent for hours and was last near the job can still win on distance. Nothing is pushed to the
+  dispatcher when a technician goes quiet; the flag is seen when the list is open.
+
+**Arrival time** (`arrival` next to the job, for the customer `GET /client/interventions/:id` and the tracking link `GET /guest/tracking/:id?token=...`)
+
+- Only while the job is **on the way** (the same stage as the position that is shared), and only with a **fresh** position and a job that has a point on
+  the map: `{ state: 'fresh', minutes, ageMinutes }`. Otherwise `minutes` is null and `state` says why: `stale`, `unknown` or `no-destination`. The
+  customer is never given a time worked out from an old position.
+- **The point of a job.** A request made from a **saved address that has a point on the map** gets that point when the request carries none of its own
+  (`ClientInterventionsService.create`), so the time and the route measure to it. Jobs created before this step from a saved address stay without a point
+  (no back-fill was written): they show `no-destination`. The point belongs to the text of the address: `ClientAddressesService.update` clears it when the
+  `address` or `city` changes and no new point is sent (the same text sent again keeps it, and a city that was never given and an empty one are the same text), so an edited address is never measured to its old place.
+  A latitude sent without a longitude (or the reverse) is stored as sent, as before this step: the point is then half new; no screen sends that today.
+- **The coordinates follow the same rule**: the customer and the tracking-link holder get `artisan.latitude/longitude` while the job is on the way **and
+  the position is fresh**; an old or undated one is not served at all (the website does not read them).
+- It is the straight line between the two points, made longer by a road factor (1.3) and divided by an average speed (30 km/h), rounded up, at least one
+  minute. These two numbers are assumptions, not a measure: there is no routing service behind them, and they are constants in `location-rules.ts`.
+  Most requests made on the website have **no point on the map**, so they show the state `no-destination` and no time.
+- `arrival` is computed outside the view of the job (`withArrival` in `common/views`): the view is what the contract of the apps is read from, and a
+  value with a time in it cannot be.
+
+**Retention** (`modules/locations/history-purge.ts`, run once a day from 03:30 in the business time zone, **Africa/Tunis** unless `BUSINESS_TIMEZONE` or the company settings say otherwise, by `history-purge.service.ts`)
+
+- The service is asked every 15 minutes (`@Cron('*/15 * * * *')`, on a method that takes no argument: `run()`, which gives `tick` the time) and runs the round at the first ask inside the
+  window **03:30 to 05:59 there**, once per local date (`purgeSlot`). A window, not a minute: a server that was restarting at 03:30 (a deploy at that hour) or a database that was away does
+  not lose the day, the next ask tries again; the day is marked done only when the round succeeded, a failed round is written to the log and retried at the next ask of the window.
+  The zone is read at the moment of asking, because the company settings are read after the server starts, and the machine's own zone does not matter. A restart after a successful
+  round, inside the window, runs it a second time (a delete of rows that are gone deletes nothing). **The way `@Cron` reads its options has not been run against the real
+  scheduler in this environment**; look at the log the morning after the first deploy (it writes how many rows it deleted when it deleted any).
+
+- Rows older than `LOCATION_HISTORY_DAYS` are deleted in batches of 5,000 (at most 200 batches a night; a night that stops at its limit with rows left
+  writes a warning in the log and the rest goes the next night). **A job with an open complaint, or in the DISPUTED
+  status, keeps its rows** until the complaint is closed; they are deleted by the next night's run after that. A dispute raised **after** the retention has
+  passed finds the route already gone (the replay says so, see `mayBeIncomplete`).
+- Known limits of the round: the jobs it keeps are passed to the delete as a list (`notIn`), which a database refuses beyond about 32,000 held jobs (the held jobs are read once per round); this does not matter at the size of this business,
+  it would at a very large one.
+
+**Route replay** (`GET /admin/interventions/:id/route`, permission `location.history`: admin, super admin, support, dispatcher)
+
+- **A route is one technician's.** A job can change hands (the technician gives it back, the staff hands it to another). The route is the one of the
+  technician who holds the job now, or, when nobody holds it, of the one who sent the latest position on it; `artisan.current` says which. The other
+  technicians who sent positions on the job are listed in `others` (name, how many, from when to when) and are read with `?artisanId=`. A technician who
+  is neither the one of the job nor anywhere in its positions is a **404**, as is a number below 1 or beyond what the database can hold (something that is not a number at all is refused with a 400).
+- Returns the points of the job in time order (at most 2,000; beyond that the answer stops there and `cut` is true: **the latest positions are then
+  not in it**), the destination, the technician's name, the moments of the job (on the way, arrived, work started, work completed), and a summary:
+  the length of the route in km, the closest the technician came to the destination (metres) and when, and the distance at the moment of "arrived"
+  (the position nearest in time, within 5 minutes).
+- **The moments are the job's own dates** (`artisanOnTheWayAt`, `artisanArrivedAt`, `workStartedAt`, `workCompletedAt`), written in the same transaction as
+  the status, not the lines of the timeline (which are written afterwards and may be missing). They belong to the technician who holds the job: the route
+  of one who gave it back has none. `mayBeIncomplete` is true when the **earliest** moment of the holder is longer ago than `LOCATION_HISTORY_DAYS`: the first positions
+  may already have been deleted. With no moment (the route of a technician who no longer holds the job, or a holder who has not set out) the date the job was created is used
+  instead, so the note can appear for a job that is old but whose technician's route is recent: it is cautious, never the other way round.
+- The length of the route adds every segment, including the small jumps of a GPS that stands still after the arrival (a few metres every 30 seconds): it reads **longer than
+  the road**. When the points are cut at 2,000 the summary is computed from those 2,000 (the first ones), and the dashboard says so next to the figures.
+- **Reading a route is not audited** (the audit log keeps writes only); the route of a job is personal data of the technician and the permission is the
+  only guard. Whether reads should be logged is an open decision.
+
+**Not done here / to know**
+
+- **The phone sends its position only while the app is open**, about every 30 seconds while the technician is online. Background tracking needs the
+  operating system's "always" permission, a new native build and the stores' approval of the reason; it is an owner decision and is not done. A phone in the
+  pocket with the app closed is stale after the limit, which is the expected reading.
+- The privacy notice for technicians, and the wording of the permission request, are a business decision.
+- The older socket event `sendPosition` (`interventions.gateway.ts`, a relay to the staff room) writes nothing and is not part of the history.
+- The Arabic wording of the new tracking texts needs a reader whose first language it is, as for the rest of P3-04.

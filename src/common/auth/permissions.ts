@@ -44,6 +44,7 @@ export const Permission = {
   ARTISANS_MANAGE: 'artisans.manage',
   ARTISANS_REVIEW: 'artisans.review',
   ARTISANS_ACTIVITY: 'artisans.activity',
+  LOCATION_HISTORY: 'location.history',
   // Jobs
   TICKETS_READ: 'tickets.read',
   TICKETS_NOTE: 'tickets.note',
@@ -147,6 +148,8 @@ const TABLE: Record<Permission, Role[]> = {
   [Permission.ARTISANS_REVIEW]: [ADMIN, SUPER_ADMIN, SUPPORT],
   /** Read a technician’s position, missions, ratings and revenue. */
   [Permission.ARTISANS_ACTIVITY]: [ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER, ACCOUNTANT],
+  /** Read where a technician went on a job (the positions kept for a few days, for a dispute). Not the accountant. */
+  [Permission.LOCATION_HISTORY]: [ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER],
   // ---- Jobs
   /** See every job (the staff who work on tickets). */
   [Permission.TICKETS_READ]: [ADMIN, SUPER_ADMIN, SUPPORT, DISPATCHER],

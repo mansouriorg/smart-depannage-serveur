@@ -12,6 +12,8 @@ export const ARTISAN_LIST_PROFILE_SELECT = {
   specialty: true,
   averageRating: true,
   ratingCount: true,
+  // ONLINE, BUSY or OFFLINE: the phone sends its position only when the technician is at work, so "no news" is an alarm for those and not for the others (P3-05).
+  availabilityStatus: true,
 } as const;
 
 /**
