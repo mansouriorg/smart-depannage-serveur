@@ -48,6 +48,7 @@ import type { Locale } from '../../common/i18n/i18n';
 import { MESSAGES, localeOfUser, recipientLocale, say } from '../../common/i18n/messages';
 import { FitJob, misfitOf } from './job-fit';
 import { drawableZones } from '../../common/geo/zone-match';
+import { whenDoneOnJob } from '../../common/time/queued-for';
 
 import {
   ArtisanAvailabilityStatus,
@@ -1037,17 +1038,19 @@ export class ArtisansService {
     });
   }
 
-  markOnTheWay(userId: number, interventionId: number) {
-    return this.missionActions.onTheWay({ userId, interventionId, include: this.missionInclude() });
+  /** `queuedForSeconds`: how long the phone held the action before it could send it (P3-06). */
+  markOnTheWay(userId: number, interventionId: number, queuedForSeconds = 0) {
+    return this.missionActions.onTheWay({ userId, interventionId, include: this.missionInclude(), queuedForSeconds });
   }
 
-  markArrived(userId: number, interventionId: number) {
-    return this.missionActions.arrived({ userId, interventionId, include: this.missionInclude() });
+  markArrived(userId: number, interventionId: number, queuedForSeconds = 0) {
+    return this.missionActions.arrived({ userId, interventionId, include: this.missionInclude(), queuedForSeconds });
   }
 
-  async startIntervention(userId: number, interventionId: number) {
+  async startIntervention(userId: number, interventionId: number, queuedForSeconds = 0) {
     await this.ensureApprovedArtisan(userId);
-    await this.getMissionForArtisan(userId, interventionId);
+
+    const mission = await this.getMissionForArtisan(userId, interventionId);
 
     const { row: updated, changed } = await transitionStatusDetailed(
       this.prisma,
@@ -1055,7 +1058,8 @@ export class ArtisansService {
         id: interventionId,
         to: Status.IN_PROGRESS,
         actor: { kind: 'artisan', userId },
-        dataOnChange: { workStartedAt: new Date() },
+        // The moment of the press when the phone held the action; never before the arrival (P3-06).
+        dataOnChange: { workStartedAt: whenDoneOnJob(new Date(), queuedForSeconds, mission) },
         include: this.missionInclude(),
       },
     );

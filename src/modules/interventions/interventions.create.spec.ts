@@ -161,8 +161,28 @@ describe('the kept routes hand the id of the signed-in account to the service (P
 
     await controller.completeWork({ user: { id: 20, role: 'ARTISAN' } }, '12', file, { latitude: '36.8', timestamp: '2026-10-31T10:00:00Z' } as any);
 
+    // No `X-Queued-For` header: the photo was not held by the phone (P3-06), so nothing is taken off its arrival time.
     expect(calls).toEqual([
-      ['completeWork', [12, { id: 20, role: 'ARTISAN' }, { file, capture: { latitude: '36.8', timestamp: '2026-10-31T10:00:00Z', capturedAt: '2026-10-31T10:00:00Z' } }]],
+      ['completeWork', [12, { id: 20, role: 'ARTISAN' }, { file, capture: { latitude: '36.8', timestamp: '2026-10-31T10:00:00Z', capturedAt: '2026-10-31T10:00:00Z' }, queuedForSeconds: 0 }]],
     ]);
+  });
+
+  it('POST /interventions/:id/complete-work: the seconds the phone held the photo are read from X-Queued-For, and nothing unreadable is believed (P3-06)', async () => {
+    const file = { buffer: Buffer.from('x') } as any;
+    const held = async (header?: string) => {
+      const { controller, calls } = makeController();
+
+      await controller.completeWork({ user: { id: 20, role: 'ARTISAN' } }, '12', file, { latitude: '36.8', timestamp: '2026-10-31T10:00:00Z' } as any, header);
+
+      return (calls[0][1] as any[])[2].queuedForSeconds;
+    };
+
+    expect(await held('3480')).toBe(3480);
+    expect(await held(' 95 ')).toBe(95);
+    expect(await held('99999999')).toBe(604_800);
+    expect(await held('-5')).toBe(0);
+    expect(await held('1.5')).toBe(0);
+    expect(await held('abc')).toBe(0);
+    expect(await held(undefined)).toBe(0);
   });
 });

@@ -287,6 +287,8 @@ describe('the artisan\'s mission actions are made in one place (P1-06)', () => {
       'common/views/case-file.ts',
       // Reads the dates of the road to frame the route of a job (P3-05); it only selects them.
       'modules/locations/route-of-job.ts',
+      // Names the dates of the road so that an action the phone held is never dated before them (P3-06); it only reads them.
+      'common/time/queued-for.ts',
     ];
     const offenders = listSourceFiles().filter(
       (rel) => !allowed.includes(rel) && /artisanOnTheWayAt|artisanArrivedAt/.test(stripComments(readSource(rel))),

@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Body,
+  Headers,
   Param,
   UseGuards,
   Request,
@@ -22,6 +23,7 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { PROOF_UPLOAD } from '../proofs/proof-upload';
 import { AddProofDto } from '../proofs/dto/proofs.dto';
 import { RateLimit, RateLimitGuard } from '../../common/rate-limit/rate-limit.guard';
+import { QUEUED_FOR_HEADER, readQueuedFor } from '../../common/time/queued-for';
 
 /**
  * The four routes of the first version of the interventions API that a screen still calls (P3-03). Everything else this controller
@@ -84,6 +86,7 @@ export class InterventionsController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body() body: AddProofDto,
+    @Headers(QUEUED_FOR_HEADER) queuedFor?: string,
   ) {
     return this.interventionsService.completeWork(
       +id,
@@ -91,6 +94,7 @@ export class InterventionsController {
       {
         file,
         capture: { ...body, capturedAt: body?.capturedAt ?? body?.timestamp },
+        queuedForSeconds: readQueuedFor(queuedFor),
       },
     );
   }

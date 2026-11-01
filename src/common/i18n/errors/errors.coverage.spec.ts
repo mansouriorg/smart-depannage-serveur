@@ -99,7 +99,7 @@ const UNREAD: Unread[] = [
   {
     file: 'modules/proofs/proofs.service.ts',
     expression: 'verdict.message',
-    count: 2,
+    count: 1,
     via: [{ property: 'message', file: 'modules/intervention-workflow/intervention-status.ts' }],
     reason: 'the verdict of the status table (checkTransition) carries the sentence, written in intervention-status.ts',
   },

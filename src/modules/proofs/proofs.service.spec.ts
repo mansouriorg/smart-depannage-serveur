@@ -824,6 +824,22 @@ describe('ProofsService.submit: closing the job with the photo', () => {
     expect(w.interventions.rows[0].status).toBe('ARTISAN_ON_THE_WAY');
   });
 
+  it('a job that has moved past the work answers a closing photo with 409, never 403: the phone that holds the photo then counts it as sent', async () => {
+    // "Waiting for the customer" can only be left by the customer or staff (the status table says "wrong actor"), which must not turn into a 403: the
+    // phone drops a refused photo as a failure, but reads the job after a 409 and sees that the work is over.
+    for (const status of ['WAITING_CLIENT_VALIDATION', 'PAYMENT_PENDING', 'PAID', 'INVOICE_SENT', 'DISPUTED', 'CANCELLED', 'COMPLETED']) {
+      const w = makeWorld();
+      const job = w.job({ status });
+      const refused = await refusedWith(
+        w.service.submit({ interventionId: job.id, kind: 'AFTER', actor: ARTISAN, file: upload(await scene(34)), capture: onSite(), completeJob: true }),
+      );
+
+      expect(refused.status).toBe(409);
+      expect(w.interventions.rows[0].status).toBe(status);
+      expect(w.proofs.rows.length).toBe(0);
+    }
+  });
+
   it('only the "after" photo closes a job', async () => {
     const w = makeWorld();
     const job = w.job();
@@ -1399,5 +1415,179 @@ describe('ProofsService.list', () => {
     expect((await refusedWith(w.service.list({ status: 'DONE' }))).status).toBe(400);
     expect((await refusedWith(w.service.list({ kind: 'DURING' }))).status).toBe(400);
     expect((await refusedWith(w.service.list({ interventionId: -4 }))).status).toBe(400);
+  });
+});
+
+describe('ProofsService.submit: a photo the phone held until it had a signal (P3-06)', () => {
+  const HELD = 3 * 3600 + 38 * 60; // taken at 06:22, received at 10:00
+  const takenAt = new Date(T0.getTime() - HELD * 1000);
+
+  const closing = async (w: ReturnType<typeof makeWorld>, jobId: number, queuedForSeconds: number | undefined, over: Record<string, unknown> = {}) =>
+    w.service.submit({
+      interventionId: jobId,
+      kind: 'AFTER',
+      actor: ARTISAN,
+      file: upload(await scene(71)),
+      capture: onSite({ capturedAt: takenAt.toISOString(), ...over }),
+      completeJob: true,
+      queuedForSeconds,
+    });
+
+  it('closes the job at the time the photo was taken, and is not flagged for the phone\'s clock', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 6 * 3600_000) });
+
+    const result = await closing(w, job.id, HELD);
+
+    expect(result.completed).toBe(true);
+    expect(result.view.status).toBe('ACCEPTED');
+
+    const row = w.interventions.rows[0];
+
+    expect(row.status).toBe('COMPLETED');
+    expect(row.workCompletedAt.toISOString()).toBe(takenAt.toISOString());
+    expect(row.afterPhotoAt.toISOString()).toBe(takenAt.toISOString());
+    // The audit row keeps the arrival, what the phone said, and the offset of its clock.
+    expect(w.proofs.rows[0].receivedAt.toISOString()).toBe(T0.toISOString());
+    expect(w.proofs.rows[0].clientCapturedAt.toISOString()).toBe(takenAt.toISOString());
+    expect(w.proofs.rows[0].clockOffsetSeconds).toBe(0);
+    expect(w.proofs.rows[0].reasons).toEqual([]);
+  });
+
+  it('without the figure the same photo is dated at its arrival and flagged for the clock, as before', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 6 * 3600_000) });
+
+    const result = await closing(w, job.id, undefined);
+
+    expect(result.view.status).toBe('NEEDS_REVIEW');
+    expect(w.interventions.rows[0].workCompletedAt.toISOString()).toBe(T0.toISOString());
+    expect(w.interventions.rows[0].afterPhotoAt.toISOString()).toBe(T0.toISOString());
+    expect(w.proofs.rows[0].reasons).toEqual(['CLOCK_DIFFERENCE']);
+  });
+
+  it('is never dated before the work began', async () => {
+    const w = makeWorld();
+    const began = new Date(T0.getTime() - 3600_000);
+    const job = w.job({ workStartedAt: began });
+
+    await closing(w, job.id, HELD);
+
+    expect(w.interventions.rows[0].workCompletedAt.toISOString()).toBe(began.toISOString());
+  });
+
+  it('is never judged on a clock older than the work: a long hold cannot make a picture older than the job pass for a recent one', async () => {
+    const w = makeWorld();
+    const began = new Date(T0.getTime() - 3600_000);
+    const job = w.job({ workStartedAt: began });
+
+    // The phone says the photo was held for 3 h 38 and was taken then, but the work only began an hour ago: the photo cannot be that old.
+    const result = await closing(w, job.id, HELD);
+
+    expect(result.view.status).toBe('NEEDS_REVIEW');
+    expect(w.proofs.rows[0].reasons).toEqual(['CLOCK_DIFFERENCE']);
+    expect(w.proofs.rows[0].clockOffsetSeconds).toBe(-(2 * 3600 + 38 * 60));
+  });
+
+  it('a photo taken after the work began and held for a while is not flagged', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 3600_000) });
+    const held = 600;
+
+    const result = await closing(w, job.id, held, { capturedAt: new Date(T0.getTime() - held * 1000).toISOString() });
+
+    expect(result.view.status).toBe('ACCEPTED');
+    expect(w.proofs.rows[0].reasons).toEqual([]);
+    expect(w.proofs.rows[0].clockOffsetSeconds).toBe(0);
+  });
+
+  it('a phone that lies about its clock is still looked at', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 6 * 3600_000) });
+
+    const result = await closing(w, job.id, HELD, { capturedAt: new Date(takenAt.getTime() - 2 * 3600_000).toISOString() });
+
+    expect(result.view.status).toBe('NEEDS_REVIEW');
+    expect(w.proofs.rows[0].reasons).toEqual(['CLOCK_DIFFERENCE']);
+    expect(w.proofs.rows[0].clockOffsetSeconds).toBe(-7200);
+  });
+
+  it('a plain proof (not closing the job) does not read the figure: it is dated at its arrival and judged on its clock, as before', async () => {
+    const w = makeWorld();
+    const job = w.job({ status: 'ARRIVED', artisanArrivedAt: new Date(T0.getTime() - 8 * 3600_000) });
+
+    await w.service.submit({
+      interventionId: job.id,
+      kind: 'BEFORE',
+      actor: ARTISAN,
+      file: upload(await scene(72)),
+      capture: onSite({ capturedAt: takenAt.toISOString() }),
+      queuedForSeconds: HELD,
+    });
+
+    expect(w.interventions.rows[0].beforePhotoAt.toISOString()).toBe(T0.toISOString());
+    expect(w.proofs.rows[0].reasons).toEqual(['CLOCK_DIFFERENCE']);
+  });
+
+  it('a later photo (an after photo that does not close the job) does not read the figure either', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 8 * 3600_000) });
+
+    await w.service.submit({
+      interventionId: job.id,
+      kind: 'AFTER',
+      actor: ARTISAN,
+      file: upload(await scene(73)),
+      capture: onSite({ capturedAt: takenAt.toISOString() }),
+      queuedForSeconds: HELD,
+    });
+
+    expect(w.interventions.rows[0].afterPhotoAt.toISOString()).toBe(T0.toISOString());
+    expect(w.interventions.rows[0].status).not.toBe('COMPLETED');
+    expect(w.proofs.rows[0].reasons).toEqual(['CLOCK_DIFFERENCE']);
+  });
+
+  it('a closing photo sent again while the first try was being handled is a 409 "already closed", not a refusal for a photo already used', async () => {
+    const w = makeWorld();
+    const job = w.job({ workStartedAt: new Date(T0.getTime() - 6 * 3600_000) });
+
+    await closing(w, job.id, HELD);
+    expect(w.interventions.rows[0].status).toBe('COMPLETED');
+
+    // the second try looked at the job before the first one closed it: its first look shows the job still open, the second one shows it closed
+    const real = w.interventions.findUnique.bind(w.interventions);
+    let looks = 0;
+
+    w.interventions.findUnique = async (args: any) => {
+      const row = await real(args);
+
+      looks += 1;
+
+      return looks === 1 && row ? { ...row, status: 'IN_PROGRESS' } : row;
+    };
+
+    const { status, body } = await refusedWith(closing(w, job.id, HELD));
+
+    expect(looks).toBe(2);
+    expect(status).toBe(409);
+    expect(JSON.stringify(body)).toContain('déjà clôturée');
+    expect(w.proofs.rows).toHaveLength(1);
+  });
+
+  it('a figure above seven days counts as seven days, and a figure that is not a number counts as nothing', async () => {
+    const week = 7 * 24 * 3600;
+    const long = makeWorld();
+    const longJob = long.job({ workStartedAt: new Date(T0.getTime() - 30 * 24 * 3600_000) });
+
+    await closing(long, longJob.id, 100 * week, { capturedAt: new Date(T0.getTime() - week * 1000).toISOString() });
+
+    expect(long.interventions.rows[0].workCompletedAt.toISOString()).toBe(new Date(T0.getTime() - week * 1000).toISOString());
+
+    const odd = makeWorld();
+    const oddJob = odd.job();
+
+    await closing(odd, oddJob.id, NaN, { capturedAt: T0.toISOString() });
+
+    expect(odd.interventions.rows[0].workCompletedAt.toISOString()).toBe(T0.toISOString());
   });
 });

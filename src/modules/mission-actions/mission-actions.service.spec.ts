@@ -1,3 +1,4 @@
+import { atInstantAsync } from '../../common/testing/clock';
 import { FakeTable, withTransactions } from '../../common/testing/fake-tables';
 import { MissionActionsService, REFUSAL_REASON_LABELS } from './mission-actions.service';
 
@@ -120,7 +121,8 @@ function makeWorld(options: Options = {}) {
   };
 
   const addJob = (fields: Record<string, unknown> = {}) =>
-    interventions.insert({ clientId: client.id, address: 'Rue de Marseille, Tunis', ...fields }).id as number;
+    // (made long before the fixed instant of the held-step tests: the floor under a held step is the making of the job)
+    interventions.insert({ clientId: client.id, address: 'Rue de Marseille, Tunis', createdAt: new Date('2026-10-01T00:00:00.000Z'), ...fields }).id as number;
 
   return {
     users, profiles, interventions, appointments, reminders, requests, rejections,
@@ -1685,5 +1687,127 @@ describe('taking an open mission is limited to the artisan\'s trades and zones (
     await accept(w, artisan, id);
 
     expect(asked[0].include).toEqual({ availability: true, serviceZones: true });
+  });
+});
+
+describe('steps the phone held until it had a signal (P3-06)', () => {
+  const NOW = new Date('2026-11-01T17:40:00.000Z');
+  const ago = (seconds: number) => new Date(NOW.getTime() - seconds * 1000);
+  const held = (seconds: number) => ({ queuedForSeconds: seconds });
+  const at = <T>(work: () => Promise<T>) => atInstantAsync(NOW, work);
+  // A date made while the clock was frozen is not the same kind of object as one made outside: compare the instants.
+  const when = (value: Date | null) => (value ? new Date(value.getTime()) : null);
+
+  it('on the way: dated at the moment of the press, not of the arrival', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan, artisanAcceptedAt: ago(4 * 3600) });
+
+    const row = await at(() => w.service.onTheWay({ userId: artisan, interventionId: id, ...held(3_480) }));
+
+    expect(row.status).toBe('ON_THE_WAY');
+    expect(when(w.job(id).artisanOnTheWayAt)).toEqual(ago(3_480));
+    // everything else is as for a step done at once: told now, written to the timeline now
+    expect(w.told).toEqual([{ what: 'on-the-way', args: [id, artisan] }]);
+    expect(w.timeline).toHaveLength(1);
+  });
+
+  it('arrived: the same', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ON_THE_WAY', artisanId: artisan, artisanOnTheWayAt: ago(7200) });
+
+    await at(() => w.service.arrived({ userId: artisan, interventionId: id, ...held(600) }));
+
+    expect(when(w.job(id).artisanArrivedAt)).toEqual(ago(600));
+  });
+
+  it('a step that was not held is dated now, as before', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+    await at(() => w.service.onTheWay({ userId: artisan, interventionId: id }));
+    expect(when(w.job(id).artisanOnTheWayAt)).toEqual(NOW);
+
+    const other = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+    await at(() => w.service.onTheWay({ userId: artisan, interventionId: other, ...held(0) }));
+    expect(when(w.job(other).artisanOnTheWayAt)).toEqual(NOW);
+  });
+
+  it('is never dated before the step that came before it on the same job', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ON_THE_WAY', artisanId: artisan, artisanAcceptedAt: ago(9000), artisanOnTheWayAt: ago(3000) });
+
+    // "arrived 5 hours ago" cannot be before "on the way 50 minutes ago"
+    await at(() => w.service.arrived({ userId: artisan, interventionId: id, ...held(5 * 3600) }));
+
+    expect(when(w.job(id).artisanArrivedAt)).toEqual(ago(3000));
+  });
+
+  it('on the way is never dated before the acceptance', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan, artisanAcceptedAt: ago(1800) });
+
+    await at(() => w.service.onTheWay({ userId: artisan, interventionId: id, ...held(86_400) }));
+
+    expect(when(w.job(id).artisanOnTheWayAt)).toEqual(ago(1800));
+  });
+
+  it('an unreadable figure counts as not held: dated now, never in the future', async () => {
+    for (const bad of [NaN, -50, Infinity]) {
+      const w = makeWorld();
+      const artisan = w.addArtisan();
+      const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+      await at(() => w.service.onTheWay({ userId: artisan, interventionId: id, queuedForSeconds: bad }));
+
+      expect(when(w.job(id).artisanOnTheWayAt)).toEqual(NOW);
+    }
+  });
+
+  it('a step sent again after a lost answer keeps its first date and writes nothing', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan });
+
+    await at(() => w.service.onTheWay({ userId: artisan, interventionId: id, ...held(3600) }));
+
+    const later = new Date(NOW.getTime() + 600_000);
+    // (a different figure on the second try: had it overwritten the date, this would show)
+    const again = await atInstantAsync(later, () => w.service.onTheWay({ userId: artisan, interventionId: id, ...held(60) }));
+
+    expect(again.status).toBe('ON_THE_WAY');
+    expect(when(w.job(id).artisanOnTheWayAt)).toEqual(ago(3600));
+    expect(w.told).toHaveLength(1);
+    expect(w.timeline).toHaveLength(1);
+  });
+
+  it('a queue sent in order after a long silence keeps the order of the presses', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ACCEPTED', artisanId: artisan, artisanAcceptedAt: ago(20_000) });
+
+    // pressed at 14:00 (on the way) and 14:30 (arrived), sent one after the other at 17:40
+    await at(() => w.service.onTheWay({ userId: artisan, interventionId: id, ...held(13_200) }));
+    await at(() => w.service.arrived({ userId: artisan, interventionId: id, ...held(11_400) }));
+
+    expect(when(w.job(id).artisanOnTheWayAt)).toEqual(new Date('2026-11-01T14:00:00.000Z'));
+    expect(when(w.job(id).artisanArrivedAt)).toEqual(new Date('2026-11-01T14:30:00.000Z'));
+  });
+
+  it('a refused step still tells and writes nothing, whatever it says it held', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'ASSIGNED', artisanId: artisan });
+
+    const error = await failure(at(() => w.service.arrived({ userId: artisan, interventionId: id, ...held(3600) })));
+
+    expect(error.getStatus()).toBe(409);
+    expect(w.job(id).artisanArrivedAt).toBeNull();
+    silent(w);
   });
 });

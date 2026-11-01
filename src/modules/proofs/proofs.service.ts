@@ -30,6 +30,7 @@ import { canonicalStatus, checkTransition } from '../intervention-workflow/inter
 import { transitionStatusDetailed } from '../intervention-workflow/transition-status';
 import { describeError } from '../notifications/delivery/delivery-error';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ROAD_MOMENTS_SELECT, readQueuedFor, whenDoneOnJob } from '../../common/time/queued-for';
 import { fingerprintImage, findSimilar, BLANK_DETAIL, Fingerprint } from './image-fingerprint';
 import { RawCapture, readCapture } from './proof-input';
 import {
@@ -55,6 +56,8 @@ export type SubmitProofInput = {
   completeJob?: boolean;
   /** What the caller wants back on the intervention. */
   include?: unknown;
+  /** How long the phone held the photo before it could send it, in seconds (header `X-Queued-For`, P3-06); 0 or missing when it did not. */
+  queuedForSeconds?: number;
 };
 
 /** What an artisan is told about the photo: no distance, no limit, no reason of the review. */
@@ -154,6 +157,10 @@ export class ProofsService {
 
     // The clock starts here: it is the time of the proof, whatever the decoding takes.
     const receivedAt = this.now();
+    // A photo the phone held until it had a signal (P3-06): the clock check compares the phone's clock with ours at the time it was taken, not
+    // at the time it arrived, and the job is dated at the time of the photo. Only the photo that closes the job can have been held (the phone
+    // keeps nothing else): a figure on any other photo is not read, so it cannot move the date of a before / after photo.
+    const queuedFor = input.completeJob ? readQueuedFor(input.queuedForSeconds) : 0;
 
     this.files.assertProofImage(input.file);
 
@@ -184,10 +191,14 @@ export class ProofsService {
     // the way back): the answer is the first one, not a refusal.
     const known = await this.prisma.proofCapture.findUnique({ where: { sha256: print.sha256 } });
 
-    // (Closing a job is never a replay: a job that is closed already was refused above, and one
-    // that is still open needs a photo that was not used yet.)
-    if (!input.completeJob && this.isOwnEarlierSend(known, input)) {
-      return this.replayOf(known, input);
+    if (this.isOwnEarlierSend(known, input)) {
+      if (!input.completeJob) return this.replayOf(known, input);
+
+      // Closing a job is never a replay: a job that is closed already was refused above, and one that is still open needs a photo that was not
+      // used yet. The one case left is a first try of this very photo that committed between that check and this lookup (the phone gave up on
+      // it after its time-out and sent it again): the job is looked at once more, and if it is closed now the answer is the same 409 as for a job
+      // that was closed a moment earlier. A job that is still open falls through: the photo is already used, and is refused as such.
+      this.assertMayAdd(await this.loadJob(interventionId), input, isArtisan);
     }
 
     const policy = getProofPolicy();
@@ -197,6 +208,9 @@ export class ProofsService {
     if (read) {
       const similar = await this.similarProof(print.dhash, interventionId, receivedAt, policy.similarityBits);
       const jobPosition = this.jobPosition(job);
+      // The clock check is made against the time the photo was taken as far as the server can tell, which is the same time the job is dated at:
+      // not before the work began. A phone cannot claim a hold longer than the job's own history to make an old picture pass for a recent one.
+      const heldForCheck = Math.round((receivedAt.getTime() - whenDoneOnJob(receivedAt, queuedFor, job).getTime()) / 1000);
 
       assessment = assessCapture(
         {
@@ -206,6 +220,7 @@ export class ProofsService {
           mocked: read.mocked,
           clientCapturedAt: read.clientCapturedAt,
           receivedAt,
+          queuedForSeconds: heldForCheck,
           job: jobPosition,
           picture: {
             alreadyUsed: !!known,
@@ -258,7 +273,7 @@ export class ProofsService {
       throw this.refusal(assessment);
     }
 
-    return this.keep({ input, job, print, assessment, base, file, receivedAt });
+    return this.keep({ input, job, print, assessment, base, file, receivedAt, queuedFor });
   }
 
   // ----------------------------------------------------------
@@ -274,6 +289,7 @@ export class ProofsService {
         latitude: true,
         longitude: true,
         savedAddress: { select: { latitude: true, longitude: true } },
+        ...ROAD_MOMENTS_SELECT,
       },
     });
 
@@ -313,9 +329,10 @@ export class ProofsService {
       const verdict = checkTransition(String(job.status), Status.COMPLETED, 'artisan');
 
       if (verdict.ok === false) {
-        throw verdict.reason === 'wrong_actor'
-          ? new ForbiddenException(verdict.message)
-          : new ConflictException(verdict.message);
+        // Always a conflict: a job that staff moved on to "waiting for the customer" can only be closed by the customer or staff (the table says
+        // "wrong actor"), and to the phone that holds this photo it is the same as any other job that is past the work. A 403 would make the phone
+        // drop the photo as refused; a 409 makes it read the job and count the photo as sent.
+        throw new ConflictException(verdict.message);
       }
 
       if (verdict.same) throw new ConflictException('Cette mission est déjà clôturée.');
@@ -407,8 +424,10 @@ export class ProofsService {
     base: Record<string, any>;
     file: Express.Multer.File;
     receivedAt: Date;
+    /** Seconds the phone held the photo (0 when it did not). */
+    queuedFor: number;
   }): Promise<SubmitProofResult> {
-    const { input, print, assessment, base, file, receivedAt } = params;
+    const { input, print, assessment, base, file, receivedAt, queuedFor } = params;
     const { interventionId, kind, actor } = input;
     const purpose = PURPOSE[kind];
     const source: ProofSource = base.source;
@@ -426,12 +445,15 @@ export class ProofsService {
         // The job may have changed hands, or moved on, while the photo was being read.
         const current = await tx.intervention.findUnique({
           where: { id: interventionId },
-          select: { status: true, artisanId: true, beforePhotoUrl: true, afterPhotoUrl: true },
+          select: { status: true, artisanId: true, beforePhotoUrl: true, afterPhotoUrl: true, ...ROAD_MOMENTS_SELECT },
         });
 
         if (!current) throw new NotFoundException(`Intervention #${interventionId} introuvable.`);
 
         this.assertMayAdd(current, input, actor.role === Role.ARTISAN);
+
+        // When the photo was taken, as far as the server can tell: its arrival minus the time the phone held it, never before the work began.
+        const takenAt = whenDoneOnJob(receivedAt, queuedFor, current);
 
         const asset = await this.files.recordProofAsset(tx, actor, file, staged as StoredLocalFile, purpose, interventionId);
         const photoUrl = `/api/files/${asset.id}/download`;
@@ -460,11 +482,11 @@ export class ProofsService {
             to: Status.COMPLETED,
             actor: { kind: 'artisan', userId: actor.id },
             dataOnChange: {
-              workCompletedAt: receivedAt,
+              workCompletedAt: takenAt,
               afterPhotoUrl: photoUrl,
               afterPhotoLat: lat,
               afterPhotoLng: lng,
-              afterPhotoAt: receivedAt,
+              afterPhotoAt: takenAt,
             },
             ...include,
           });
@@ -490,12 +512,12 @@ export class ProofsService {
           kind === 'BEFORE'
             ? await tx.intervention.update({
                 where: { id: interventionId },
-                data: { beforePhotoUrl: photoUrl, beforePhotoLat: lat, beforePhotoLng: lng, beforePhotoAt: receivedAt },
+                data: { beforePhotoUrl: photoUrl, beforePhotoLat: lat, beforePhotoLng: lng, beforePhotoAt: takenAt },
                 ...include,
               })
             : await tx.intervention.update({
                 where: { id: interventionId },
-                data: { afterPhotoUrl: photoUrl, afterPhotoLat: lat, afterPhotoLng: lng, afterPhotoAt: receivedAt },
+                data: { afterPhotoUrl: photoUrl, afterPhotoLat: lat, afterPhotoLng: lng, afterPhotoAt: takenAt },
                 ...include,
               });
 

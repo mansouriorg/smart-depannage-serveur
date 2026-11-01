@@ -17,6 +17,7 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { getBusinessTimeZone } from '../../config/env';
+import { ROAD_MOMENTS_SELECT, whenDoneOnJob } from '../../common/time/queued-for';
 import {
   ACTIVE_JOB_STATUSES,
   ISSUE_AT_MAXIMUM,
@@ -98,6 +99,8 @@ export type MissionInput = {
   interventionId: number;
   /** What the caller wants back on the mission. */
   include?: unknown;
+  /** How long the phone held this action before it could send it, in seconds (header `X-Queued-For`, P3-06); 0 or missing when it did not. */
+  queuedForSeconds?: number;
 };
 
 export type DeclineInput = MissionInput & {
@@ -305,7 +308,7 @@ export class MissionActionsService {
   }
 
   private async advance(name: StepName, input: MissionInput) {
-    const { userId, interventionId, include } = input;
+    const { userId, interventionId, include, queuedForSeconds } = input;
     const step = STEPS[name];
 
     this.assertId(interventionId);
@@ -334,7 +337,9 @@ export class MissionActionsService {
         id: interventionId,
         to: step.to,
         actor: { kind: 'artisan', userId },
-        dataOnChange: { [step.column]: new Date() },
+        // The moment the artisan pressed the button, when the phone held the action until it had a signal (P3-06): never before the steps that
+        // come before it on this job, never after now.
+        dataOnChange: { [step.column]: whenDoneOnJob(new Date(), queuedForSeconds ?? 0, job) },
         include,
       });
 
@@ -532,7 +537,18 @@ export class MissionActionsService {
   private async jobOf(tx: any, userId: number, interventionId: number, other: 'forbidden' | 'taken' = 'forbidden') {
     const job = await tx.intervention.findUnique({
       where: { id: interventionId },
-      select: { id: true, status: true, artisanId: true, clientId: true, urgency: true, serviceType: true, latitude: true, longitude: true },
+      select: {
+        id: true,
+        status: true,
+        artisanId: true,
+        clientId: true,
+        urgency: true,
+        serviceType: true,
+        latitude: true,
+        longitude: true,
+        // The earlier steps of the road: a step done offline is never dated before them (P3-06).
+        ...ROAD_MOMENTS_SELECT,
+      },
     });
 
     if (!job) {

@@ -110,14 +110,16 @@ describe('the proof columns of an intervention have one writer (P1-07)', () => {
   it('the time of a proof is the clock of the server, never the phone\'s', () => {
     const source = code('modules/proofs/proofs.service.ts');
 
-    // beforePhotoAt / afterPhotoAt are written with receivedAt (or put back from an earlier proof),
-    // and clientCapturedAt only goes to the audit row.
+    // beforePhotoAt / afterPhotoAt are written with takenAt (or put back from an earlier proof),
+    // and clientCapturedAt only goes to the audit row. takenAt is the server's receivedAt minus the
+    // seconds the phone says it held the photo (P3-06): a duration, never a date of the phone's.
     const written = [...source.matchAll(/PhotoAt:\s*([\w?.]+)/g)].map((match) => match[1]);
 
     expect(written.length).toBeGreaterThan(3);
-    expect(written.every((value) => value === 'receivedAt' || value === 'back?.receivedAt')).toBe(true);
+    expect(written.every((value) => value === 'takenAt' || value === 'back?.receivedAt')).toBe(true);
     expect(/clientCapturedAt/.test(source.slice(source.indexOf('private async keep'), source.indexOf('private async afterKept')))).toBe(false);
-    expect(/workCompletedAt:\s*receivedAt/.test(source)).toBe(true);
+    expect(/workCompletedAt:\s*takenAt/.test(source)).toBe(true);
+    expect(/const takenAt = whenDoneOnJob\(receivedAt,/.test(source)).toBe(true);
   });
 });
 

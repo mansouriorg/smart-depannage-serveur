@@ -524,3 +524,39 @@ The rules are in `src/common/geo/location-rules.ts` (pure functions, one spec pi
 - The privacy notice for technicians, and the wording of the permission request, are a business decision.
 - The older socket event `sendPosition` (`interventions.gateway.ts`, a relay to the staff room) writes nothing and is not part of the history.
 - The Arabic wording of the new tracking texts needs a reader whose first language it is, as for the rest of P3-04.
+
+## Actions the phone kept until it had a signal (P3-06)
+
+The technician's phone keeps the three steps of the road (on the way, arrived, start) and the photo that closes the job when it has no network, and sends them
+in order when the network is back. The server only sees them arrive late. So that a late arrival is not taken for a late action, the phone adds one header to
+each of those calls:
+
+`X-Queued-For: <seconds>` — how long the phone held this action, counted on its own clock (the difference of two readings of the same clock does not depend on
+the clock being right).
+
+It is read on `PATCH /artisans/me/missions/:id/on-the-way`, `/arrived`, `/start` and on `POST /interventions/:id/complete-work` (the photo that closes the job), and nowhere else:
+the phone keeps nothing but those four, so the route of the before / after photos (`POST /interventions/:id/proofs/:kind`) ignores it.
+**Nothing else changes**: a call without the header is dated at its arrival, as before; an old phone works with this server and a new phone with an old one
+(an unknown header is ignored).
+
+- **The action is dated at its arrival minus that figure** (`src/common/time/queued-for.ts`): `artisanOnTheWayAt`, `artisanArrivedAt`, `workStartedAt`, and for a photo
+  `workCompletedAt` and `afterPhotoAt` (the figure is read for the photo that closes the job only, never for a before photo). Two things hold it in place: it is never dated **before an earlier moment of the same job** (arrived is
+  not dated before on the way; the job's own dates are read for that: acceptance, set off, arrival, start of work, and also its assignment and its making, for the
+  short roads where a job is assigned as accepted or goes from assigned straight to the work) and never **after its arrival**. A figure that is missing, empty, negative, fractional, in
+  another notation, two values ("5, 7") or more than 12 digits counts as 0; one above 7 days (up to 12 digits) counts as 7 days.
+- **The time of arrival is still kept** where the server keeps one: `ProofCapture.receivedAt` is the arrival, `clientCapturedAt` is what the phone said. The timeline
+  (`InterventionEvent.createdAt`) is the time the server wrote the line, so a queue sent after a long silence shows its lines together and in order, while the
+  dates of the job (and so the route replay, which reads those) show when the technician pressed.
+- **The clock check of a photo** compares the phone's clock with the server's at the time the photo was taken, that is the arrival minus the figure, **and never before the
+  work began** (the same date the job is closed at). A photo held for four hours is no longer sent to the review queue as "the phone's clock is four hours wrong"
+  (`CLOCK_DIFFERENCE`); a phone whose clock really is wrong is still caught, by the same 15 minutes; and a phone cannot claim a hold longer than the job's own history to make an old
+  picture pass for a recent one (a picture older than the work is sent to review).
+- **A figure is a claim, bounded.** A technician can say "held for 7 days" and have a step dated up to 7 days back, but never before the step that came before it, so the
+  order of the road cannot be rewritten, and no step can be dated before the job was assigned (or made). It is not a way to be somewhere you were not (a photo is still judged on
+  its position, its accuracy and its picture).
+- **A repeat is safe.** A step sent again after a lost answer finds the job already there: nothing is written, nobody is told twice, the first date stays (this was already so,
+  P1-06). A completion sent for a job that is already past the work is a **409** whatever the status (a job moved on by staff to "waiting for the customer" included, which the technician can only leave by raising a dispute;
+  the phone then reads the job and counts its photo as sent; a job in dispute is not counted as done by the phone, which tells the server's sentence). A completion sent again after a lost answer is a **409 "already closed"** (also when the first try commits while the second one is being checked: the job is looked at once more before the photo is called "already used"); the phone reads the job and, when it is closed, counts its photo as sent.
+
+**Limits**: the timeline lines and the messages to the customer and to the staff are those of the arrival (the customer is told "on the way" when the phone sends it, not when it was
+pressed). Accepting and handing a job back are not held by the phone (they need the server's answer: another technician may have taken the job).

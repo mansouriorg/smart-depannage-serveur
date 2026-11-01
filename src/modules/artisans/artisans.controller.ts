@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   ParseIntPipe,
   Patch,
@@ -40,6 +41,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { Permission } from '../../common/auth/permissions';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { declaredLocale } from '../../common/i18n/messages';
+import { QUEUED_FOR_HEADER, readQueuedFor } from '../../common/time/queued-for';
 
 @Controller('artisans')
 export class ArtisansController {
@@ -242,8 +244,9 @@ export class ArtisansController {
   markOnTheWay(
     @CurrentUser('id') userId: number,
     @Param('interventionId', ParseIntPipe) interventionId: number,
+    @Headers(QUEUED_FOR_HEADER) queuedFor?: string,
   ) {
-    return this.artisansService.markOnTheWay(userId, interventionId);
+    return this.artisansService.markOnTheWay(userId, interventionId, readQueuedFor(queuedFor));
   }
 
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -252,8 +255,9 @@ export class ArtisansController {
   markArrived(
     @CurrentUser('id') userId: number,
     @Param('interventionId', ParseIntPipe) interventionId: number,
+    @Headers(QUEUED_FOR_HEADER) queuedFor?: string,
   ) {
-    return this.artisansService.markArrived(userId, interventionId);
+    return this.artisansService.markArrived(userId, interventionId, readQueuedFor(queuedFor));
   }
 
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -262,8 +266,9 @@ export class ArtisansController {
   startIntervention(
     @CurrentUser('id') userId: number,
     @Param('interventionId', ParseIntPipe) interventionId: number,
+    @Headers(QUEUED_FOR_HEADER) queuedFor?: string,
   ) {
-    return this.artisansService.startIntervention(userId, interventionId);
+    return this.artisansService.startIntervention(userId, interventionId, readQueuedFor(queuedFor));
   }
 
   @UseGuards(JwtAuthGuard, PermissionsGuard)

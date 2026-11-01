@@ -49,6 +49,17 @@ describe('completeWork (P1-07)', () => {
     expect(w.submitted[0].file).toBe(file);
   });
 
+  it('hands the seconds the phone held the photo to the proof service, and nothing when it did not (P3-06)', async () => {
+    const held = makeWorld();
+    const plain = makeWorld();
+
+    await held.service.completeWork(12, { id: 7, role: 'ARTISAN' as any }, { file, capture, queuedForSeconds: 3480 });
+    await plain.service.completeWork(12, { id: 7, role: 'ARTISAN' as any }, { file, capture });
+
+    expect(held.submitted[0].queuedForSeconds).toBe(3480);
+    expect(plain.submitted[0].queuedForSeconds).toBeUndefined();
+  });
+
   it('tells the dashboard and the customer, and answers without any column of the back office', async () => {
     const w = makeWorld();
     const answer: any = await w.service.completeWork(12, { id: 7, role: 'ARTISAN' as any }, { file, capture });

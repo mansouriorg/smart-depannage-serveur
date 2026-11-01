@@ -117,7 +117,7 @@ export class InterventionsService {
   async completeWork(
     id: number,
     artisan: { id: number; role: Role },
-    upload: { file: Express.Multer.File | undefined; capture: Record<string, unknown> },
+    upload: { file: Express.Multer.File | undefined; capture: Record<string, unknown>; queuedForSeconds?: number },
   ) {
     const include = {
       client: { select: { id: true, name: true, phone: true } },
@@ -129,6 +129,7 @@ export class InterventionsService {
       actor: artisan,
       file: upload.file,
       capture: upload.capture,
+      queuedForSeconds: upload.queuedForSeconds,
       completeJob: true,
       include,
     });

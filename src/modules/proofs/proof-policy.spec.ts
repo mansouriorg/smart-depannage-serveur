@@ -474,3 +474,50 @@ describe('the reason lists', () => {
     );
   });
 });
+
+describe('assessCapture: a photo the phone held until it had a signal (P3-06)', () => {
+  const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 3600_000);
+
+  it('is compared with the server\'s clock at the time it was taken, not at the time it arrived', () => {
+    // taken at 06:00 by a phone whose clock is right, held for four hours, received at 10:00
+    const result = assessCapture(facts({ clientCapturedAt: hoursAgo(4), queuedForSeconds: 4 * 3600 }));
+
+    expect(result.verdict).toBe('ACCEPTED');
+    expect(result.reasons).toEqual([]);
+    expect(result.clockOffsetSeconds).toBe(0);
+  });
+
+  it('is the same photo, sent at once, that is flagged: nothing is excused without the figure', () => {
+    const result = assessCapture(facts({ clientCapturedAt: hoursAgo(4) }));
+
+    expect(result.reasons).toEqual(['CLOCK_DIFFERENCE']);
+    expect(result.clockOffsetSeconds).toBe(-4 * 3600);
+  });
+
+  it('still catches a phone whose clock is wrong: the offset is measured from the time it was taken', () => {
+    // says "taken at 05:00", held for four hours: the server expects 06:00, so the phone is an hour behind
+    const result = assessCapture(facts({ clientCapturedAt: hoursAgo(5), queuedForSeconds: 4 * 3600 }));
+
+    expect(result.reasons).toEqual(['CLOCK_DIFFERENCE']);
+    expect(result.clockOffsetSeconds).toBe(-3600);
+  });
+
+  it('keeps the tolerance of the clock: fifteen minutes either way', () => {
+    expect(assessCapture(facts({ clientCapturedAt: new Date(hoursAgo(2).getTime() + 15 * 60_000), queuedForSeconds: 2 * 3600 })).reasons).toEqual([]);
+    expect(assessCapture(facts({ clientCapturedAt: new Date(hoursAgo(2).getTime() + 16 * 60_000), queuedForSeconds: 2 * 3600 })).reasons).toEqual(['CLOCK_DIFFERENCE']);
+  });
+
+  it('counts a figure above seven days as seven days, and ignores one that is not a number', () => {
+    const week = 7 * 24 * 3600;
+
+    expect(assessCapture(facts({ clientCapturedAt: new Date(NOW.getTime() - week * 1000), queuedForSeconds: 100 * week })).clockOffsetSeconds).toBe(0);
+    expect(assessCapture(facts({ queuedForSeconds: NaN })).clockOffsetSeconds).toBe(0);
+    // (not read as seven days: an unreadable figure is "not held", as in whenDone)
+    expect(assessCapture(facts({ queuedForSeconds: Infinity })).clockOffsetSeconds).toBe(0);
+    expect(assessCapture(facts({ queuedForSeconds: -50 })).clockOffsetSeconds).toBe(0);
+  });
+
+  it('says nothing about the clock when the phone did not say when the photo was taken, whatever the figure', () => {
+    expect(assessCapture(facts({ clientCapturedAt: null, queuedForSeconds: 3600 })).clockOffsetSeconds).toBeNull();
+  });
+});

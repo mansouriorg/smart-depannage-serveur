@@ -9,13 +9,17 @@
  *  - the job has an address with coordinates: a photo taken far from it was not taken there;
  *  - a position the phone itself reports as simulated is not a position;
  *  - the same photo twice is not a second proof;
- *  - the time that counts is the one at which the server received the photo.
+ *  - the time that counts is the one at which the server received the photo; a photo the phone
+ *    held until it had a signal says for how long (P3-06), and its clock is compared with ours at
+ *    the time it was taken, not at the time it arrived.
  *
  * Three outcomes. REJECTED: the photo is refused, nothing of it is kept but a line for the
  * audit, and the artisan is told why (they can retake it). NEEDS_REVIEW: the photo is kept and
  * the job goes on, but a person of the back office is told to look at it. ACCEPTED: nothing to
  * say.
  */
+
+import { MAX_QUEUED_FOR_SECONDS } from '../../common/time/queued-for';
 
 export type ProofKind = 'BEFORE' | 'AFTER';
 export type ProofVerdict = 'ACCEPTED' | 'NEEDS_REVIEW' | 'REJECTED';
@@ -174,6 +178,11 @@ export type CaptureFacts = {
   clientCapturedAt: Date | null;
   /** When the server received it. */
   receivedAt: Date;
+  /**
+   * How long the phone held the photo before it could send it, in seconds (P3-06; 0 or missing: it did not). The phone's clock is then compared with
+   * the server's at the moment the photo was taken, which is the arrival minus this.
+   */
+  queuedForSeconds?: number;
   /** Where the job is; null when it was never located. */
   job: { latitude: number | null; longitude: number | null };
   /** What the picture looks like next to the ones that came before. */
@@ -242,9 +251,14 @@ export function assessCapture(facts: CaptureFacts, policy: ProofPolicy = getProo
 
   if (facts.clientCapturedAt && !Number.isNaN(facts.clientCapturedAt.getTime())) {
     // The column is a 32-bit integer: a clock set to the year 2100 must not make the write fail.
+    const heldRaw = Number(facts.queuedForSeconds ?? 0);
+    // (An unreadable figure counts as not held, as in `whenDone`.)
+    const held = Number.isFinite(heldRaw) ? Math.max(0, Math.min(MAX_QUEUED_FOR_SECONDS, Math.floor(heldRaw))) : 0;
+    const takenAt = facts.receivedAt.getTime() - held * 1000;
+
     clockOffsetSeconds = Math.max(
       -MAX_CLOCK_OFFSET_SECONDS,
-      Math.min(MAX_CLOCK_OFFSET_SECONDS, Math.round((facts.clientCapturedAt.getTime() - facts.receivedAt.getTime()) / 1000)),
+      Math.min(MAX_CLOCK_OFFSET_SECONDS, Math.round((facts.clientCapturedAt.getTime() - takenAt) / 1000)),
     );
 
     if (Math.abs(clockOffsetSeconds) > policy.clockToleranceMinutes * 60) flags.push('CLOCK_DIFFERENCE');
