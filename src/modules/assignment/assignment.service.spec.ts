@@ -48,6 +48,7 @@ function makeWorld(options: Options = {}) {
   const blocks = new FakeTable();
   const reminders = new FakeTable();
   const requests = new FakeTable({ defaults: () => ({ status: 'PENDING', type: 'RESCHEDULE' }) });
+  const offers = new FakeTable({ defaults: () => ({ status: 'PENDING', round: 1, rank: 1, expiresAt: new Date('2100-01-01T00:00:00Z') }) });
 
   const locks: number[][] = [];
   const lockSql: string[] = [];
@@ -60,6 +61,7 @@ function makeWorld(options: Options = {}) {
       artisanTimeBlock: blocks,
       appointmentReminder: reminders,
       appointmentRequest: requests,
+      missionOffer: offers,
       $executeRaw: async (_strings: TemplateStringsArray, ...values: number[]) => {
         locks.push(values);
         lockSql.push(_strings.join('?'));
@@ -67,7 +69,7 @@ function makeWorld(options: Options = {}) {
         return 1;
       },
     },
-    [users, profiles, interventions, appointments, blocks, reminders, requests],
+    [users, profiles, interventions, appointments, blocks, reminders, requests, offers],
   );
 
   if (options.remindersThrow) {
@@ -81,6 +83,7 @@ function makeWorld(options: Options = {}) {
   const others: any[] = [];
   const live: any[] = [];
   const left: Array<[number, number]> = [];
+  const offerEvents: any[] = [];
   const order: string[] = [];
 
   const eventsService: any = {
@@ -105,6 +108,9 @@ function makeWorld(options: Options = {}) {
       live.push(payload);
       order.push('live');
     },
+    emitOfferUpdate: (userId: number, payload: any) => {
+      offerEvents.push([userId, payload]);
+    },
     removeFromJobRoom: (userId: number, interventionId: number) => {
       if (options.leaveThrows) throw new Error('socket server down');
       left.push([userId, interventionId]);
@@ -124,7 +130,7 @@ function makeWorld(options: Options = {}) {
   const addJob = (fields: Record<string, unknown> = {}) => interventions.insert({ clientId: client.id, address: 'Rue de Marseille, Tunis', ...fields }).id as number;
 
   return {
-    users, profiles, interventions, appointments, blocks, reminders, requests, locks, lockSql, events, notified, others, live, left, order,
+    users, profiles, interventions, appointments, blocks, reminders, requests, offers, offerEvents, locks, lockSql, events, notified, others, live, left, order,
     addArtisan, addJob,
     job: (id: number) => interventions.rows.find((row) => row.id === id)!,
     service: new AssignmentService(prisma, notifications, eventsService, realtime),
@@ -1460,5 +1466,88 @@ describe('giving a job to an artisan (P1-05)', () => {
       expect(w.appointments.rows[0].scheduledById).toBe(42);
       expect(w.appointments.rows[0].timezone).toBe('Africa/Tunis');
     });
+  });
+});
+
+describe('giving a job that was offered to several artisans (P3-07)', () => {
+  const FAR = new Date('2100-01-01T00:00:00Z');
+  const PAST = new Date('2000-01-01T00:00:00Z');
+
+  it('the offers still waiting end: the chosen artisan\'s is accepted, the others\' are withdrawn as assigned, and each of them is told live', async () => {
+    const w = makeWorld();
+    const [chosen, other, third] = [w.addArtisan(), w.addArtisan(), w.addArtisan()];
+    const id = w.addJob();
+
+    for (const [rank, artisanId] of [chosen, other, third].entries()) w.offers.insert({ interventionId: id, artisanId, rank: rank + 1, expiresAt: FAR });
+
+    await assign(w, id, chosen);
+
+    const of = (artisanId: number) => w.offers.rows.find((row) => row.artisanId === artisanId)!;
+
+    expect(of(chosen).status).toBe('ACCEPTED');
+    expect([of(other).status, of(other).withdrawnReason]).toEqual(['WITHDRAWN', 'ASSIGNED']);
+    expect([of(third).status, of(third).withdrawnReason]).toEqual(['WITHDRAWN', 'ASSIGNED']);
+    expect(w.offers.rows.filter((row) => row.status === 'PENDING')).toHaveLength(0);
+    // the technician who got the job is not told their offer was withdrawn
+    expect(w.offerEvents.map(([userId, payload]) => [userId, payload]).sort()).toEqual(
+      [other, third].sort().map((userId) => [userId, { interventionId: id, status: 'withdrawn', because: 'assigned' }]),
+    );
+  });
+
+  it('an offer that had run out is expired, not withdrawn: nobody is told a job was taken from under them', async () => {
+    const w = makeWorld();
+    const [chosen, lapsed] = [w.addArtisan(), w.addArtisan()];
+    const id = w.addJob();
+
+    w.offers.insert({ interventionId: id, artisanId: lapsed, rank: 1, expiresAt: PAST });
+
+    await assign(w, id, chosen);
+
+    expect(w.offers.rows[0].status).toBe('EXPIRED');
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('a refusal changes no offer: the job stays offered', async () => {
+    const w = makeWorld();
+    const [away, other] = [w.addArtisan({ isAcceptingJobs: false }), w.addArtisan()];
+    const id = w.addJob();
+
+    w.offers.insert({ interventionId: id, artisanId: other, rank: 1, expiresAt: FAR });
+
+    expect((await failure(assign(w, id, away))).getStatus()).toBe(400);
+    expect(w.offers.rows[0].status).toBe('PENDING');
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('a live event that fails does not undo the assignment or the withdrawals', async () => {
+    const w = makeWorld();
+    const [chosen, other] = [w.addArtisan(), w.addArtisan()];
+    const id = w.addJob();
+
+    w.offers.insert({ interventionId: id, artisanId: other, rank: 1, expiresAt: FAR });
+    (w.service as any).realtime.emitOfferUpdate = () => {
+      throw new Error('socket down');
+    };
+
+    await assign(w, id, chosen);
+
+    expect(w.job(id).artisanId).toBe(chosen);
+    expect(w.offers.rows[0].status).toBe('WITHDRAWN');
+  });
+
+  it('the same artisan given the job again changes nothing: offers are left alone', async () => {
+    const w = makeWorld();
+    const chosen = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob();
+
+    await assign(w, id, chosen);
+    w.offers.insert({ interventionId: id, artisanId: other, rank: 1, expiresAt: FAR });
+    w.offerEvents.length = 0;
+
+    await assign(w, id, chosen);
+
+    expect(w.offers.rows[0].status).toBe('PENDING');
+    expect(w.offerEvents).toEqual([]);
   });
 });

@@ -125,9 +125,16 @@ describe('the artisan\'s mission actions are made in one place (P1-06)', () => {
     expect((after.match(/await this\.attempt\(/g) ?? []).length).toBe(3);
 
     // Outside `after`, the timeline and the live event are not touched, and the people are
-    // only named in a `notify: () => ...` that `after` runs inside its own `attempt`. The one
-    // exception is the artisan leaving the live room, which is also made inside an `attempt`.
-    const outside = text.replace(after, '').replace(/this\.realtime\.removeFromJobRoom\(/g, 'ROOM(');
+    // only named in a `notify: () => ...` that `after` runs inside its own `attempt`. The two
+    // exceptions are the artisan leaving the live room, and the offers withdrawn when a job is taken (P3-07):
+    // each is made inside an `attempt`, one live event per artisan, and says nothing about the job itself.
+    const outside = text.replace(after, '').replace(/this\.realtime\.removeFromJobRoom\(/g, 'ROOM(').replace(/this\.realtime\.emitOfferUpdate\(/g, 'OFFER(');
+
+    for (const call of text.matchAll(/this\.realtime\.emitOfferUpdate\(/g)) {
+      expect(text.slice(Math.max(0, (call.index ?? 0) - 120), call.index).includes('await this.attempt(')).toBe(true);
+    }
+
+    expect((text.match(/this\.realtime\.emitOfferUpdate\(/g) ?? []).length).toBe(1);
 
     expect(/this\.(events|realtime)\.\w+\(/.test(outside)).toBe(false);
 

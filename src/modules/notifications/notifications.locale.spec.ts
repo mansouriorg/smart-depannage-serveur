@@ -355,3 +355,90 @@ describe('a person who is only a destination (P3-04)', () => {
     expect(world.queued[1].body.startsWith('Devis: ')).toBe(true);
   });
 });
+
+describe('an offer of a job reaches the technician in their language (P3-07)', () => {
+  const job = { id: 100, address: '12 rue de Marseille, Tunis' };
+  // 10:10 in UTC is 11:10 in Tunis (UTC+1 all year): the time of the answer is read on the clock of the business, not of the server
+  const expiresAt = new Date('2026-11-02T10:10:00Z');
+
+  it('a technician who chose Arabic gets the Arabic text, the address and the time set apart; one who chose French gets French', async () => {
+    const world = makeWorld({ interventions: [job] });
+
+    await world.service.notifyMissionOffered({ interventionId: 100, artisanId: 20, offerId: 5, expiresAt, actorId: 4 });
+    await world.service.notifyMissionOffered({ interventionId: 100, artisanId: 21, offerId: 6, expiresAt, actorId: 4 });
+
+    const arabic = toUser(world.notifications, 20);
+    const french = toUser(world.notifications, 21);
+
+    expect(arabic.title).toBe('مهمّة جديدة مقترحة عليك');
+    expect(arabic.message).toBe(`اقتُرحت عليك مهمّة: ${FSI}12 rue de Marseille, Tunis${PDI}. يمكنك قبولها حتى الساعة ${FSI}11:10${PDI}.`);
+    expect(french.title).toBe('Nouvelle mission proposée');
+    expect(french.message).toBe('Une mission vous est proposée: 12 rue de Marseille, Tunis. Répondez avant 11:10.');
+  });
+
+  it('is a push and an in-app notice about the job, with the offer and its deadline for the app', async () => {
+    const world = makeWorld({ interventions: [job] });
+
+    await world.service.notifyMissionOffered({ interventionId: 100, artisanId: 20, offerId: 5, expiresAt, actorId: 4 });
+
+    expect(world.notifications).toHaveLength(1);
+    expect(world.notifications[0]).toMatchObject({
+      type: 'MISSION_OFFERED',
+      priority: 'HIGH',
+      entityType: 'INTERVENTION',
+      entityId: 100,
+      recipientId: 20,
+      actorId: 4,
+      data: { offerId: 5, expiresAt: '2026-11-02T10:10:00.000Z' },
+    });
+    expect([...world.notifications[0].channels].sort()).toEqual(['IN_APP', 'PUSH']);
+  });
+
+  it('the Arabic text is Arabic letters with no stray French word', async () => {
+    const world = makeWorld({ interventions: [job] });
+
+    await world.service.notifyMissionOffered({ interventionId: 100, artisanId: 20, offerId: 5, expiresAt });
+
+    const row = toUser(world.notifications, 20);
+    const words = `${row.title} ${row.message}`.replace(new RegExp(`${FSI}[^${PDI}]*${PDI}`, 'g'), '');
+
+    expect(ARABIC.test(row.title) && ARABIC.test(row.message)).toBe(true);
+    expect(LATIN_WORD.test(words)).toBe(false);
+  });
+
+  it('a job that is gone tells nobody', async () => {
+    const world = makeWorld({ interventions: [] });
+
+    expect(await world.service.notifyMissionOffered({ interventionId: 404, artisanId: 20, offerId: 5, expiresAt })).toBe(null);
+    expect(world.notifications).toHaveLength(0);
+  });
+
+  it('a round of one technician who did not take the job is told in the singular', async () => {
+    const world = makeWorld({ interventions: [job] });
+
+    await world.service.notifyOfferRoundEnded({ interventionId: 100, offered: 1 });
+
+    expect(world.notifications.length).toBeGreaterThan(0);
+
+    for (const row of world.notifications) {
+      expect(row.message).toBe('Intervention #100: l’artisan à qui la mission a été proposée ne l’a pas prise. Elle est de nouveau ouverte à tous les artisans concernés.');
+    }
+  });
+
+  it('a round nobody took is told to the staff who dispatch in French, whatever language they stored', async () => {
+    const world = makeWorld({ interventions: [job] });
+
+    await world.service.notifyOfferRoundEnded({ interventionId: 100, offered: 5 });
+
+    expect(world.notifications.length).toBeGreaterThan(0);
+
+    for (const row of world.notifications) {
+      expect(row.title).toBe('Offre restée sans réponse');
+      expect(row.message).toBe('Intervention #100: aucun des 5 artisans à qui la mission a été proposée ne l’a prise. Elle est de nouveau ouverte à tous les artisans concernés.');
+      expect(['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'DISPATCHER']).toContain(world.users.find((user) => user.id === row.recipientId)!.role);
+    }
+
+    // not the customers, not the technicians
+    expect(world.notifications.some((row) => [10, 11, 20, 21].includes(row.recipientId))).toBe(false);
+  });
+});

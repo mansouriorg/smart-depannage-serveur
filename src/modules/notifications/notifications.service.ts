@@ -44,6 +44,8 @@ import {
   Role,
 } from '../../../generated/prisma/client';
 import { Permission, can, rolesWith } from '../../common/auth/permissions';
+import { formatLocalTime } from '../../common/availability/weekly-schedule';
+import { getBusinessTimeZone } from '../../config/env';
 
 type AuthenticatedUser = {
   id: number;
@@ -1338,6 +1340,40 @@ export class NotificationsService {
   }
 
   /**
+   * A job offered to a technician (P3-07): a push and the app's own list, with the address and the hour the offer can be taken until (on the
+   * clock of the company). The push names the job, so a tap opens it; the answer is the technician's accept or refusal, as for any open job.
+   * Only the technician is told: the customer learns of a technician when one has taken the job.
+   */
+  async notifyMissionOffered(params: { interventionId: number; artisanId: number; offerId: number; expiresAt: Date; actorId?: number }) {
+    const intervention = await this.prisma.intervention.findUnique({
+      where: { id: params.interventionId },
+      select: { id: true, address: true },
+    });
+
+    if (!intervention) {
+      return null;
+    }
+
+    const until = formatLocalTime(params.expiresAt, getBusinessTimeZone());
+    const address = String(intervention.address ?? '');
+
+    return this.notify({
+      recipientId: params.artisanId,
+      actorId: params.actorId,
+      type: NotificationType.MISSION_OFFERED,
+      priority: NotificationPriority.HIGH,
+      ...notice((locale) => ({
+        title: say(MESSAGES.offer.offered.title, locale),
+        message: say(MESSAGES.offer.offered.message, locale, { address, until }),
+      })),
+      channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+      entityType: 'INTERVENTION',
+      entityId: params.interventionId,
+      data: { offerId: params.offerId, expiresAt: params.expiresAt.toISOString() },
+    });
+  }
+
+  /**
    * The steps an artisan takes on a mission (accepted, on the way, arrived) and the
    * refusal (P1-06) tell the same two groups: the client, who is waiting for the artisan,
    * and the back office, who watch the missions. The person who did it is not told.
@@ -1556,6 +1592,26 @@ export class NotificationsService {
       entityType: 'INTERVENTION',
       entityId: params.interventionId,
       data: { interventionId: params.interventionId, proofId: params.proofId },
+      roles: DISPATCH_ROLES,
+    });
+  }
+
+  /**
+   * A round of offers ended and nobody took the job (P3-07): every technician it was offered to let it run out or turned it down. The back office is told
+   * so that it can offer the job to others or give it to somebody; the job is open to every technician it fits again, as before.
+   */
+  async notifyOfferRoundEnded(params: { interventionId: number; offered: number }) {
+    return this.notifyAdmins({
+      type: NotificationType.GENERAL,
+      priority: NotificationPriority.HIGH,
+      title: 'Offre restée sans réponse',
+      message:
+        params.offered === 1
+          ? `Intervention #${params.interventionId}: l’artisan à qui la mission a été proposée ne l’a pas prise. Elle est de nouveau ouverte à tous les artisans concernés.`
+          : `Intervention #${params.interventionId}: aucun des ${params.offered} artisans à qui la mission a été proposée ne l’a prise. Elle est de nouveau ouverte à tous les artisans concernés.`,
+      entityType: 'INTERVENTION',
+      entityId: params.interventionId,
+      data: { interventionId: params.interventionId },
       roles: DISPATCH_ROLES,
     });
   }

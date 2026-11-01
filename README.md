@@ -560,3 +560,50 @@ the phone keeps nothing but those four, so the route of the before / after photo
 
 **Limits**: the timeline lines and the messages to the customer and to the staff are those of the arrival (the customer is told "on the way" when the phone sends it, not when it was
 pressed). Accepting and handing a job back are not held by the phone (they need the server's answer: another technician may have taken the job).
+
+## One job offered to the best technicians, first to accept wins (P3-07)
+
+The back office can offer an **open** job (waiting for a technician: `CREATED`, `WAITING_ADMIN_REVIEW` or `QUOTE_ACCEPTED`) to the best-matched technicians who are
+free for it, at the same time, for a few minutes. Each gets a push and sees the offer in the app with a countdown. **The first to accept gets the job; the others
+see the offer withdrawn.** Offers are an extra layer on the one existing path: accepting is still `POST /artisans/me/missions/:id/accept`.
+
+| Route | Who | What |
+| --- | --- | --- |
+| `POST /api/admin/interventions/:id/offers` | `tickets.dispatch` (admin, dispatcher) | Makes a round. Body (both optional): `count` (1 to 10, default `OFFER_COUNT` = 5), `minutes` (1 to 120, default `OFFER_MINUTES` = 10). Takes the best matches that are free (the list and score of "assign the best"), leaves out those whose trade does not fit and those who were already asked for this job. Answers `{ round, expiresAt, asked, offered, offers: [{ id, artisanId, name, rank, score, expiresAt }] }`. |
+| `GET /api/admin/interventions/:id/offers` | `tickets.read` | Every offer of the job by round and rank, with the technician's name and score, each read as `open`, `accepted`, `declined`, `expired` or `withdrawn` (and why). |
+| `DELETE /api/admin/interventions/:id/offers` | `tickets.dispatch` | Calls the round off: every live offer is withdrawn (`STAFF`) and each technician is told live. |
+| `GET /api/artisans/me/offers` | `missions.work` (technician) | The technician's own offers: the ones to answer now (soonest to run out first), then those offered in the last 24 hours that have ended, with `now` (the server's clock, for the countdown). An open offer carries the job as the board shows it (no way to reach the customer); an ended one carries only its trade. |
+| `GET /api/artisans/me/missions/:id` | technician | Gains `offer` (the technician's own offer of the job, or `null`). |
+
+**How the atomic part works.** The accept runs under the advisory lock of the job and takes the job with one compare-and-set on its status. Only when that claim changed
+the job, in the same transaction, the winner's offer becomes `ACCEPTED` and every other offer still waiting becomes `WITHDRAWN` (reason `TAKEN`). A losing accept finds the
+job taken and is answered with the usual 409. Offers that had already run out but were not yet swept become `EXPIRED`, not `WITHDRAWN`: nobody is told a job was taken from under
+them. Giving the job to a technician (assign, assign the best, the planning) ends the offers in the transaction of the assignment (`ASSIGNED`). A job that is cancelled or moved on by another route is caught by the sweep within a minute (`CANCELLED` for a cancelled job, `TAKEN` for a job a technician holds, no reason for any other job that left the queue, such as a quote sent, which the app reads as "no longer available"); until then every read (the technician's list, the details, the back office's list) already calls its offers withdrawn, and an accept is refused because the job is not open.
+
+**The rows agree with who holds the job.** Whoever ends up holding the job has the accepted offer: if the back office gives the job to a technician whose offer had been withdrawn as taken, or a technician takes it from the board after their offer ran out, their offer becomes `ACCEPTED`; the offer of the technician who held it before (accepted) becomes `WITHDRAWN` (`TAKEN` or `ASSIGNED`), or `DECLINED` when that technician gave the job back themselves. A technician who was not offered a job that is reserved for others cannot refuse it either (409): the refusal would be written down against a job they never saw.
+
+**Reservation.** While any offer of a job is live (`PENDING` and not past `expiresAt`), the job is reserved for the technicians it was offered to: the board leaves it out for the others, its
+details are a 403 ("not assigned to you") and accepting it by number is a 409 ("offered to other artisans for a few minutes"). When no offer is live any more the job is open to every
+technician it fits, exactly as before offers existed. Reads judge an offer against the job and the clock, not only against the stored status, because the sweep runs once a minute.
+
+**The sweep** (`@Cron` every minute): writes `EXPIRED` for offers past their time (and tells the technician live), writes `WITHDRAWN` for offers of a job that is no longer open
+(a safety net: the routes above end offers themselves), and tells the dispatching staff in French when the last live offer of a still-open job ran out ("Offre restée sans réponse"). Every
+write is "only if still waiting", so an answer given at the same moment wins. An offered technician who holds the job through a route that does not settle offers has their offer written as accepted, not withdrawn. A round is reported to the staff only once no offer of it is left waiting (so a sweep that failed half way does not report it early).
+
+**Live events and push.** Push type `MISSION_OFFERED` (`interventionId` + `data { offerId, expiresAt }`; the push opens the offer screen of the phone app, not the mission screen: the job is not theirs until they accept). The live event `mission.offer.updated`
+`{ interventionId, status: 'withdrawn' | 'expired', because? }` goes to the technician's open apps; nothing is stored for it (the offers list is the truth).
+
+**Deploying**: `prisma generate && prisma db push` (new table `MissionOffer`, two enums, one new `NotificationType` value). Settings `OFFER_MINUTES` and `OFFER_COUNT` are optional; a value out of range is ignored.
+
+**Limits**
+- There is no dashboard button and no automatic trigger yet: a round is made through the API (the dashboard and an automatic first round come later).
+- One offer per job and technician (a unique key): a technician whose offer ran out, was withdrawn (another technician took the job and then gave it back, say) or was declined is not asked again for the same job; a later round asks others.
+- An offer reserves the job until it ends, even when its technician can no longer take it (at their maximum of active jobs, switched off, suspended): the other technicians see the job again at the latest when the offer runs out (10 minutes by default), or at once when the staff call the round off (`DELETE .../offers`). Suspending a technician does not withdraw their offers.
+- Quiet ends send the staff no notice: a technician who answers after the deadline, a round in which every technician declines. The staff notice for a round that ran out is sent by the process that sweeps; with more than one server process it can be sent twice.
+- The sweep takes the 500 oldest live offers in one pass (the writes of offers that ran out are done first); with more than 500 live offers at once the end of an offer of a job that left the queue can wait for the next pass. Reads are right in the meantime.
+- Routes that move a job out of the queue without going through the assignment (cancelling, sending a quote, the older status route) leave the offers to the sweep; a job that comes back to the queue before the sweep wrote its end has its still-live offers reserving it again.
+- Staff can give a job to a technician at any time, also one a technician has just accepted from an offer, unless the screen sends the technician it showed (`expectedArtisanId`); the rows then agree with the new holder.
+- The staff notice "Offre restée sans réponse" is sent when the sweep writes the end of the last offer of a job that is still open as *run out*. A round whose last live offer ends by a refusal (every technician declines, or one lets the time run out and the others decline) is not reported; the staff see it in `GET .../offers`. Until the sweep has written it, a cancelled job or a job another technician holds reads as "no longer available" in the technician's list (the sweep then says why).
+- An offered technician who holds the job through a route that does not settle offers, and whose own offer runs out in the very minute the sweep looks at it, has that offer written as run out (the expiry is written first and the check of closed jobs only looks at offers still in time); their list then says "ran out" for a job they hold. The case needs a route that gives a job without settling offers and an offer ending in the same minute.
+- The withdrawal is told live only to apps that are open; the phone has no socket yet, so it learns on its next refresh or when it tries to accept (409).
+- Offers are not shown in the dashboard's case file, and they are not part of the audit log beyond the two staff writes (`interventions.offer-to-artisans`, `interventions.withdraw-offers`).

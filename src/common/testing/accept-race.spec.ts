@@ -27,13 +27,28 @@ async function within<T>(promise: Promise<T>): Promise<T> {
 
 const open = () => ({ status: 'CREATED', artisanId: null, latitude: 36.8008, longitude: 10.1815 });
 
-function setup(job: Record<string, unknown>) {
+/** The world's own offer (to household A's artisan) is cleared: these races are about a job nobody was offered, unless `offers` is asked for (P3-07, below). */
+function setup(job: Record<string, unknown>, offers = false) {
   const w = buildWorld();
 
   w.set('intervention', job);
+  if (!offers) w.clear('missionOffer');
 
   return { w, id: w.ids.A.intervention, A: w.ids.A.artisan, B: w.ids.B.artisan };
 }
+
+const FAR = new Date('2100-01-01T00:00:00Z');
+
+/** The job of household A offered to both artisans of the world, nobody has answered. */
+function offeredToBoth(job: Record<string, unknown>) {
+  const world = setup(job, true);
+
+  world.w.fill('missionOffer', { interventionId: world.id, artisanId: world.B, rank: 2, expiresAt: FAR });
+
+  return world;
+}
+
+const offersOf = (w: World, id: number) => w.memory.rows('missionOffer').filter((entry) => entry.interventionId === id);
 
 const row = (w: World, id: number) => w.memory.rows('intervention').find((entry) => entry.id === id) as any;
 const lines = (w: World, id: number) => w.memory.rows('interventionEvent').filter((entry) => entry.interventionId === id).map((entry) => String(entry.type));
@@ -251,4 +266,85 @@ describe('the customer cancels while the artisan accepts (P1-17)', () => {
       expect(String(row(w, id).status)).toBe('CANCELLED');
     });
   }
+});
+
+describe('a job offered to two artisans, and both accept at the same moment (P3-07)', () => {
+  for (const backwards of [false, true]) {
+    it(`one gets it, the other is told it is taken and sees the offer withdrawn (${backwards ? 'second artisan first' : 'first artisan first'})`, async () => {
+      const { w, id, A, B } = offeredToBoth(open());
+      const results = await together([() => accept(w, 'artisanA', id), () => accept(w, 'artisanB', id)], backwards);
+      const callers = backwards ? [B, A] : [A, B];
+      const winners = results.filter((outcome) => outcome.ok);
+      const losers = results.filter((outcome) => !outcome.ok);
+
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect(losers[0].status).toBe(409);
+      expect(losers[0].error.message).toBe(TAKEN);
+
+      const winner = callers[results.findIndex((outcome) => outcome.ok)];
+      const loser = winner === A ? B : A;
+
+      expect(row(w, id).artisanId).toBe(winner);
+      expect(lines(w, id).filter((type) => type === 'ARTISAN_ACCEPTED')).toHaveLength(1);
+
+      // exactly one offer ended as accepted, the other as withdrawn because the job was taken; none is left waiting
+      const mine = offersOf(w, id).find((entry) => entry.artisanId === winner) as any;
+      const theirs = offersOf(w, id).find((entry) => entry.artisanId === loser) as any;
+
+      expect([mine.status, mine.withdrawnReason ?? null]).toEqual(['ACCEPTED', null]);
+      expect([theirs.status, theirs.withdrawnReason]).toEqual(['WITHDRAWN', 'TAKEN']);
+      expect(offersOf(w, id).filter((entry) => entry.status === 'PENDING')).toHaveLength(0);
+
+      // the one who lost is told once, live; the winner is not
+      expect(w.sink.filter((entry) => entry === 'realtime.emitOfferUpdate')).toHaveLength(1);
+    });
+  }
+
+  it('an artisan who was not offered is told it is kept for others while the offers are live, and nothing changes', async () => {
+    const { w, id, B } = setup(open(), true);
+
+    // only A has an offer: B reaches for the job
+    const before = JSON.stringify(w.memory.snapshot());
+    const tried = await accept(w, 'artisanB', id);
+
+    expect(tried.status).toBe(409);
+    expect(tried.error.message).toBe('Cette mission est proposée à d’autres artisans pour quelques minutes.');
+    expect(JSON.stringify(w.memory.snapshot())).toBe(before);
+    expect(row(w, id).artisanId).toBe(null);
+    expect(B).not.toBe(row(w, id).artisanId);
+  });
+
+  it('the dispatcher gives it to one of the two: the other offer is withdrawn as assigned, and a late accept is refused', async () => {
+    const { w, id, A, B } = offeredToBoth(open());
+
+    expect((await assign(w, 'dispatcher', id, B)).ok).toBe(true);
+
+    const late = await accept(w, 'artisanA', id);
+
+    expect(late.ok).toBe(false);
+    expect([400, 409]).toContain(late.status);
+    expect(row(w, id).artisanId).toBe(B);
+
+    const theirs = offersOf(w, id).find((entry) => entry.artisanId === A) as any;
+    const chosen = offersOf(w, id).find((entry) => entry.artisanId === B) as any;
+
+    expect([theirs.status, theirs.withdrawnReason]).toEqual(['WITHDRAWN', 'ASSIGNED']);
+    expect(chosen.status).toBe('ACCEPTED');
+  });
+
+  it('the dispatcher and an offered artisan reach for it together: it ends with one holder and no offer left waiting', async () => {
+    for (const backwards of [false, true]) {
+      const { w, id, A, B } = offeredToBoth(open());
+
+      await together([() => assign(w, 'dispatcher', id, B), () => accept(w, 'artisanA', id)], backwards);
+
+      expect([A, B]).toContain(row(w, id).artisanId);
+      expect(offersOf(w, id).filter((entry) => entry.status === 'PENDING')).toHaveLength(0);
+      // whoever the schedule made the holder has the one accepted offer; the other one says it was withdrawn (never "taken" for the one who holds the job)
+      const acceptedOffers = offersOf(w, id).filter((entry) => entry.status === 'ACCEPTED');
+
+      expect(acceptedOffers.map((entry) => entry.artisanId)).toEqual([row(w, id).artisanId]);
+    }
+  });
 });

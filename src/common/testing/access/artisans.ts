@@ -54,7 +54,11 @@ export const artisanScenarios: Scenario[] = [
     note: 'the board: an open job is read by every artisan through the board’s copy, which has no way to reach the customer (until P3-03 the older GET /interventions was checked for this)',
     allowed: ['artisans'],
     reads: true,
-    prepare: (w) => w.set('intervention', { status: 'CREATED', artisanId: null }),
+    prepare: (w) => {
+      w.set('intervention', { status: 'CREATED', artisanId: null });
+      // No offer is live: a job offered to somebody is kept for them and left off the others' board (P3-07, checked in its own scenario below).
+      w.clear('missionOffer');
+    },
     request: () => ({}),
     hidden: hiddenOnBoard,
   },
@@ -115,4 +119,12 @@ export const artisanSelfScenarios: SelfScenario[] = [
   { route: 'PATCH /artisans/me/online' },
   { route: 'PATCH /artisans/me/offline' },
   { route: 'GET /artisans/me/missions', reads: true },
+  {
+    route: 'GET /artisans/me/offers',
+    note: 'an artisan reads the offers made to them, and for an open job the board’s copy of it (no way to reach the customer); the offers of the other household’s artisan are not in it',
+    reads: true,
+    servedRoles: ['ARTISAN'],
+    prepare: (w) => w.set('intervention', { status: 'CREATED', artisanId: null }),
+    hidden: hiddenOnBoard,
+  },
 ];

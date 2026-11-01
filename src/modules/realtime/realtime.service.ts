@@ -164,6 +164,22 @@ export class RealtimeService {
   }
 
   // ==========================================================
+  // 2c. An offer of a job ended (P3-07)
+  // ==========================================================
+
+  /**
+   * The technician's open app learns that an offer of theirs is over (another technician took the job, the back office gave it, the round was
+   * called off): `mission.offer.updated`, with the offer and the job it is about and nothing else. No name, no contact, not who took it.
+   */
+  emitOfferUpdate(userId: number, payload: { interventionId: number; status: 'withdrawn' | 'expired'; because?: string | null }) {
+    this.gateway.emitToUser(userId, 'mission.offer.updated', {
+      interventionId: payload.interventionId,
+      status: payload.status,
+      because: payload.because ?? null,
+    });
+  }
+
+  // ==========================================================
   // 3. Artisan location update
   // Can be called from REST services too
   // ==========================================================

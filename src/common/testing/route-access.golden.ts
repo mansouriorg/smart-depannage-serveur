@@ -16,6 +16,7 @@
  *  - `public`: no login.
  */
 export const ROUTE_ACCESS: Record<string, string> = {
+  'DELETE /admin/interventions/:/offers': 'tickets.dispatch | ADMIN,DISPATCHER,SUPER_ADMIN',
   'DELETE /admin/settings/notification-templates/:': 'settings.manage | ADMIN,SUPER_ADMIN',
   'DELETE /admin/settings/service-zones/:': 'settings.manage | ADMIN,SUPER_ADMIN',
   'DELETE /artisans/me/service-zones/:': 'artisan.profile | ADMIN,ARTISAN,SUPER_ADMIN',
@@ -42,11 +43,13 @@ export const ROUTE_ACCESS: Record<string, string> = {
   'GET /admin/dashboard/kpis': 'dashboard.kpis | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/interventions': 'tickets.read | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/interventions/:': 'tickets.read | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
+  'GET /admin/interventions/:/offers': 'tickets.read | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/interventions/:/route': 'location.history | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/settings/company': 'company.read | ACCOUNTANT,ADMIN,SUPER_ADMIN',
   'GET /admin/settings/notification-templates': 'settings.read | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /admin/settings/service-zones': 'settings.read | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'GET /artisans/me/missions': 'missions.work | ARTISAN',
+  'GET /artisans/me/offers': 'missions.work | ARTISAN',
   'GET /artisans/me/missions/:': 'missions.work | ARTISAN',
   'GET /artisans/me/profile': 'artisan.profile | ADMIN,ARTISAN,SUPER_ADMIN',
   'GET /business/dashboard': 'signed-in',
@@ -227,6 +230,7 @@ export const ROUTE_ACCESS: Record<string, string> = {
   'POST /admin/complaints/:/internal-notes': 'complaints.handle | ACCOUNTANT,ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
   'POST /admin/interventions/:/assign-artisan': 'tickets.dispatch | ADMIN,DISPATCHER,SUPER_ADMIN',
   'POST /admin/interventions/:/internal-notes': 'tickets.note | ADMIN,DISPATCHER,SUPER_ADMIN,SUPPORT',
+  'POST /admin/interventions/:/offers': 'tickets.dispatch | ADMIN,DISPATCHER,SUPER_ADMIN',
   'POST /admin/interventions/:/quotes': 'tickets.dispatch | ADMIN,DISPATCHER,SUPER_ADMIN',
   'POST /admin/settings/notification-templates': 'settings.manage | ADMIN,SUPER_ADMIN',
   'POST /admin/settings/service-zones': 'settings.manage | ADMIN,SUPER_ADMIN',

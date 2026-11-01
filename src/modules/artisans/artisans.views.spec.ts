@@ -16,6 +16,7 @@ function makeWorld(job: Record<string, unknown> = {}) {
       findUnique: async () => ({ id: 7, userId: 20, verificationStatus: 'APPROVED', specialties: ['PLOMBIER'], availability: [] }),
     },
     artisanMissionRejection: { findFirst: async () => null },
+    missionOffer: { findMany: async () => [], findFirst: async () => null },
     user: { findUnique: async () => ({ latitude: 36.8, longitude: 10.18 }) },
     intervention: {
       findUnique: async (args: any) => {

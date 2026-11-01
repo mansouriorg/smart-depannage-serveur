@@ -256,6 +256,26 @@ enum MissionRejectionReason {
   OTHER
 }
 
+/// Where an offer of a job to a technician stands (P3-07). PENDING is the only state that can still change: it ends as ACCEPTED (this technician
+/// took the job), DECLINED (they said no), EXPIRED (the time ran out) or WITHDRAWN (the job went elsewhere before they answered).
+enum MissionOfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+/// Why an offer was withdrawn: another technician took the job (TAKEN), the back office gave it to somebody (ASSIGNED), the job was cancelled
+/// (CANCELLED), or the back office called the round off (STAFF). No reason at all (null) means the job left the open state some other way
+/// (a quote sent, a dispute): the app reads it as "no longer available".
+enum MissionOfferWithdrawal {
+  TAKEN
+  ASSIGNED
+  CANCELLED
+  STAFF
+}
+
 enum MissionProblemType {
   CLIENT_ABSENT
   ACCESS_ISSUE
@@ -325,6 +345,8 @@ enum NotificationType {
   ARTISAN_APPLICATION_REJECTED
   // A visit is about to take place (P3-01): sent by the appointment reminders, to the customer and to the artisan.
   APPOINTMENT_REMINDER
+  // A job is offered to a technician, who has a few minutes to take it (P3-07): a push, and the app shows the offer with its countdown.
+  MISSION_OFFERED
   GENERAL
 }
 
@@ -476,6 +498,8 @@ model User {
 
   // The positions a technician's phone sent over the last days (P3-05).
   locationPings ArtisanLocationPing[]
+  offersReceived MissionOffer[] @relation("OffersToArtisan")
+  offersMade MissionOffer[] @relation("OffersMade")
 
   artisanProfile ArtisanProfile?
 
@@ -1006,6 +1030,7 @@ model Intervention {
   cashLedgerEntries CashLedgerEntry[]
 
   missionRejections ArtisanMissionRejection[]
+  offers MissionOffer[]
 
   // The positions sent while the technician was on this job (P3-05): the route that can be replayed for a dispute.
   locationPings ArtisanLocationPing[]
@@ -1822,6 +1847,44 @@ model ArtisanMissionRejection {
   @@index([artisanProfileId])
   @@index([interventionId])
   @@index([reason])
+}
+
+/// A job offered to a technician for a few minutes (P3-07). The back office offers an open job to the best-matched technicians at once; the first
+/// to accept gets it (the accept is the one mission action, under the lock of the job) and the other offers of the job end WITHDRAWN. While an
+/// offer is live the job is reserved for the technicians it was offered to. `rank` and `score` are what the matching said when it was offered
+/// (for the back office; the technician does not see them). A technician has one offer per job: a later round skips those already asked.
+model MissionOffer {
+  id Int @id @default(autoincrement())
+
+  interventionId Int
+  intervention   Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+
+  /// The technician's user id (the same id as Intervention.artisanId).
+  artisanId Int
+  artisan   User @relation("OffersToArtisan", fields: [artisanId], references: [id], onDelete: Cascade)
+
+  /// 1 for the first offers of a job, 2 for the next round, and so on.
+  round Int @default(1)
+  /// 1 = the best match of its round.
+  rank  Int
+  score Int?
+
+  status          MissionOfferStatus      @default(PENDING)
+  withdrawnReason MissionOfferWithdrawal?
+
+  offeredAt   DateTime  @default(now())
+  expiresAt   DateTime
+  /// When the technician answered, or when the offer ended some other way.
+  respondedAt DateTime?
+
+  /// The member of the back office who offered the job.
+  offeredById Int?
+  offeredBy   User? @relation("OffersMade", fields: [offeredById], references: [id], onDelete: SetNull)
+
+  @@unique([interventionId, artisanId])
+  @@index([artisanId, status])
+  @@index([interventionId, status])
+  @@index([status, expiresAt])
 }
 
 /// One position a technician's phone sent (P3-05). Kept for a few days (LOCATION_HISTORY_DAYS, 7 by default), longer for a job that has

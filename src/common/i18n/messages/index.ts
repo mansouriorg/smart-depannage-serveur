@@ -3,7 +3,7 @@
  *
  * Messages to the back office (the staff notices, the internal notes, the alert SMS) are not here: they stay French.
  * The areas follow the product: sign-in and account (auth), the visitor's link (guest), the life of a job (mission), quotes, payments,
- * invoices, visits and their reminders (appointment), complaints, chat, and a technician's application.
+ * invoices, visits and their reminders (appointment), complaints, chat, a technician's application, and a job offered to a technician (offer).
  */
 import type { MessageDef } from './message';
 import { appointment } from './appointment';
@@ -14,6 +14,7 @@ import { complaint } from './complaint';
 import { guest } from './guest';
 import { invoice } from './invoice';
 import { mission } from './mission';
+import { offer } from './offer';
 import { payment } from './payment';
 import { quote } from './quote';
 
@@ -22,7 +23,7 @@ export { message, notice, reference, say } from './message';
 export { declaredLocale, localeOfUser, recipientLocale } from './locale';
 export { moneyIn, whenIn } from './format';
 
-export const MESSAGES = { appointment, application, auth, chat, complaint, guest, invoice, mission, payment, quote };
+export const MESSAGES = { appointment, application, auth, chat, complaint, guest, invoice, mission, offer, payment, quote };
 
 export type MessageEntry = { area: string; key: string; definition: MessageDef<any> };
 

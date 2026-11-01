@@ -118,6 +118,8 @@ const FRENCH: Array<[string, Record<string, string | number>, string]> = [
   ['quote.sent.sms', { amount: `1 234,500 TND` }, `Smart Dépannage: vous avez reçu un devis de 1 234,500 TND TTC.`],
   ['quote.sent.emailSubject', {}, `Votre devis Smart Dépannage`],
   ['quote.sent.emailBody', { amount: `1 234,500 TND` }, `Vous avez reçu un devis de 1 234,500 TND TTC.`],
+  ['offer.offered.title', {}, `Nouvelle mission proposée`],
+  ['offer.offered.message', { address: `12 rue de Marseille, Tunis`, until: `14:32` }, `Une mission vous est proposée: 12 rue de Marseille, Tunis. Répondez avant 14:32.`],
   ['quote.accepted.title', {}, `Devis accepté`],
   ['quote.accepted.message', { ref: `#12` }, `Le client a accepté le devis #12.`],
 ];

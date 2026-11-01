@@ -35,6 +35,7 @@ function makeService(profile: Record<string, any> = { specialties: ['PLOMBIER'] 
         return [];
       },
     },
+    missionOffer: { findMany: async () => [], findFirst: async () => null },
   };
 
   return {
@@ -174,6 +175,8 @@ function makeBoard(data: {
   jobs: any[];
   visits?: any[];
   refusals?: any[];
+  /** The offers of jobs to artisans (P3-07). */
+  offers?: any[];
   /** Fields of the artisan's profile, over the defaults (the zones, for instance). */
   profile?: Record<string, unknown>;
 }) {
@@ -214,6 +217,10 @@ function makeBoard(data: {
         (data.refusals ?? []).find(
           (row) => row.artisanProfileId === args.where.artisanProfileId && row.interventionId === args.where.interventionId,
         ) ?? null,
+    },
+    missionOffer: {
+      findMany: async (args: any) => (data.offers ?? []).filter((offer) => matchesWhere(offer, args.where)),
+      findFirst: async (args: any) => (data.offers ?? []).find((offer) => matchesWhere(offer, args.where)) ?? null,
     },
   };
 
@@ -533,5 +540,103 @@ describe('what the other routes of the artisan answer carries no column of the b
       for (const key of Object.keys(secrets)) expect(key in answer).toBe(false);
       expect(answer.id).toBe(2);
     }
+  });
+});
+
+// ----------------------------------------------------------
+// P3-07: a job offered to several artisans
+// ----------------------------------------------------------
+
+describe('a job offered to other artisans is kept for them while their offers are live (P3-07)', () => {
+  const MINUTE = 60_000;
+  const offer = (id: number, interventionId: number, artisanId: number, fields: Record<string, unknown> = {}) => ({
+    id,
+    interventionId,
+    artisanId,
+    status: 'PENDING',
+    round: 1,
+    rank: id,
+    score: 80,
+    offeredAt: new Date(Date.now() - MINUTE),
+    expiresAt: new Date(Date.now() + 9 * MINUTE),
+    respondedAt: null,
+    withdrawnReason: null,
+    ...fields,
+  });
+  const open = (id: number) => job(id, { status: 'CREATED' });
+  const board = async (userId: number, jobs: any[], offers: any[]) =>
+    (await makeBoard({ jobs, offers }).service.getMissionBoard(userId)).availableJobs.map((row: any) => row.id);
+
+  it('the board leaves it out for an artisan who was not offered it, and keeps the other open jobs', async () => {
+    expect(await board(4, [open(1), open(2), open(3)], [offer(1, 2, 8), offer(2, 2, 9)])).toEqual([1, 3]);
+  });
+
+  it('the artisans it was offered to keep seeing it', async () => {
+    expect(await board(8, [open(1), open(2)], [offer(1, 2, 8), offer(2, 2, 9)])).toEqual([1, 2]);
+    expect(await board(9, [open(1), open(2)], [offer(1, 2, 8), offer(2, 2, 9)])).toEqual([1, 2]);
+  });
+
+  it('an offer that ran out (the sweep has not got to it yet) reserves nothing', async () => {
+    expect(await board(4, [open(1)], [offer(1, 1, 8, { expiresAt: new Date(Date.now() - 1000) })])).toEqual([1]);
+  });
+
+  it('nor does an offer that was answered or withdrawn', async () => {
+    for (const status of ['ACCEPTED', 'DECLINED', 'EXPIRED', 'WITHDRAWN']) {
+      expect([status, await board(4, [open(1)], [offer(1, 1, 8, { status })])]).toEqual([status, [1]]);
+    }
+  });
+
+  it('one live offer among ended ones is enough to keep it', async () => {
+    expect(await board(4, [open(1)], [offer(1, 1, 8, { status: 'DECLINED' }), offer(2, 1, 9)])).toEqual([]);
+  });
+
+  it('the details of a job kept for others are refused with the sentence of a job that is not theirs', async () => {
+    const w = makeBoard({ jobs: [open(1)], offers: [offer(1, 1, 8)] });
+
+    await expect(w.service.getMissionDetails(4, 1)).rejects.toThrow(/ne vous est pas attribuée/);
+    expect(((await w.service.getMissionDetails(8, 1)) as any).id).toBe(1);
+  });
+
+  it('an offer that ran out no longer keeps the details back', async () => {
+    const w = makeBoard({ jobs: [open(1)], offers: [offer(1, 1, 8, { expiresAt: new Date(Date.now() - 1000) })] });
+
+    expect(((await w.service.getMissionDetails(4, 1)) as any).id).toBe(1);
+  });
+
+  describe('the offer in the details', () => {
+    it('the artisan it was made to reads it: open, with its time, and nothing of the round', async () => {
+      const mine = offer(1, 1, 8, { rank: 3, score: 91 });
+      const answer: any = await makeBoard({ jobs: [open(1)], offers: [mine, offer(2, 1, 9)] }).service.getMissionDetails(8, 1);
+
+      expect(answer.offer).toEqual({
+        id: 1,
+        interventionId: 1,
+        state: 'open',
+        because: null,
+        offeredAt: mine.offeredAt,
+        expiresAt: mine.expiresAt,
+        respondedAt: null,
+      });
+      expect(JSON.stringify(answer.offer)).not.toMatch(/rank|score|round|offeredBy|artisanId/);
+    });
+
+    it('no offer, no `offer`: null', async () => {
+      const answer: any = await makeBoard({ jobs: [open(1)] }).service.getMissionDetails(4, 1);
+
+      expect(answer.offer).toBe(null);
+    });
+
+    it('the job taken from the offer is the artisan\'s, and the offer says accepted', async () => {
+      const taken = job(1, { status: 'ARTISAN_ACCEPTED', artisanId: 8 });
+      const answer: any = await makeBoard({ jobs: [taken], offers: [offer(1, 1, 8, { status: 'ACCEPTED', respondedAt: new Date() })] }).service.getMissionDetails(8, 1);
+
+      expect(answer.offer.state).toBe('accepted');
+    });
+
+    it('somebody else\'s offer of the same job is not the artisan\'s: the details carry the artisan\'s own or none', async () => {
+      const answer: any = await makeBoard({ jobs: [open(1)], offers: [offer(1, 1, 8, { expiresAt: new Date(Date.now() - 1000) })] }).service.getMissionDetails(4, 1);
+
+      expect(answer.offer).toBe(null);
+    });
   });
 });

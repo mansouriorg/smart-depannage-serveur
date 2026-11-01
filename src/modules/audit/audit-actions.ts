@@ -32,6 +32,8 @@ export interface AuditedRoute {
 /** Written in the order of the permission matrix: the jobs, the technicians, the clients, the complaints, the money, the rest. */
 export const AUDITED_ROUTES: Readonly<Record<string, AuditedRoute>> = Object.freeze({
   'POST /admin/interventions/:/assign-artisan': { action: 'interventions.assign-artisan', targetType: 'Intervention', param: 'id', details: ['artisanId'] },
+  'POST /admin/interventions/:/offers': { action: 'interventions.offer-to-artisans', targetType: 'Intervention', param: 'id', details: ['count', 'minutes'] },
+  'DELETE /admin/interventions/:/offers': { action: 'interventions.withdraw-offers', targetType: 'Intervention', param: 'id' },
   'PATCH /admin/interventions/:/status': { action: 'interventions.set-status', targetType: 'Intervention', param: 'id', details: ['status'] },
   'PATCH /admin/interventions/:/cancel': { action: 'interventions.cancel', targetType: 'Intervention', param: 'id', details: ['reason'] },
   'POST /admin/interventions/:/quotes': { action: 'interventions.create-quote', targetType: 'Intervention', param: 'id' },

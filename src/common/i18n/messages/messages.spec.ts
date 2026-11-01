@@ -45,6 +45,7 @@ describe('the messages of P3-04 exist in both languages', () => {
       'guest',
       'invoice',
       'mission',
+      'offer',
       'payment',
       'quote',
     ]);
@@ -62,10 +63,11 @@ describe('the messages of P3-04 exist in both languages', () => {
       guest: count('guest'),
       invoice: count('invoice'),
       mission: count('mission'),
+      offer: count('offer'),
       payment: count('payment'),
       quote: count('quote'),
-    }).toEqual({ appointment: 5, application: 11, auth: 21, chat: 3, complaint: 4, guest: 8, invoice: 5, mission: 39, payment: 6, quote: 7 });
-    expect(entries.length).toBe(109);
+    }).toEqual({ appointment: 5, application: 11, auth: 21, chat: 3, complaint: 4, guest: 8, invoice: 5, mission: 39, offer: 2, payment: 6, quote: 7 });
+    expect(entries.length).toBe(111);
   });
 
   it('keys are unique and each message has a text in French and in Arabic', () => {

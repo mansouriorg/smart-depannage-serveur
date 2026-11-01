@@ -40,6 +40,7 @@ function makeWorld(options: Options = {}) {
   const reminders = new FakeTable({ defaults: () => ({ status: 'PENDING' }) });
   const requests = new FakeTable({ defaults: () => ({ status: 'PENDING', type: 'RESCHEDULE' }) });
   const rejections = new FakeTable();
+  const offers = new FakeTable({ defaults: () => ({ status: 'PENDING', round: 1, rank: 1, withdrawnReason: null, respondedAt: null }) });
 
   const locks: number[][] = [];
   const prisma: any = withTransactions(
@@ -51,12 +52,13 @@ function makeWorld(options: Options = {}) {
       appointmentReminder: reminders,
       appointmentRequest: requests,
       artisanMissionRejection: rejections,
+      missionOffer: offers,
       $executeRaw: async (_strings: TemplateStringsArray, ...values: number[]) => {
         locks.push(values);
         return 1;
       },
     },
-    [users, profiles, interventions, appointments, reminders, requests, rejections],
+    [users, profiles, interventions, appointments, reminders, requests, rejections, offers],
   );
 
   if (!options.noLockQueue) {
@@ -75,6 +77,8 @@ function makeWorld(options: Options = {}) {
   const timeline: any[] = [];
   const told: Array<{ what: string; args: any[] }> = [];
   const live: any[] = [];
+  /** The live events that tell an artisan their offer is over (P3-07). */
+  const offerEvents: Array<{ userId: number; payload: any }> = [];
   /** Who was taken out of the live room of which job, and the order of that against the live events. */
   const left: Array<[number, number]> = [];
   const order: string[] = [];
@@ -104,6 +108,10 @@ function makeWorld(options: Options = {}) {
       live.push(payload);
       order.push('live');
     },
+    emitOfferUpdate: (userId: number, payload: any) => {
+      if (options.liveThrows) throw new Error('socket down');
+      offerEvents.push({ userId, payload });
+    },
     removeFromJobRoom: (userId: number, interventionId: number) => {
       if (options.leaveThrows) throw new Error('socket server down');
       left.push([userId, interventionId]);
@@ -124,9 +132,12 @@ function makeWorld(options: Options = {}) {
     // (made long before the fixed instant of the held-step tests: the floor under a held step is the making of the job)
     interventions.insert({ clientId: client.id, address: 'Rue de Marseille, Tunis', createdAt: new Date('2026-10-01T00:00:00.000Z'), ...fields }).id as number;
 
+  const offer = (artisanId: number, interventionId: number, fields: Record<string, unknown> = {}) =>
+    offers.insert({ artisanId, interventionId, expiresAt: new Date(Date.now() + 10 * 60_000), ...fields }) as any;
+
   return {
-    users, profiles, interventions, appointments, reminders, requests, rejections,
-    locks, timeline, told, live, left, order,
+    users, profiles, interventions, appointments, reminders, requests, rejections, offers,
+    locks, timeline, told, live, left, order, offerEvents, offer,
     addArtisan, addJob,
     job: (id: number) => interventions.rows.find((row) => row.id === id)!,
     service: new MissionActionsService(prisma, notifications, eventsService, realtime),
@@ -1809,5 +1820,349 @@ describe('steps the phone held until it had a signal (P3-06)', () => {
     expect(error.getStatus()).toBe(409);
     expect(w.job(id).artisanArrivedAt).toBeNull();
     silent(w);
+  });
+});
+
+describe('a job offered to several artisans (P3-07)', () => {
+  const statusOf = (w: World, artisanId: number, interventionId: number) =>
+    w.offers.rows.find((row) => row.artisanId === artisanId && row.interventionId === interventionId)!;
+
+  it('of five artisans offered a job, exactly one gets it and the others see it withdrawn', async () => {
+    const w = makeWorld();
+    const artisans = [0, 1, 2, 3, 4].map(() => w.addArtisan());
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    artisans.forEach((artisan, index) => w.offer(artisan, id, { rank: index + 1 }));
+
+    // all five press "accept" at once
+    const results = await Promise.allSettled(artisans.map((artisan) => accept(w, artisan, id)));
+
+    const winners = results.flatMap((result, index) => (result.status === 'fulfilled' ? [artisans[index]] : []));
+    const losers = results.flatMap((result, index) => (result.status === 'rejected' ? [{ artisan: artisans[index], reason: result.reason }] : []));
+
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(4);
+
+    // the four who came second are told the job went to another artisan (a 409, the race of P0-10)
+    for (const { reason } of losers) {
+      expect(reason.getStatus()).toBe(409);
+      expect(reason.message).toBe('Cette mission vient d’être attribuée à un autre artisan ou n’est plus disponible.');
+    }
+
+    expect(w.job(id).artisanId).toBe(winners[0]);
+
+    // one offer is accepted, the four others are withdrawn because the job was taken, and the time of it is written
+    expect(statusOf(w, winners[0], id).status).toBe('ACCEPTED');
+    expect(statusOf(w, winners[0], id).respondedAt).toBeInstanceOf(Date);
+
+    for (const { artisan } of losers) {
+      expect(statusOf(w, artisan, id)).toMatchObject({ status: 'WITHDRAWN', withdrawnReason: 'TAKEN' });
+      expect(statusOf(w, artisan, id).respondedAt).toBeInstanceOf(Date);
+    }
+
+    expect(w.offers.rows.filter((row) => row.status === 'PENDING')).toEqual([]);
+
+    // the four open apps are told; the one who won is not
+    expect(w.offerEvents.map((event) => event.userId).sort()).toEqual(losers.map((loser) => loser.artisan).sort());
+
+    for (const event of w.offerEvents) {
+      expect(event.payload).toEqual({ interventionId: id, status: 'withdrawn', because: 'taken' });
+    }
+
+    // the customer and the back office are told once, about the one who took it
+    expect(w.told).toEqual([{ what: 'accepted', args: [id, winners[0]] }]);
+  });
+
+  it('the same result whoever is first: the order of the presses decides, not the rank of the offers', async () => {
+    const w = makeWorld();
+    const [first, second, third] = [w.addArtisan(), w.addArtisan(), w.addArtisan()];
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(first, id, { rank: 1 });
+    w.offer(second, id, { rank: 2 });
+    w.offer(third, id, { rank: 3 });
+
+    await accept(w, third, id); // the third best presses first
+
+    expect(w.job(id).artisanId).toBe(third);
+    expect(statusOf(w, third, id).status).toBe('ACCEPTED');
+    expect(statusOf(w, first, id).status).toBe('WITHDRAWN');
+    expect(statusOf(w, second, id).status).toBe('WITHDRAWN');
+  });
+
+  it('an artisan who was not offered cannot take a job that is offered to others: a 409, and nothing changes', async () => {
+    const w = makeWorld();
+    const offered = w.addArtisan();
+    const other = w.addArtisan();
+    const outsider = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(offered, id);
+    w.offer(other, id);
+
+    const error = await failure(accept(w, outsider, id));
+
+    expect(error.getStatus()).toBe(409);
+    expect(error.message).toBe('Cette mission est proposée à d’autres artisans pour quelques minutes.');
+    expect(w.job(id).artisanId).toBeNull();
+    expect(w.offers.rows.map((row) => row.status)).toEqual(['PENDING', 'PENDING']);
+    silent(w);
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('once every offer has run out the job is open to everybody again, and the offers that ran out end as expired, not withdrawn', async () => {
+    const w = makeWorld();
+    const offered = w.addArtisan();
+    const outsider = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(offered, id, { expiresAt: new Date(Date.now() - 1000) });
+
+    await accept(w, outsider, id);
+
+    expect(w.job(id).artisanId).toBe(outsider);
+    // the offered artisan did not lose a live offer: nobody is told that a job was taken from under them
+    expect(statusOf(w, offered, id)).toMatchObject({ status: 'EXPIRED' });
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('an offer that ran out does not let its artisan take the job while the offers of others are live', async () => {
+    const w = makeWorld();
+    const lapsed = w.addArtisan();
+    const live = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(lapsed, id, { expiresAt: new Date(Date.now() - 1000) });
+    w.offer(live, id);
+
+    const error = await failure(accept(w, lapsed, id));
+
+    expect(error.getStatus()).toBe(409);
+    expect(w.job(id).artisanId).toBeNull();
+  });
+
+  it('an artisan taking a job on their own offer after the others have expired takes it, and their offer is accepted', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(artisan, id);
+    w.offer(other, id, { expiresAt: new Date(Date.now() - 1000) });
+
+    await accept(w, artisan, id);
+
+    expect(statusOf(w, artisan, id).status).toBe('ACCEPTED');
+    expect(statusOf(w, other, id).status).toBe('EXPIRED');
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('an accept that is refused (the artisan is at their maximum) changes no offer', async () => {
+    const w = makeWorld();
+    const busy = w.addArtisan({ maxActiveJobs: 1 });
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.addJob({ status: 'ACCEPTED', artisanId: busy });
+    w.offer(busy, id);
+    w.offer(other, id);
+
+    const error = await failure(accept(w, busy, id));
+
+    expect(error.getStatus()).toBe(400);
+    expect(w.offers.rows.map((row) => row.status)).toEqual(['PENDING', 'PENDING']);
+    expect(w.offerEvents).toEqual([]);
+    expect(w.job(id).artisanId).toBeNull();
+  });
+
+  it('pressing accept again (a lost answer) changes nothing more and tells nobody again', async () => {
+    const w = makeWorld();
+    const winner = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(winner, id);
+    w.offer(other, id);
+
+    await accept(w, winner, id);
+
+    const eventsBefore = w.offerEvents.length;
+
+    await accept(w, winner, id);
+
+    expect(w.offerEvents).toHaveLength(eventsBefore);
+    expect(eventsBefore).toBe(1);
+    expect(w.told).toHaveLength(1);
+  });
+
+  it('pressing accept again does not touch the offers, not even one that is somehow still waiting (only the write that takes the job ends them)', async () => {
+    const w = makeWorld();
+    const winner = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(winner, id);
+    await accept(w, winner, id);
+
+    // an offer that is waiting for a job that already has its technician (not a state the server makes: the repeat must still leave it alone)
+    w.offer(other, id);
+    await accept(w, winner, id);
+
+    expect(statusOf(w, other, id).status).toBe('PENDING');
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('a live event that cannot be sent does not undo the job being taken, nor the offers ending', async () => {
+    const w = makeWorld({ liveThrows: true });
+    const winner = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(winner, id);
+    w.offer(other, id);
+
+    await accept(w, winner, id);
+
+    expect(w.job(id).artisanId).toBe(winner);
+    expect(statusOf(w, winner, id).status).toBe('ACCEPTED');
+    expect(statusOf(w, other, id).status).toBe('WITHDRAWN');
+  });
+
+  it('a job taken by somebody between the check and the write: the artisan’s own offer is not touched (only the artisan who wins the write ends the offers)', async () => {
+    const w = makeWorld({ noLockQueue: true });
+    const first = w.addArtisan();
+    const second = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING' });
+
+    w.offer(first, id);
+    w.offer(second, id);
+
+    const update = w.interventions.update;
+    w.interventions.update = async (args: any) => {
+      w.interventions.rows.find((row) => row.id === id)!.artisanId = second;
+      w.interventions.update = update;
+
+      return update(args);
+    };
+
+    const error = await failure(accept(w, first, id));
+
+    expect(error.getStatus()).toBe(409);
+    expect(w.offers.rows.map((row) => row.status)).toEqual(['PENDING', 'PENDING']);
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('a job with no offer is taken as before, and no offer table is touched for another job', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const bystander = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+    const otherId = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(bystander, otherId);
+
+    await accept(w, artisan, id);
+
+    expect(w.job(id).artisanId).toBe(artisan);
+    expect(statusOf(w, bystander, otherId).status).toBe('PENDING');
+    expect(w.offerEvents).toEqual([]);
+  });
+
+  it('refusing the job declines the artisan’s offer; the others stay live and the job stays reserved for them', async () => {
+    const w = makeWorld();
+    const refuser = w.addArtisan();
+    const other = w.addArtisan();
+    const outsider = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(refuser, id);
+    w.offer(other, id);
+
+    await decline(w, refuser, id);
+
+    expect(statusOf(w, refuser, id)).toMatchObject({ status: 'DECLINED' });
+    expect(statusOf(w, refuser, id).respondedAt).toBeInstanceOf(Date);
+    expect(statusOf(w, other, id).status).toBe('PENDING');
+
+    // still reserved for the other one
+    const error = await failure(accept(w, outsider, id));
+
+    expect(error.getStatus()).toBe(409);
+  });
+
+  it('an artisan who was not offered cannot refuse a job that is offered to others: a 409, and no refusal is written against them', async () => {
+    const w = makeWorld();
+    const offered = w.addArtisan();
+    const outsider = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(offered, id);
+
+    const error = await failure(decline(w, outsider, id));
+
+    expect(error.getStatus()).toBe(409);
+    expect(error.message).toBe('Cette mission est proposée à d’autres artisans pour quelques minutes.');
+    expect(w.rejections.rows).toEqual([]);
+    expect(statusOf(w, offered, id).status).toBe('PENDING');
+  });
+
+  it('an artisan who already refused the job and presses refuse again (a lost answer) is answered as before while other offers are live', async () => {
+    const w = makeWorld();
+    const [a, b, c] = [w.addArtisan(), w.addArtisan(), w.addArtisan()];
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(a, id);
+    w.offer(b, id);
+    w.offer(c, id);
+
+    await decline(w, a, id);
+    await decline(w, a, id);
+
+    expect(statusOf(w, a, id).status).toBe('DECLINED');
+    expect(statusOf(w, b, id).status).toBe('PENDING');
+  });
+
+  it('an artisan who holds the job and gives it back has declined the offer they took it from', async () => {
+    const w = makeWorld();
+    const winner = w.addArtisan();
+    const other = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(winner, id);
+    w.offer(other, id);
+
+    await accept(w, winner, id);
+    expect(statusOf(w, winner, id).status).toBe('ACCEPTED');
+
+    await decline(w, winner, id);
+
+    expect(statusOf(w, winner, id).status).toBe('DECLINED');
+    // the other one's offer had been withdrawn when the job was taken, and it stays so
+    expect([statusOf(w, other, id).status, statusOf(w, other, id).withdrawnReason]).toEqual(['WITHDRAWN', 'TAKEN']);
+  });
+
+  it('refusing a job whose offer ran out ends the offer as expired, not declined', async () => {
+    const w = makeWorld();
+    const artisan = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(artisan, id, { expiresAt: new Date(Date.now() - 1000) });
+
+    await decline(w, artisan, id);
+
+    expect(statusOf(w, artisan, id).status).toBe('EXPIRED');
+  });
+
+  it('an artisan who declined cannot then take the job from the board once the offers end (the refusal stands)', async () => {
+    const w = makeWorld();
+    const refuser = w.addArtisan();
+    const id = w.addJob({ status: 'PENDING', artisanId: null });
+
+    w.offer(refuser, id);
+    await decline(w, refuser, id);
+
+    const error = await failure(accept(w, refuser, id));
+
+    expect(error.getStatus()).toBe(403);
   });
 });

@@ -49,6 +49,8 @@ import { MESSAGES, localeOfUser, recipientLocale, say } from '../../common/i18n/
 import { FitJob, misfitOf } from './job-fit';
 import { drawableZones } from '../../common/geo/zone-match';
 import { whenDoneOnJob } from '../../common/time/queued-for';
+import { offerView } from '../../common/offers/offer-rules';
+import { reservedJobIds } from '../mission-offers/offers-tx';
 
 import {
   ArtisanAvailabilityStatus,
@@ -848,9 +850,13 @@ export class ArtisansService {
     // rule as the matching and as the taking of a job (P1-11).
     const inReach = takable.filter((job) => !misfitOf(profile, job as FitJob));
 
+    // A job offered to other artisans for a few minutes is theirs until the offers end (P3-07); the artisans it was offered to still see it.
+    const reserved = await reservedJobIds(this.prisma, inReach.map((job) => job.id), userId);
+    const listed = inReach.filter((job) => !reserved.has(job.id));
+
     return {
       availableJobs: await Promise.all(
-        inReach.map((job) =>
+        listed.map((job) =>
           this.decorateMissionWithDistance(userId, this.asOpenMission(job)),
         ),
       ),
@@ -921,6 +927,11 @@ export class ArtisansService {
       if (misfitOf(profile, mission)) {
         throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
       }
+
+      // Nor one that is offered to other artisans for a few minutes (P3-07).
+      if ((await reservedJobIds(this.prisma, [mission.id], userId)).has(mission.id)) {
+        throw new ForbiddenException('Cette mission ne vous est pas attribuée.');
+      }
     }
 
     const fullMission = await this.prisma.intervention.findUnique({
@@ -954,11 +965,16 @@ export class ArtisansService {
       },
     });
 
+    // The offer of this job made to this artisan, if there is one (P3-07): the app shows its countdown, or that it ended.
+    const offered = await this.prisma.missionOffer.findFirst({ where: { interventionId: mission.id, artisanId: userId } });
+
     // The same shape for an open mission: the lists are there, and empty.
-    return this.decorateMissionWithDistance(
+    const decorated = await this.decorateMissionWithDistance(
       userId,
       open ? this.asOpenMission({ ...fullMission, events: [], messages: [] }) : fullMission,
     );
+
+    return { ...decorated, offer: offered ? offerView(offered, fullMission, new Date()) : null };
   }
 
   /**

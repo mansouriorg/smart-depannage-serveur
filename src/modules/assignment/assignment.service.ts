@@ -39,6 +39,7 @@ import {
 import { closePendingRequests, detachAppointment } from './appointment-release';
 import { replaceDefaultReminders } from './appointment-reminders';
 import { lockArtisanCalendar, lockJob } from './artisan-lock';
+import { withdrawOffers } from '../mission-offers/offers-tx';
 
 /** A job already held by this artisan can only be re-scheduled before the artisan is on the road. */
 const RESCHEDULABLE = ['ASSIGNED', 'ARTISAN_ACCEPTED'];
@@ -217,6 +218,8 @@ export class AssignmentService {
 
       let row: any;
       let previousStatus = String(job.status);
+      // The artisans whose offer of this job ended because the back office gave it to somebody (P3-07).
+      let withdrawn: number[] = [];
 
       // The same artisan, the same hours again (a double click, a form sent twice): nothing
       // to move and nobody to tell, and a visit the artisan already confirmed stays confirmed.
@@ -251,6 +254,7 @@ export class AssignmentService {
           previousStatus,
           previousArtisanId: job.artisanId as number | null,
           nothingChanged: true,
+          withdrawn: [] as number[],
         };
       }
 
@@ -280,6 +284,9 @@ export class AssignmentService {
 
         row = moved.row;
         previousStatus = moved.previousStatus;
+
+        // The job is given: the offers of it end, in the same transaction (the artisan it is given to, if they had one, has accepted it).
+        withdrawn = await withdrawOffers(tx, { interventionId, reason: 'ASSIGNED', now: new Date(), winnerId: artisanId });
       }
 
       const [activeJobsCount, overlappingAppointments, overlappingTimeBlocks, profile] = await Promise.all([
@@ -381,6 +388,7 @@ export class AssignmentService {
         previousStatus,
         previousArtisanId: job.artisanId as number | null,
         nothingChanged: false,
+        withdrawn,
       };
     }).catch((error: unknown) => {
       // The check above looked at the artisan's calendar under the lock; the database refuses two visits at the same time whatever
@@ -389,6 +397,14 @@ export class AssignmentService {
     });
 
     if (!done.nothingChanged) {
+      for (const other of done.withdrawn) {
+        try {
+          this.realtime.emitOfferUpdate(other, { interventionId, status: 'withdrawn', because: 'assigned' });
+        } catch (error) {
+          this.logger.error(`After an assignment, the live event of a withdrawn offer failed (${describeError(error)}).`);
+        }
+      }
+
       await this.afterAssignment({
         interventionId,
         artisanId,

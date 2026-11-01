@@ -37,6 +37,8 @@ import { MatchingService } from '../../modules/matching/matching.service';
 import { MessagesController } from '../../modules/messages/messages.controller';
 import { MessagesService } from '../../modules/messages/messages.service';
 import { MissionActionsService } from '../../modules/mission-actions/mission-actions.service';
+import { MissionOffersController } from '../../modules/mission-offers/mission-offers.controller';
+import { MissionOffersService } from '../../modules/mission-offers/mission-offers.service';
 import { NotificationsController } from '../../modules/notifications/notifications.controller';
 import { NotificationsService } from '../../modules/notifications/notifications.service';
 import { PaymentsController } from '../../modules/payments/payments.controller';
@@ -212,6 +214,7 @@ export class World {
     svc.cashLedger = new CashLedgerService(prisma, svc.events);
     svc.finance = new FinanceService(prisma);
     svc.matching = new MatchingService(prisma, svc.assignment);
+    svc.offers = new MissionOffersService(prisma, svc.matching, svc.told, svc.realtime);
     svc.admin = new AdminService(prisma, svc.told, svc.events, svc.contactChange, svc.assignment, svc.realtime);
     svc.catalog = new ServiceCatalogService(prisma);
     svc.zones = new ServiceZonesService(prisma);
@@ -234,6 +237,7 @@ export class World {
         ['invoices/invoices', new InvoicesController(svc.invoices)],
         ['matching/matching', new MatchingController(svc.matching)],
         ['messages/messages', new MessagesController(svc.messages)],
+        ['mission-offers/mission-offers', new MissionOffersController(svc.offers)],
         ['notifications/notifications', new NotificationsController(svc.notifications)],
         ['payments/payments', new PaymentsController(svc.payments)],
         ['proofs/proofs', new ProofsController(svc.proofs)],
@@ -350,6 +354,8 @@ export class World {
 
     ids.intervention = job.id;
     ids.event = this.fill('interventionEvent', { interventionId: job.id, type: 'REQUEST_CREATED' }).id;
+    // The job was also offered to the household's artisan, who has not answered yet (P3-07). The offer runs for ever, so that no spec depends on the clock.
+    ids.offer = this.fill('missionOffer', { interventionId: job.id, artisanId: artisan.id, rank: 1, expiresAt: new Date('2100-01-01T00:00:00Z') }).id;
 
     const quote = this.fill('quote', {
       interventionId: job.id,

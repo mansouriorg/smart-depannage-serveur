@@ -43,9 +43,14 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { OPEN_CANONICAL, isOpenJob } from './open-job';
 import { MISFIT_MESSAGE, misfitOf } from '../artisans/job-fit';
+import { reservedAgainst } from '../../common/offers/offer-rules';
+import { declineOffer, liveOffersOf, settleOffersOnTake } from '../mission-offers/offers-tx';
 
 /** The statuses an open job (nobody has it) or a job given to the artisan can be accepted from. */
 const ACCEPTABLE: CanonicalStatus[] = ['CREATED', 'WAITING_ADMIN_REVIEW', 'QUOTE_ACCEPTED', 'ASSIGNED'];
+
+/** The job is offered to other artisans for a few minutes (P3-07): nobody else can take it before the offers have ended. */
+const RESERVED = 'Cette mission est proposée à d’autres artisans pour quelques minutes.';
 
 /** The job is the artisan's but it is past the point where it can be given back. */
 const CANNOT_GIVE_BACK =
@@ -206,6 +211,9 @@ export class MissionActionsService {
           row: await tx.intervention.findUnique({ where: { id: interventionId }, include }),
           changed: false,
           previousStatus: String(job.status),
+          previousArtisanId: null as number | null,
+          // Nothing was taken, so no offer ends (the early return of a repeated accept).
+          withdrawn: [] as number[],
         };
       }
 
@@ -220,6 +228,9 @@ export class MissionActionsService {
         // jobs, the maximum of active missions), checked under the artisan's lock so two
         // jobs taken at the same moment cannot both pass.
         await lockArtisanCalendar(tx, userId);
+
+        // A job offered to several artisans (P3-07) is theirs to take while their offers are live; anybody else waits for the offers to end.
+        if (reservedAgainst(await liveOffersOf(tx, interventionId, new Date()), userId)) throw new ConflictException(RESERVED);
 
         visit = await tx.appointment.findUnique({ where: { interventionId } });
 
@@ -260,16 +271,28 @@ export class MissionActionsService {
         await this.releaseVisit(tx, visit, 'Mission reprise par un autre artisan.');
       }
 
+      // The job is this artisan's now: their offer (if they had one) is accepted and every other offer of the job ends, in the same transaction as
+      // the claim, so exactly one of the artisans it was offered to gets it and the others find their offer withdrawn (P3-07).
+      const withdrawn = moved.changed ? await settleOffersOnTake(tx, { interventionId, winnerId: userId, now }) : [];
+
       return {
         row: moved.row,
         changed: moved.changed,
         previousStatus: moved.previousStatus,
         // The artisan the job was taken from, who still sits in its live room.
         previousArtisanId: !holds && job.artisanId && job.artisanId !== userId ? (job.artisanId as number) : null,
+        withdrawn,
       };
     });
 
     if (done.changed) {
+      // The artisans whose offer ended because this one took the job learn it in their open app (the others find it in their list).
+      for (const other of done.withdrawn) {
+        await this.attempt('live event of a withdrawn offer', async () => {
+          this.realtime.emitOfferUpdate(other, { interventionId, status: 'withdrawn', because: 'taken' });
+        });
+      }
+
       if (done.previousArtisanId) {
         const left = done.previousArtisanId;
 
@@ -402,7 +425,14 @@ export class MissionActionsService {
       } else if (!OPEN_CANONICAL.includes(canonicalStatus(job.status) as CanonicalStatus)) {
         // Their own job, but closed (finished, cancelled): not something to give back either.
         throw new ConflictException(job.artisanId === userId ? CANNOT_GIVE_BACK : 'Cette mission n’est plus disponible.');
+      } else if (!(await this.hasRefused(tx, profile.id, interventionId)) && reservedAgainst(await liveOffersOf(tx, interventionId, now), userId)) {
+        // A job offered to others for a few minutes is not theirs to refuse either: the refusal would be written down against a job they never saw (P3-07).
+        // (Somebody who has already refused it, a double tap or an answer lost on the way, is answered as before.)
+        throw new ConflictException(RESERVED);
       }
+
+      // Their offer of this job (if they had one) is declined with the job (P3-07).
+      await declineOffer(tx, { interventionId, artisanId: userId, now });
 
       // One line per artisan and job, with the latest reason: a button pressed twice does not
       // pile up refusals.
